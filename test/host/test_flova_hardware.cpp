@@ -5,9 +5,12 @@
 #include <FlovaEsp8266HardwarePolicy.h>
 #include <adapters/ArduinoFlovaHardware.h>
 #include <adapters/ArduinoFlovaManualHardware.h>
+#include <adapters/ArduinoFlovaServices.h>
+#include <FlovaOtaTimeout.h>
 
 HardwareSerial Serial;
-uint32_t millis() { return 0; }
+static uint32_t ticks;
+uint32_t millis() { return ticks; }
 void pinMode(uint8_t, uint8_t) {}
 void digitalWrite(uint8_t, uint8_t) {}
 int digitalRead(uint8_t) { return 0; }
@@ -15,6 +18,22 @@ int analogRead(uint8_t) { return 0; }
 void analogWrite(uint8_t, int) {}
 
 int main() {
+  ArduinoFlovaClock clock;
+  ticks = 0xfffffff0UL;
+  assert(clock.milliseconds() == ticks);
+  clock.setUtc(100000, 0);
+  ticks = 20;
+  assert(clock.milliseconds() == (1ULL << 32) + 20);
+  assert(clock.utcMilliseconds() == 100036);
+  ticks = 0xfffffff0UL; clock.milliseconds(); ticks = 30;
+  assert(clock.milliseconds() == (2ULL << 32) + 30);
+  assert(clock.utcMilliseconds() == 100000 + (1ULL << 32) + 46);
+  const uint32_t start = 0xfffffff0UL;
+  assert(!flovaOtaTimedOut(start + 100, start, start + 100, 1000));
+  assert(flovaOtaTimedOut(start + 1100, start, start + 100, 1000));
+  const uint32_t deadline = static_cast<uint32_t>(start + FLOVA_OTA_TOTAL_TIMEOUT_MS);
+  assert(flovaOtaTimedOut(deadline, start, deadline, 1000));
+  ticks = 0;
   uint16_t pin = 65535;
   uint8_t mode = 255;
   for (const char* reference : {"A0", "ADC0", "TOUT"}) {

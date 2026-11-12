@@ -68,6 +68,10 @@ inline bool makeNvsStorageKey(const char* logical, char* output,
     value = logical + 8;
     format = "h%u";
     maximum = 255;
+  } else if (strncmp(logical, "cmd:", 4) == 0) {
+    value = logical + 4;
+    format = "c%u";
+    maximum = 255;
   } else if (strncmp(logical, "dsid:", 5) == 0) {
     value = logical + 5;
     format = "d%u";

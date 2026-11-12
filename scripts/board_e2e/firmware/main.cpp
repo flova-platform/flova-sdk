@@ -18,6 +18,8 @@ uint32_t rejected = 0;
 uint32_t runCount = 0;
 uint64_t runTotalUs = 0;
 uint32_t runMaxUs = 0;
+uint64_t sdkWorkTotalUs = 0;
+uint32_t sdkWorkMaxUs = 0;
 
 void event(const char* name) {
   Serial.printf("FLOVA_E2E {\"event\":\"%s\"}\n", name);
@@ -70,12 +72,17 @@ void loop() {
     restored = true;
   }
   static uint32_t lastReport = 0;
+  const uint32_t reportStart = micros();
   if (reporting && client.ready() && millis() - lastReport >= 200) {
     lastReport = millis();
     if (!temperature.report(24.0 + (reports % 10) * 0.1).accepted()) ++rejected;
     if (!humidity.report(50.0 + reports % 5).accepted()) ++rejected;
     ++reports;
   }
+  // Include immediate report/persistence work without including serial output.
+  const uint32_t sdkWorkUs = elapsed + (micros() - reportStart);
+  sdkWorkTotalUs += sdkWorkUs;
+  if (sdkWorkUs > sdkWorkMaxUs) sdkWorkMaxUs = sdkWorkUs;
   static uint32_t lastSample = 0;
   if (millis() - lastSample >= 1000) {
     lastSample = millis();
@@ -85,15 +92,19 @@ void loop() {
                   "\"wifi\":%u,\"connected\":%u,\"heap\":%u,\"min_heap\":%u,"
                   "\"largest\":%u,\"stack\":%u,\"run_count\":%u,"
                   "\"run_total_us\":%llu,\"run_max_us\":%u,\"reports\":%u,"
-                  "\"rejected\":%u,\"storage_failures\":%u,\"dirty\":%u}\n",
+                  "\"rejected\":%u,\"storage_failures\":%u,\"dirty\":%u,"
+                  "\"sdk_work_total_us\":%llu,\"sdk_work_max_us\":%u}\n",
                   millis(), client.ready(), board_test::wifi(), client.connected(),
                   board_test::freeHeap(), board_test::minimumHeap(),
                   board_test::largestBlock(), board_test::stackHeadroom(), runCount,
                   static_cast<unsigned long long>(runTotalUs), runMaxUs, reports,
-                  rejected, client.diagnostics().storageFailures, dirty);
+                  rejected, client.diagnostics().storageFailures, dirty,
+                  static_cast<unsigned long long>(sdkWorkTotalUs), sdkWorkMaxUs);
     runCount = 0;
     runTotalUs = 0;
     runMaxUs = 0;
+    sdkWorkTotalUs = 0;
+    sdkWorkMaxUs = 0;
   }
   if (Serial.available()) handleTestCommand(Serial.read());
   delay(1);

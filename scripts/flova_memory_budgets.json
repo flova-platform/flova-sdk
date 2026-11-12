@@ -22,13 +22,13 @@
       "tls_profile": "bounded",
       "static_dram": 48128,
       "iram": 29184,
-      "image": 569344
+      "image": 573440
     },
     "universal-esp32": {
       "board": "esp32",
       "static_dram": 76032,
       "iram": 84736,
-      "image": 1048576
+      "image": 1052672
     }
   },
   "esp8266_phase_workspaces": {

@@ -83,10 +83,15 @@ class MonitorTests(unittest.TestCase):
             monitor.exercise(5, 0)
 
     def test_window_percentile_is_not_labeled_loop_percentile(self):
-        result = summarize([sample(), sample(run_max_us=500, run_total_us=3000)])
+        result = summarize([sample(sdk_work_total_us=2000, sdk_work_max_us=200),
+                            sample(run_max_us=500, run_total_us=3000,
+                                   sdk_work_total_us=6000, sdk_work_max_us=800)])
         self.assertEqual(result["mean_run_us"], 20)
         self.assertEqual(result["p95_window_maximum_us"], 500)
         self.assertEqual(result["minimum_heap_bytes"], 140000)
+        self.assertEqual(result["mean_sdk_work_us"], 40)
+        self.assertEqual(result["maximum_sdk_work_us"], 800)
+        self.assertEqual(result["p95_sdk_work_window_maximum_us"], 800)
 
 
 class RunnerSafetyTests(unittest.TestCase):

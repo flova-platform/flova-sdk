@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 
 #include "FlovaBuildConfig.h"
 #include "FlovaDatastreamId.h"
@@ -150,6 +151,10 @@ struct Unit {
 };
 
 inline bool valueTypeMatches(const Value& value, uint8_t type) {
+  if ((value.kind == ValueKind::Float32 && !isfinite(value.data.float32)) ||
+      (value.kind == ValueKind::Float64 && !isfinite(value.data.float64)) ||
+      (value.kind == ValueKind::Text &&
+       strnlen(value.data.text, sizeof(value.data.text)) == sizeof(value.data.text))) return false;
   return static_cast<uint8_t>(value.kind) == type ||
          (type == 2 && value.kind == ValueKind::Float32) ||
          (type == 3 && value.kind == ValueKind::Float64);

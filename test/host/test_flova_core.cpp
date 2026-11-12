@@ -69,12 +69,14 @@ class TestStorage : public flova::Storage { public:
 class PersistentTestStorage : public TestStorage {
  public:
   bool read(const char* key, void* output, size_t size) override {
-    if (strcmp(key, "dsid:1") || !present || size != recordSize) return false;
+    if (strcmp(key, "dsid:1")) return TestStorage::read(key, output, size);
+    if (!present || size != recordSize) return false;
     memcpy(output, record, size);
     return true;
   }
 
   bool write(const char* key, const void* input, size_t size) override {
+    if (strcmp(key, "dsid:1")) return TestStorage::write(key, input, size);
     if (!strcmp(key, "dsid:1") && size <= sizeof(record)) {
       memcpy(record, input, size);
       recordSize = size;
@@ -333,7 +335,223 @@ static void verifyCustomCodeHelpers() {
   assert(strcmp(FLOVA_READ(status).c_str(), "ready") == 0);
 }
 
+static void verifyCommandLedger() {
+  TestStorage storage; TestLink link; TestClock clock; TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  auto relay = device.datastream<bool>("relay"); relay.onWrite(writeRelay);
+  assert(device.begin());
+  flova::Message command;
+  command.kind = flova::MessageKind::WriteRequest;
+  command.datastreamId = 1; command.value = flova::Value::from(true);
+  strcpy(command.commandId, "rejected");
+  reject = true;
+  const int before = writes;
+  link.inject(command);
+  const uint64_t rejectedId = link.lastResult.messageId;
+  assert(writes == before + 1 && link.lastResult.kind == flova::MessageKind::Error);
+  reject = false;
+  link.acknowledge(rejectedId);
+  // More than four other commands must not erase a retained outcome.
+  for (unsigned i = 0; i < 6; ++i) {
+    snprintf(command.commandId, sizeof(command.commandId), "other-%u", i);
+    command.value = flova::Value::from((i % 2) == 0);
+    link.inject(command); link.acknowledge(link.lastResult.messageId);
+  }
+  const int after = writes;
+  strcpy(command.commandId, "rejected"); command.value = flova::Value::from(true);
+  link.inject(command);
+  assert(writes == after && link.lastResult.messageId == rejectedId);
+  assert(link.lastResult.kind == flova::MessageKind::Error && !strcmp(link.lastResult.reason, "safety_lock"));
+  TestLink restoredLink;
+  flova::Device restored(restoredLink, storage, clock, logger);
+  restored.datastream<bool>("relay").onWrite(writeRelay);
+  assert(restored.begin()); restoredLink.inject(command);
+  assert(writes == after && restoredLink.lastResult.messageId == rejectedId);
+  assert(restoredLink.lastResult.kind == flova::MessageKind::Error);
+  strcpy(command.commandId, "versioned"); command.revision = 10;
+  restoredLink.inject(command); restoredLink.acknowledge(restoredLink.lastResult.messageId);
+  TestLink fencedLink; flova::Device fenced(fencedLink, storage, clock, logger);
+  fenced.datastream<bool>("relay").onWrite(writeRelay); assert(fenced.begin());
+  const int fencedWrites = writes;
+  strcpy(command.commandId, "older-version"); command.revision = 9;
+  command.value = flova::Value::from(false); fencedLink.inject(command);
+  assert(writes == fencedWrites && fencedLink.lastResult.kind == flova::MessageKind::Error);
+  assert(!strcmp(fencedLink.lastResult.reason, "state_unavailable"));
+  command.revision = 0;
+
+  TestStorage fullStorage; TestLink fullLink;
+  flova::Device full(fullLink, fullStorage, clock, logger);
+  full.datastream<bool>("relay").onWrite(writeRelay); assert(full.begin());
+  for (unsigned i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {
+    snprintf(command.commandId, sizeof(command.commandId), "pending-%u", i);
+    command.value = flova::Value::from((i % 2) == 0); fullLink.inject(command);
+  }
+  const int saturated = writes;
+  strcpy(command.commandId, "overflow"); fullLink.inject(command);
+  assert(writes == saturated && full.diagnostics().queueOverflow == 1);
+  assert(fullLink.lastResult.kind == flova::MessageKind::Error);
+  fullLink.acknowledge(fullLink.lastResult.messageId); // Best effort failure has no ledger slot.
+
+  TestStorage failedStorage; failedStorage.failWrites = true; TestLink failedLink;
+  flova::Device failed(failedLink, failedStorage, clock, logger);
+  failed.datastream<bool>("relay").onWrite(writeRelay); assert(failed.begin());
+  failedLink.inject(command);
+  assert(writes == saturated && failedLink.lastResult.kind == flova::MessageKind::Error);
+}
+
+class InterruptedResultStorage : public TestStorage {
+ public:
+  bool write(const char* key, const void* value, size_t size) override {
+    if (!strncmp(key, "cmd:", 4) && ++commandWrites == 2) return false;
+    return TestStorage::write(key, value, size);
+  }
+  unsigned commandWrites = 0;
+};
+
+static void verifyInterruptedCommand() {
+  InterruptedResultStorage storage; TestLink link; TestClock clock; TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  device.datastream<bool>("relay").onWrite(writeRelay); assert(device.begin());
+  flova::Message command; command.kind = flova::MessageKind::WriteRequest;
+  command.datastreamId = 1; command.value = flova::Value::from(true);
+  strcpy(command.commandId, "interrupted");
+  const int before = writes; link.inject(command); assert(writes == before + 1);
+  TestLink rebootLink; flova::Device reboot(rebootLink, storage, clock, logger);
+  reboot.datastream<bool>("relay").onWrite(writeRelay); assert(reboot.begin());
+  rebootLink.inject(command);
+  assert(writes == before + 1 && rebootLink.lastResult.kind == flova::MessageKind::Error);
+  assert(!strcmp(rebootLink.lastResult.reason, "command_outcome_unknown"));
+}
+
+static void verifyFiniteSafetyAndRestore() {
+  TestStorage storage; TestLink link; TestClock clock; TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  assert(!device.setting<double>("invalid", NAN).valid());
+  auto setpoint = device.datastream<double>("setpoint");
+  setpoint.onWrite(writeSetpoint).persist(flova::PersistencePolicy::OnChange);
+  assert(device.begin());
+  flova::config::Unit safety = {}; safety.kind = flova::config::UnitKind::Safety;
+  safety.data.safety.datastreamId = 1; safety.data.safety.policy = flova::config::SafetyPolicy::Maximum;
+  safety.data.safety.hasMaximum = true; safety.data.safety.maximum.kind = flova::config::ValueKind::Float64;
+  safety.data.safety.maximum.data.float64 = 100;
+  assert(device.applyConfigurationUnit(safety));
+  assert(setpoint.write(90).accepted());
+  const int before = numericWrites;
+  const uint32_t revision = setpoint.snapshot().revision;
+  assert(!setpoint.write(NAN).accepted() && !setpoint.write(INFINITY).accepted());
+  assert(!setpoint.report(NAN).accepted() && setpoint.snapshot().revision == revision);
+  assert(numericWrites == before && setpoint.value() == 90);
+  safety.data.safety.maximum.data.float64 = NAN;
+  assert(!device.validateConfigurationUnit(safety) && !device.applyConfigurationUnit(safety));
+
+  TestLink rebootLink; flova::Device reboot(rebootLink, storage, clock, logger);
+  auto restored = reboot.datastream<double>("setpoint");
+  restored.onWrite(writeSetpoint).persist(flova::PersistencePolicy::OnChange);
+  assert(reboot.begin());
+  safety.data.safety.maximum.data.float64 = 50;
+  assert(reboot.applyConfigurationUnit(safety)); reboot.run();
+  assert(numericWrites == before && restored.snapshot().quality == flova::Quality::HardwareError);
+  // A rejected hardware restore is not hammered on every loop iteration.
+  TestStorage relayStorage; TestLink firstLink; flova::Device first(firstLink, relayStorage, clock, logger);
+  first.datastream<bool>("relay").onWrite(writeRelay).persist(flova::PersistencePolicy::OnChange);
+  assert(first.begin()); assert(first.write(1, flova::Value::from(true)).accepted());
+  TestLink secondLink; flova::Device second(secondLink, relayStorage, clock, logger);
+  second.datastream<bool>("relay").onWrite(writeRelay).persist(flova::PersistencePolicy::OnChange);
+  assert(second.begin()); reject = true;
+  const int restores = writes; second.run(); second.run();
+  assert(writes == restores + 1); clock.now += 1000; second.run();
+  assert(writes == restores + 2); reject = false;
+}
+
+static void verifyFlowControlBoundary() {
+  TestStorage storage; TestLink link; TestClock clock; TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  auto sample = device.datastream<double>("sample"); assert(device.begin());
+  flova::Message control; control.kind = flova::MessageKind::FlowControl; control.retryAfterMs = 1000;
+  link.inject(control); const int sent = link.stateSends;
+  assert(sample.report(1).accepted()); device.run(); assert(link.stateSends == sent);
+  clock.now += 1000; device.run(); assert(link.stateSends == sent + 1);
+}
+
+class BatchTestLink : public TestLink {
+ public:
+  bool batchesState() const override { return true; }
+  size_t sendStateBatch(flova::StateUpdateReader reader, void* context, size_t count, uint64_t id) override {
+    if (busy) return 0;
+    ++batches; batchId = id; accepted = count < prefix ? count : prefix;
+    for (size_t i = 0; i < accepted; ++i) assert(reader(context, i, ids[i], revisions[i], values[i]));
+    return accepted;
+  }
+  bool busy = false; size_t prefix = 4, accepted = 0; unsigned batches = 0;
+  uint64_t batchId = 0; DatastreamId ids[4] = {}; uint32_t revisions[4] = {}; flova::Value values[4];
+};
+
+static void verifyBatchedDelivery() {
+  TestStorage storage; BatchTestLink link; TestClock clock; TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  auto a = device.datastream<double>("a"); auto b = device.datastream<double>("b");
+  auto c = device.datastream<double>("c"); assert(device.begin());
+  flova::config::Unit system = {}; system.kind = flova::config::UnitKind::System;
+  system.data.system.hasBatchFlushMs = true; system.data.system.batchFlushMs = 100;
+  assert(device.applyConfigurationUnit(system));
+  a.report(1); b.report(2); c.report(3); device.run(); assert(link.batches == 0);
+  clock.now += 100; link.busy = true; device.run(); assert(link.batches == 0);
+  link.busy = false; link.prefix = 2; device.run();
+  assert(link.batches == 1 && link.accepted == 2 && link.ids[0] == 1 && link.ids[1] == 2);
+  const uint64_t old = link.batchId;
+  a.report(4); link.acknowledge(old);
+  assert(a.snapshot().dirty && !b.snapshot().dirty && c.snapshot().dirty);
+  clock.now += 100; device.run(); assert(link.batches == 2 && link.accepted == 2);
+  link.acknowledge(old); assert(a.snapshot().dirty && c.snapshot().dirty);
+  link.acknowledge(link.batchId); assert(!a.snapshot().dirty && !c.snapshot().dirty);
+}
+
+static void verifyHistoryRebinding() {
+  TestStorage storage; TestLink firstLink; TestClock clock; TestLogger logger;
+  clock.utc = 100000;
+  flova::Device first(firstLink, storage, clock, logger);
+  auto sample = first.datastream<double>("sample"); sample.offline(flova::OfflinePolicy::StoreHistory);
+  assert(first.begin()); firstLink.online = false; sample.report(1); sample.report(2);
+  AsyncBindingLink link; link.autoReady = false; link.pendingIds[0] = 1;
+  flova::Device restored(link, storage, clock, logger);
+  restored.datastream<double>("sample").offline(flova::OfflinePolicy::StoreHistory);
+  flova::ResourceBudget budgets[static_cast<size_t>(flova::ResourceKind::Count)];
+  budgets[static_cast<size_t>(flova::ResourceKind::History)].maximumBytes = 2 * storage.records["history:0"].size();
+  restored.resourcePlan(budgets, static_cast<size_t>(flova::ResourceKind::Count));
+  assert(restored.begin()); link.pendingIds[0] = 1; link.ready = true;
+  restored.run(); assert(link.stateSends == 1); link.acknowledge(link.last.messageId);
+  restored.run(); assert(link.stateSends == 2 && restored.diagnostics().storageFailures == 0);
+}
+
+static void verifyCorruptScheduleBounds() {
+  TestStorage storage; TestClock clock; clock.utc = 10000;
+  flova::ScheduleManifest manifest; manifest.revision = 1; manifest.validUntil = 100000; manifest.renewBefore = 90000;
+  manifest.scheduleCount = 1; strcpy(manifest.schedules[0].id, "schedule");
+  manifest.schedules[0].enabled = true; manifest.schedules[0].action.datastreamId = 1;
+  for (unsigned kind = 0; kind < 4; ++kind) {
+    auto& schedule = manifest.schedules[0];
+    schedule.actionCount = kind == 0 ? 255 : 0;
+    schedule.occurrenceCount = kind == 1 ? 255 : 0;
+    memset(schedule.id, kind == 2 ? 'x' : 0, sizeof(schedule.id));
+    if (kind != 2) strcpy(schedule.id, "schedule");
+    schedule.action.value = flova::Value::from("");
+    if (kind == 3) memset(schedule.action.value.text, 'x', flova::kMaxText);
+    assert(flova::ScheduleRuntime::checksum(manifest) == 0);
+    assert(storage.write("schedule.active", &manifest, sizeof(manifest)));
+    flova::ScheduleRuntime runtime(storage, clock);
+    assert(!runtime.begin() && runtime.revision() == 0); runtime.run();
+  }
+}
+
 int main() {
+  verifyCommandLedger();
+  verifyInterruptedCommand();
+  verifyFiniteSafetyAndRestore();
+  verifyFlowControlBoundary();
+  verifyBatchedDelivery();
+  verifyHistoryRebinding();
+  verifyCorruptScheduleBounds();
+  writes = numericWrites = 0;
   verifyPersistencePolicies();
   verifyHistoryMaintenance();
   verifyScheduleBudget();

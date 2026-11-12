@@ -350,6 +350,48 @@ static void verifyBindingBatches() {
     }
     assert(bindingCallbacks == (failure ? 0U : 1U));
     assert(link.connected() == !failure);
+    if (!failure) {
+      FlovaLinkStateBatch batch = {};
+      batch.messageId = 123; batch.configurationGeneration = 7; batch.count = 4;
+      for (uint8_t i = 0; i < 4; ++i) {
+        batch.readings[i].datastreamId = i + 1;
+        batch.readings[i].revision = 1;
+        batch.readings[i].value.kind = FlovaLinkValueKind::Text;
+        memset(batch.readings[i].value.data.text, 'x', sizeof(batch.readings[i].value.data.text) - 1);
+      }
+      platform.client.writtenLength = 0;
+      assert(!link.publishState(batch)); // A strict oversized batch is not submitted.
+      assert(platform.client.writtenLength == 0);
+      for (uint8_t i = 0; i < 4; ++i) {
+        batch.readings[i].value.data.text[96] = 0;
+        batch.readings[i].datastreamId = 65534 - i;
+        batch.readings[i].revision = UINT32_MAX;
+      }
+      batch.configurationGeneration = UINT32_MAX;
+      assert(link.publishState(batch)); // Four maximum wire values still fit.
+      const uint8_t* wire = platform.client.written;
+      size_t length = wire[1] & 127, maskAt = 2;
+      if (length == 126) { length = (wire[2] << 8) | wire[3]; maskAt = 4; }
+      assert(length <= 512 && platform.client.writtenLength == maskAt + 4 + length);
+      uint8_t bytes[512] = {};
+      for (size_t i = 0; i < length; ++i) bytes[i] = wire[maskAt + 4 + i] ^ wire[maskAt + i % 4];
+      flova::link::FrameView frame = {};
+      assert(flova::link::decodeWebSocketBinaryMessage(bytes, length, frame) == flova::link::FrameResult::Complete);
+      struct state decoded = {}; size_t consumed = 0;
+      assert(frame.messageType == 0x11 && frame.messageId == batch.messageId);
+      assert(cbor_decode_state(frame.payload, frame.payloadLength, &decoded, &consumed) == 0);
+      assert(decoded.state_values.state_readings_state_reading_m_count == 4);
+      for (uint8_t i = 0; i < 4; ++i) {
+        batch.readings[i].value = FlovaLinkValue();
+        batch.readings[i].value.kind = FlovaLinkValueKind::Float64;
+        batch.readings[i].value.data.float64 = i;
+      }
+      assert(link.publishState(batch));
+      const size_t submissions = platform.submitCalls;
+      platform.failBootstrapSubmit = true;
+      assert(!link.publishState(batch));
+      assert(platform.submitCalls == submissions + 1); // No prefix retry after submit failure.
+    }
   }
 }
 

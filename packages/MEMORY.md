@@ -1,5 +1,50 @@
 # Firmware memory acceptance
 
+## SDK safety hardening (2026-11-12)
+
+The command-outcome ledger now keeps its bounded payloads in storage, including
+a verified intent before hardware execution and the original result after it.
+It replaces four resident command-ID strings with small fingerprint/sequence
+indexes. State aggregation reuses the four delivery slots and reads values on
+demand; it adds no resident batch payload or per-message allocation. Arduino
+rollover extension, batch deadlines and restore retry state remain fixed-size.
+Persisted result layouts remain compatible in this change.
+
+Compared with the storage-policy baseline recorded below, using the same pinned
+toolchains and universal profiles:
+
+| Environment | Previous static DRAM | Hardened static DRAM | Previous image | Hardened image |
+| --- | ---: | ---: | ---: | ---: |
+| `universal-esp8266` | 47,712 | 47,696 (-16) | 567,616 | 570,512 (+2,896) |
+| `universal-esp32` | 75,896 | 75,592 (-304) | 1,048,192 | 1,050,848 (+2,656) |
+
+IRAM remains 29,015 / 84,714 bytes respectively. The flash increase pays for
+durable intent/result verification and replay, finite-value and schedule-shape
+validation, rollover-safe clock/deadlines, bounded restore retries and grouped
+state ACK handling. Exact result read-back uses the existing workspace instead
+of a second record/stack buffer. The image ceilings move to the next 4 KiB
+boundaries (573,440 / 1,052,672); static DRAM, IRAM, phase allocations and all
+TLS/heap safety reserves are unchanged. This is an explicit flash/safety
+tradeoff, not evidence of additional runtime heap headroom.
+
+Both ESP targets and their datastream examples compile. Host regressions cover
+the command, restore, flow-control, batching and corruption failure paths.
+The stack checker additionally bounds command receive/result storage and batch
+construction. Full SDK-work timing is available in the development runner.
+Physical power-cut behavior, worst-case TLS/OTA loop pauses, fragmentation and
+10,000-cycle reconnect stability remain unverified; stock ESP8266 TLS is still
+synchronous. No board was flashed for this change.
+
+Validation: 18 host suites pass normally and under Clang ASan/UBSan; 11 board
+runner host tests pass; universal/datastream firmware and all three embedded
+test targets compile. The exported package compiles for ESP32 and shared/stock
+ESP8266 MMU. The updated runner builds with the public example fixture without
+hardware access. Protocol/public-surface, stack and both footprint checks pass.
+`scripts/check_flova_layers.sh` remains blocked by its existing exception-scan
+false positive on JavaScript `try`/`catch` in unchanged
+`FlovaSoftApPortal.h:17`. GCC sanitizers could not link on this host because its
+ASan/UBSan shared libraries are missing; the Clang sanitizer build passed.
+
 The released universal ESP8266 image uses the verified 64-stream, stock-DRAM
 profile. The linked-image checks below remain build evidence; runtime TLS peaks
 and fragmentation still require hardware acceptance. ESP32 keeps its existing

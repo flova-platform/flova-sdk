@@ -305,6 +305,23 @@ class ArduinoFlovaLink : public FlovaClientLink {
 
   uint32_t messageNonce() const override { return messageNonce_; }
 
+  bool batchesState() const override { return true; }
+  size_t sendStateBatch(flova::StateUpdateReader reader, void* context,
+                       size_t count, uint64_t messageId) override {
+    if (!connected() || !reader || !count || count > FLOVA_LINK_MAX_STATE_READINGS) return 0;
+    FlovaLinkStateBatch batch = {};
+    batch.messageId = messageId;
+    batch.configurationGeneration = configurationGeneration_;
+    batch.count = static_cast<uint8_t>(count);
+    flova::Value value;
+    for (size_t i = 0; i < count; ++i) {
+      auto& reading = batch.readings[i];
+      if (!reader(context, i, reading.datastreamId, reading.revision, value) ||
+          !toLinkValue(reading.value, value)) return 0;
+    }
+    return transport_.publishState(batch) ? count : 0;
+  }
+
   bool bindDatastreams(const char* const* keys, size_t count, DatastreamId* ids) override {
     if (!keys || !ids || !count || count > ArduinoDeviceLink::kMaximumDatastreamBindings) return false;
     if (count > 255) return false;

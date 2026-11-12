@@ -134,6 +134,16 @@ struct Value {
   }
 };
 
+inline bool validValue(const Value& value) {
+  switch (value.type) {
+    case ValueType::Boolean: case ValueType::Int64: return true;
+    case ValueType::Float: return isfinite(value.scalar.floating);
+    case ValueType::Double: return isfinite(value.scalar.number);
+    case ValueType::Text: return strnlen(value.text, kMaxText) < kMaxText;
+  }
+  return false;
+}
+
 inline bool operator==(const Value& a, const Value& b) {
   if (a.type != b.type) return false;
   if (a.type == ValueType::Boolean) return a.scalar.boolean == b.scalar.boolean;
@@ -174,6 +184,7 @@ struct Message {
 };
 
 typedef bool (*DatastreamKeyReader)(void*, size_t, char*, size_t);
+typedef bool (*StateUpdateReader)(void*, size_t, DatastreamId&, uint32_t&, Value&);
 
 typedef void (*MessageReceiver)(void* context, const Message& message);
 
@@ -186,6 +197,10 @@ class Link {
   virtual bool connected() const = 0;
   virtual bool applicationPaused() const { return false; }
   virtual bool send(const Message& message) = 0;
+  // Optional bounded aggregation. Return the accepted prefix; every reading in
+  // that prefix shares messageId and is retired by the same delivery ACK.
+  virtual bool batchesState() const { return false; }
+  virtual size_t sendStateBatch(StateUpdateReader, void*, size_t, uint64_t) { return 0; }
   virtual void poll() = 0;
   virtual void setReceiver(MessageReceiver receiver, void* context) = 0;
   virtual uint32_t messageNonce() const = 0;
@@ -254,8 +269,7 @@ class Device {
   typedef WriteResult (*FactoryResetHandler)(void* context,
                                              const char* commandId);
   Device(Link& link, Storage& storage, Clock& clock, Logger& logger)
-      : link_(link), storage_(storage), clock_(clock), logger_(logger), count_(0), recentCursor_(0), historyHead_(0), historyCount_(0), lastTimeRequest_(0), timeRequestStarted_(0), timeSequence_(0), nextMessageId_(static_cast<uint64_t>(link.messageNonce()) << 32), retryNotBefore_(0), historyLastSentAt_(0), factoryResetHandler_(nullptr), factoryResetContext_(nullptr), started_(false), bindingPending_(false), bindingFailed_(false), resourcePlanConfigured_(false) {
-    for (size_t i = 0; i < 4; ++i) recentCommands_[i][0] = 0;
+      : link_(link), storage_(storage), clock_(clock), logger_(logger), count_(0), historyHead_(0), historyCount_(0), lastTimeRequest_(0), timeRequestStarted_(0), timeSequence_(0), nextMessageId_(static_cast<uint64_t>(link.messageNonce()) << 32), retryNotBefore_(0), historyLastSentAt_(0), factoryResetHandler_(nullptr), factoryResetContext_(nullptr), started_(false), bindingPending_(false), bindingFailed_(false), resourcePlanConfigured_(false) {
     pendingTimeId_[0] = 0;
   }
 
@@ -318,10 +332,14 @@ class Device {
     if (retryNotBefore_ && clock_.milliseconds() < retryNotBefore_) return;
     syncTime();
     // Start after the last selected stream so a busy producer cannot starve peers.
-    const size_t start = publishCursor_;
-    for (size_t n = 0; n < count_; ++n) {
-      const size_t slot = (start + n) % count_;
-      if (states_[slot].dirty) publish(states_[slot]);
+    if (link_.batchesState()) {
+      publishBatch();
+    } else {
+      const size_t start = publishCursor_;
+      for (size_t n = 0; n < count_; ++n) {
+        const size_t slot = (start + n) % count_;
+        if (states_[slot].dirty) publish(states_[slot]);
+      }
     }
     flushHistory();
   }
@@ -406,6 +424,11 @@ class Device {
   // Link adapters call this with one schema-decoded bounded unit. The public
   // datastream API remains typed and never exposes the wire representation.
   bool applyConfigurationUnit(const config::Unit& unit) {
+    if (unit.kind == config::UnitKind::System && unit.data.system.hasBatchFlushMs) {
+      if (unit.data.system.batchFlushMs > 0x7fffffffUL) return false;
+      batchFlushMs_ = unit.data.system.batchFlushMs;
+      batchWaiting_ = false;
+    }
     if (unit.kind == config::UnitKind::Datastream) {
       ValueType type;
       if (unit.data.datastream.valueType == 0) type = ValueType::Boolean;
@@ -457,6 +480,8 @@ class Device {
   }
 
   bool validateConfigurationUnit(const config::Unit& unit) {
+    if (unit.kind == config::UnitKind::System && unit.data.system.hasBatchFlushMs &&
+        unit.data.system.batchFlushMs > 0x7fffffffUL) return false;
     if (unit.kind == config::UnitKind::Datastream) {
       ValueType type;
       if (!configurationValueType(unit.data.datastream.valueType, type) ||
@@ -562,7 +587,7 @@ class Device {
       if (input.kind == config::ValueKind::Float32) value.number = input.data.float32;
       else if (input.kind == config::ValueKind::Float64) value.number = input.data.float64;
       else return false;
-      return true;
+      return isfinite(value.number);
     }
     int compare(const Value& input) const {
       if (type == ValueType::Int64 && input.type == ValueType::Int64)
@@ -613,8 +638,9 @@ class Device {
     if (started_ || !key || !*key || strnlen(key, FLOVA_MAX_DATASTREAM_KEY_LENGTH + 1) > FLOVA_MAX_DATASTREAM_KEY_LENGTH) return nullptr;
     if (ParameterState* existing = parameterFor(key)) return existing->valueType == Codec<T>::encode(defaultValue).type ? existing : nullptr;
     if (parameterCount_ >= FLOVA_PARAMETER_CAPACITY) return nullptr;
-    ParameterState& parameter = parameters_[parameterCount_++];
     Value encoded = Codec<T>::encode(defaultValue);
+    if (!Codec<T>::valid(defaultValue) || !validValue(encoded)) return nullptr;
+    ParameterState& parameter = parameters_[parameterCount_++];
     memcpy(parameter.key, key, strlen(key) + 1);
     parameter.valueType = encoded.type;
     parameter.value = encoded;
@@ -731,6 +757,8 @@ class Device {
   struct ResultIndex {
     uint64_t messageId = 0;
     uint64_t sentAt = 0;
+    uint64_t sequence = 0;
+    uint32_t fingerprint = 0;
     bool active = false;
   };
   struct Persisted { uint32_t magic; DatastreamId datastreamId; Value value; uint32_t revision; };
@@ -823,20 +851,28 @@ class Device {
       return;
     }
     if (message.kind != MessageKind::WriteRequest) return;
+    const int prior = resultForCommand(message.commandId);
+    if (prior >= 0) {
+      ++diagnostics_.duplicateCommands;
+      // Replay the original outcome, never convert a rejection to success.
+      link_.send(resultWorkspace_.message);
+      return;
+    }
+    if (prior == -2 || !reserveCommand(message)) {
+      Message reply;
+      fillReply(reply, message, WriteResult::failure("command_storage_unavailable"), nullptr);
+      link_.send(reply);
+      return;
+    }
     if (message.datastreamId == FLOVA_FACTORY_RESET_DATASTREAM_ID) {
       if (message.expiresAtUtcMs &&
           (!clock_.utcValid() || clock_.utcMilliseconds() >= message.expiresAtUtcMs))
         return acknowledge(message, WriteResult::reject(clock_.utcValid() ? "command_expired" : "utc_time_required"), nullptr);
-      if (seen(message.commandId)) {
-        diagnostics_.duplicateCommands++;
-        return acknowledge(message, WriteResult::noChange(), nullptr);
-      }
       const WriteResult result =
           message.value.type == ValueType::Boolean && message.value.scalar.boolean &&
                   factoryResetHandler_
               ? factoryResetHandler_(factoryResetContext_, message.commandId)
               : WriteResult::reject("factory_reset_invalid");
-      remember(message.commandId);
       acknowledge(message, result, nullptr);
       return;
     }
@@ -844,27 +880,93 @@ class Device {
     for (size_t i = 0; i < count_; ++i) if (states_[i].id == message.datastreamId) { current = &states_[i]; break; }
     if (!current) return acknowledge(message, WriteResult::reject("unknown_datastream"), 0);
     if (message.expiresAtUtcMs && (!clock_.utcValid() || clock_.utcMilliseconds() >= message.expiresAtUtcMs)) return acknowledge(message, WriteResult::reject(clock_.utcValid() ? "command_expired" : "utc_time_required"), current);
-    if (seen(message.commandId)) { diagnostics_.duplicateCommands++; return acknowledge(message, WriteResult::noChange(), current); }
     bool stale = message.revision && message.revision <= current->lastCloudRevision;
-    WriteResult result = stale ? WriteResult::noChange() : apply(*current, message.value, message.origin);
+    WriteResult result = stale
+        ? current->hasValue ? WriteResult::noChange() : WriteResult::reject("state_unavailable")
+        : apply(*current, message.value, message.origin);
     if (result.accepted() && message.revision > current->lastCloudRevision) current->lastCloudRevision = message.revision;
-    remember(message.commandId);
     acknowledge(message, result, current);
   }
 
-  bool seen(const char* commandId) const {
-    if (!commandId || !commandId[0]) return false;
-    for (size_t i = 0; i < 4; ++i) if (strcmp(recentCommands_[i], commandId) == 0) return true;
-    return false;
+  static uint32_t commandFingerprint(const char* commandId) {
+    uint32_t hash = 2166136261UL;
+    for (size_t i = 0; commandId && i < kMaxText && commandId[i]; ++i)
+      hash = (hash ^ static_cast<uint8_t>(commandId[i])) * 16777619UL;
+    return hash;
   }
-  void remember(const char* commandId) {
-    if (!commandId || !commandId[0] || seen(commandId)) return;
-    Value::copy(recentCommands_[recentCursor_], commandId); recentCursor_ = (recentCursor_ + 1) % 4;
+
+  int resultForCommand(const char* commandId) {
+    if (!commandId || !commandId[0] || strnlen(commandId, kMaxText) == kMaxText) return -1;
+    const uint32_t fingerprint = commandFingerprint(commandId);
+    for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {
+      if (!pendingResults_[i].messageId || pendingResults_[i].fingerprint != fingerprint) continue;
+      char key[16]; snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(i));
+      if (!storage_.read(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
+          !validResult(resultWorkspace_)) {
+        ++diagnostics_.storageFailures;
+        return -2;
+      }
+      if (!strcmp(resultWorkspace_.message.commandId, commandId)) return static_cast<int>(i);
+    }
+    return -1;
+  }
+
+  static bool validResult(const PendingResult& result) {
+    return result.magic == 0x43524554UL && result.message.messageId &&
+           strnlen(result.message.commandId, kMaxText) < kMaxText &&
+           strnlen(result.message.correlationId, kMaxText) < kMaxText &&
+           strnlen(result.message.reason, kMaxText) < kMaxText &&
+           validValue(result.message.value) &&
+           (result.message.kind == MessageKind::Acknowledgement || result.message.kind == MessageKind::Error);
+  }
+
+  bool storeResult(size_t slot, const Message& message, uint64_t sequence) {
+    resultWorkspace_.magic = 0x43524554UL;
+    resultWorkspace_.active = true;
+    // The old persisted sentAt field is now the durable ledger sequence.
+    // Retry timing remains volatile in ResultIndex.
+    resultWorkspace_.sentAt = sequence;
+    // Preserve the complete object representation for exact read-back checking,
+    // including padding in this existing ABI-local persisted record format.
+    memcpy(&resultWorkspace_.message, &message, sizeof(message));
+    char key[16]; snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(slot));
+    if (!storage_.write(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
+        !storage_.read(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
+        resultWorkspace_.magic != 0x43524554UL || !resultWorkspace_.active ||
+        resultWorkspace_.sentAt != sequence ||
+        memcmp(&resultWorkspace_.message, &message, sizeof(message)) != 0) {
+      ++diagnostics_.storageFailures;
+      return false;
+    }
+    ResultIndex& index = pendingResults_[slot];
+    index.messageId = message.messageId;
+    index.sequence = sequence;
+    index.fingerprint = commandFingerprint(message.commandId);
+    index.sentAt = 0;
+    index.active = true;
+    return true;
+  }
+
+  bool reserveCommand(const Message& request) {
+    if (!request.commandId[0] || strnlen(request.commandId, kMaxText) == kMaxText) return false;
+    size_t slot = FLOVA_COMMAND_DEDUP_CAPACITY;
+    for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {
+      if (pendingResults_[i].active) continue;
+      if (!pendingResults_[i].messageId) { slot = i; break; }
+      if (slot == FLOVA_COMMAND_DEDUP_CAPACITY || pendingResults_[i].sequence < pendingResults_[slot].sequence) slot = i;
+    }
+    if (slot == FLOVA_COMMAND_DEDUP_CAPACITY) { ++diagnostics_.queueOverflow; return false; }
+    // Persist an indeterminate outcome BEFORE touching hardware. A reset in
+    // the hardware/result gap must never silently execute the operation again.
+    Message intent;
+    fillReply(intent, request, WriteResult::failure("command_outcome_unknown"), nullptr);
+    return storeResult(slot, intent, ++resultSequence_);
   }
 
   WriteResult apply(State& state, const Value& value, Origin origin) {
     if (link_.applicationPaused()) return WriteResult::failure("maintenance");
     if (state.valueType != value.type) return WriteResult::reject("type_mismatch");
+    if (!validValue(value)) return WriteResult::reject("invalid_value");
     if ((state.mode == Mode::Sample || state.mode == Mode::Event)) return WriteResult::reject("not_writable");
     if (!safe(state, value)) return WriteResult::reject(state.safetyPolicy == 1 || state.safetyPolicy == 3 ? "safety_minimum" : "safety_maximum");
     if (!link_.connected() && state.offline == OfflinePolicy::Reject)
@@ -889,6 +991,7 @@ class Device {
   WriteResult report(State& state, const Value& value, Origin origin) {
     if (link_.applicationPaused()) return WriteResult::failure("maintenance");
     if (state.valueType != value.type) return WriteResult::reject("type_mismatch");
+    if (!validValue(value)) return WriteResult::reject("invalid_value");
     if (!link_.connected() && state.offline == OfflinePolicy::Reject)
       return WriteResult::reject("offline_delivery_required");
     update(state, value, origin);
@@ -1011,7 +1114,13 @@ class Device {
         savePersistence(state);
       }
     }
-    if (bound && link_.connected()) publish(state);
+    if (bound && link_.connected()) {
+      if (!link_.batchesState()) publish(state);
+      else if (!batchWaiting_) {
+        batchDueAt_ = clock_.milliseconds() + batchFlushMs_;
+        batchWaiting_ = true;
+      }
+    }
   }
 
   struct Delivery {
@@ -1020,10 +1129,60 @@ class Device {
     uint32_t revision = 0;
     uint16_t slot = 0;
   };
+  struct BatchContext { Device* device; uint16_t slots[4]; };
+  static bool readBatchState(void* context, size_t index, DatastreamId& id,
+                             uint32_t& revision, Value& value) {
+    if (index >= 4) return false;
+    BatchContext& batch = *static_cast<BatchContext*>(context);
+    State& state = batch.device->states_[batch.slots[index]];
+    id = state.id; revision = state.revision; value = readValue(state);
+    return true;
+  }
+
+  void publishBatch() {
+    const uint64_t now = clock_.milliseconds();
+    if (batchWaiting_ && now < batchDueAt_) return;
+    size_t free = 0;
+    for (auto& delivery : deliveries_) {
+      if (delivery.messageId && now - delivery.sentAt >= 5000) delivery = Delivery{};
+      if (!delivery.messageId) ++free;
+    }
+    if (!free) return;
+    BatchContext batch = {this, {}};
+    size_t count = 0;
+    for (size_t n = 0; n < count_ && count < free; ++n) {
+      const size_t slot = (publishCursor_ + n) % count_;
+      if (!states_[slot].dirty || !flovaValidDatastreamId(states_[slot].id)) continue;
+      bool pending = false;
+      for (const auto& delivery : deliveries_)
+        if (delivery.messageId && delivery.slot == slot) pending = true;
+      if (!pending) batch.slots[count++] = static_cast<uint16_t>(slot);
+    }
+    if (!count) { batchWaiting_ = false; return; }
+    if (!batchWaiting_ && batchFlushMs_) {
+      batchDueAt_ = now + batchFlushMs_;
+      batchWaiting_ = true;
+      return;
+    }
+    const uint64_t messageId = originateMessageId();
+    const size_t accepted = link_.sendStateBatch(readBatchState, &batch, count, messageId);
+    if (!accepted || accepted > count) return;
+    size_t next = 0;
+    for (auto& delivery : deliveries_) {
+      if (delivery.messageId || next == accepted) continue;
+      delivery.messageId = messageId;
+      delivery.slot = batch.slots[next++];
+      delivery.revision = states_[delivery.slot].revision;
+      delivery.sentAt = now;
+      publishCursor_ = (delivery.slot + 1) % count_;
+    }
+    batchWaiting_ = false;
+  }
   // Coalesced state needs a bounded number of outstanding transmissions, not
   // one timer/message record per declared datastream. A retry of a changed
   // value receives a fresh ID; an ACK only retires the revision actually sent.
   void publish(State& state) {
+    if (retryNotBefore_ && clock_.milliseconds() < retryNotBefore_) return;
     if (!flovaValidDatastreamId(state.id)) return;
     const size_t slot = static_cast<size_t>(&state - states_);
     Delivery* delivery = nullptr;
@@ -1056,43 +1215,33 @@ class Device {
   }
 
   bool finishDelivery(uint64_t messageId, bool rejected) {
+    bool found = false;
     for (auto& delivery : deliveries_) {
       if (!delivery.messageId || delivery.messageId != messageId) continue;
       State& state = states_[delivery.slot];
       if (state.revision == delivery.revision) state.dirty = false;
       delivery = Delivery{};
       if (rejected) ++diagnostics_.rejectedDeliveries;
-      return true;
+      found = true;
     }
-    return false;
+    return found;
   }
 
   void acknowledge(const Message& request, const WriteResult& result, const State* state) {
-    Message reply; reply.kind = result.accepted() ? MessageKind::Acknowledgement : MessageKind::Error; reply.messageId = originateMessageId(); reply.datastreamId = request.datastreamId; Value::copy(reply.commandId, request.commandId); Value::copy(reply.correlationId, request.correlationId); Value::copy(reply.reason, result.reason); reply.revision = request.revision; reply.resultStatus = result.status == WriteStatus::NoChange ? 2 : result.accepted() ? 0 : 3; if (state && state->hasValue) reply.value = readValue(*state); queueResult(reply);
+    Message reply;
+    fillReply(reply, request, result, state);
+    queueResult(reply);
+  }
+
+  void fillReply(Message& reply, const Message& request, const WriteResult& result, const State* state) {
+    reply.kind = result.accepted() ? MessageKind::Acknowledgement : MessageKind::Error; reply.messageId = originateMessageId(); reply.datastreamId = request.datastreamId; Value::copy(reply.commandId, request.commandId); Value::copy(reply.correlationId, request.correlationId); Value::copy(reply.reason, result.reason); reply.revision = request.revision; reply.resultStatus = result.status == WriteStatus::NoChange ? 2 : result.accepted() ? 0 : 3; if (state && state->hasValue) reply.value = readValue(*state);
   }
 
   void queueResult(const Message& message) {
-    for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {
-      if (pendingResults_[i].active) continue;
-      resultWorkspace_ = PendingResult{};
-      resultWorkspace_.active = true;
-      resultWorkspace_.message = message;
-      char key[16]; snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(i));
-      if (!storage_.write(key, &resultWorkspace_, sizeof(resultWorkspace_))) {
-        ++diagnostics_.storageFailures;
-        // The command has already run. Preserve best-effort delivery without
-        // falsely claiming that its response is durably queued.
-        link_.send(message);
-        return;
-      }
-      pendingResults_[i].active = true;
-      pendingResults_[i].sentAt = 0;
-      pendingResults_[i].messageId = message.messageId;
-      sendResult(i);
-      return;
-    }
-    ++diagnostics_.queueOverflow;
-    link_.send(message);
+    const int slot = resultForCommand(message.commandId);
+    if (slot >= 0 && storeResult(static_cast<size_t>(slot), message, pendingResults_[slot].sequence))
+      sendResult(static_cast<size_t>(slot));
+    // If completion cannot be committed, retain the intent and fail closed.
   }
 
   void sendResult(size_t slot) {
@@ -1154,15 +1303,19 @@ class Device {
     for (size_t i = 0; i < count_; ++i) if (states_[i].persistence != PersistencePolicy::None) {
       if (!flovaValidDatastreamId(states_[i].id)) continue;
       char key[24]; snprintf(key, sizeof(key), "dsid:%u", static_cast<unsigned>(states_[i].id)); Persisted restored;
-      if (!states_[i].persistenceDirty && storage_.read(key, &restored, sizeof(restored)) && restored.magic == 0x464C4F57UL && restored.datastreamId == states_[i].id && restored.value.type == states_[i].valueType) { storeValue(states_[i], restored.value); states_[i].revision = restored.revision; states_[i].hasValue = true; states_[i].origin = Origin::DeviceRestore; states_[i].quality = Quality::Good; states_[i].persistenceStored = true; states_[i].restorePending = states_[i].writeKind != WriteHandlerKind::None; }
+      if (!states_[i].persistenceDirty && storage_.read(key, &restored, sizeof(restored)) && restored.magic == 0x464C4F57UL && restored.datastreamId == states_[i].id && restored.value.type == states_[i].valueType && validValue(restored.value)) { storeValue(states_[i], restored.value); states_[i].revision = restored.revision; states_[i].hasValue = true; states_[i].origin = Origin::DeviceRestore; states_[i].quality = Quality::Good; states_[i].persistenceStored = true; states_[i].restorePending = states_[i].writeKind != WriteHandlerKind::None; }
     }
   }
 
   void applyRestoredHardware() {
+    if (clock_.milliseconds() < restoreRetryAt_) return;
+    bool failed = false;
     for (size_t i = 0; i < count_; ++i) {
       State& state = states_[i];
       if (!state.restorePending) continue;
-      WriteResult result = invoke(state, readValue(state));
+      const Value value = readValue(state);
+      WriteResult result = validValue(value) && safe(state, value)
+          ? invoke(state, value) : WriteResult::reject("unsafe_restore");
       if (result.accepted()) {
         state.restorePending = false;
         state.quality = Quality::Good;
@@ -1170,10 +1323,12 @@ class Device {
                       (link_.connected() ||
                        state.offline == OfflinePolicy::KeepLatest);
       } else {
+        failed = true;
         state.quality = Quality::HardwareError;
         state.dirty = false;
       }
     }
+    restoreRetryAt_ = failed ? clock_.milliseconds() + 1000 : 0;
   }
 
   bool queueHistory(const State& state, const HistoryRetentionPolicy& history) {
@@ -1267,6 +1422,10 @@ class Device {
   }
   bool persistHistoryMeta() { HistoryMeta meta = {0x48495355UL, (uint16_t)historyHead_, (uint16_t)historyCount_}; if (storage_.write("history.meta", &meta, sizeof(meta))) return true; ++diagnostics_.storageFailures; return false; }
   void restoreHistory() {
+    resources_.release(ResourceKind::History,
+                       resources_.usage(ResourceKind::History).usedBytes);
+    historyCount_ = 0;
+    historyLastSentAt_ = 0;
     historyHeadCached_ = false;
     historyReadRetryAt_ = 0;
     HistoryMeta meta; if (!storage_.read("history.meta", &meta, sizeof(meta)) || meta.magic != 0x48495355UL || meta.head >= FLOVA_HISTORY_CAPACITY || meta.count > FLOVA_HISTORY_CAPACITY) return;
@@ -1278,10 +1437,17 @@ class Device {
       char key[16]; snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(i));
       PendingResult& restored = resultWorkspace_;
       if (storage_.read(key, &restored, sizeof(restored)) &&
-          restored.magic == 0x43524554UL && restored.active) {
-        pendingResults_[i].active = true;
+          validResult(restored)) {
+        pendingResults_[i].active = restored.active;
         pendingResults_[i].messageId = restored.message.messageId;
         pendingResults_[i].sentAt = 0;
+        pendingResults_[i].fingerprint = commandFingerprint(restored.message.commandId);
+        pendingResults_[i].sequence = restored.sentAt;
+        if (restored.sentAt > resultSequence_) resultSequence_ = restored.sentAt;
+        State* state = stateForId(restored.message.datastreamId);
+        if (state && restored.message.kind == MessageKind::Acknowledgement &&
+            restored.message.revision > state->lastCloudRevision)
+          state->lastCloudRevision = restored.message.revision;
       }
     }
   }
@@ -1301,9 +1467,17 @@ class Device {
     for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {
       if (!pendingResults_[i].active || pendingResults_[i].messageId != messageId)
         continue;
-      pendingResults_[i].active = false;
       char key[16]; snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(i));
-      if (!storage_.remove(key)) diagnostics_.storageFailures++;
+      if (!storage_.read(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
+          !validResult(resultWorkspace_)) { ++diagnostics_.storageFailures; return; }
+      resultWorkspace_.active = false;
+      if (!storage_.write(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
+          !storage_.read(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
+          !validResult(resultWorkspace_) || resultWorkspace_.active) {
+        ++diagnostics_.storageFailures;
+        return;
+      }
+      pendingResults_[i].active = false;
       return;
     }
     if (finishDelivery(messageId, false)) return;
@@ -1325,6 +1499,7 @@ class Device {
 
   Link& link_; Storage& storage_; Clock& clock_; Logger& logger_; State states_[kMaxDatastreams]; size_t count_;
   size_t persistenceCursor_ = 0;
+  uint64_t restoreRetryAt_ = 0;
   uint64_t historyHeadMessageId_ = 0;
   uint64_t historyHeadExpiresAt_ = 0;
   uint64_t historyReadRetryAt_ = 0;
@@ -1338,7 +1513,10 @@ class Device {
 #endif
   Delivery deliveries_[4];
   size_t publishCursor_ = 0;
-  char recentCommands_[4][kMaxText]; size_t recentCursor_;
+  uint64_t batchDueAt_ = 0;
+  uint32_t batchFlushMs_ = 50;
+  bool batchWaiting_ = false;
+  uint64_t resultSequence_ = 0;
   ResultIndex pendingResults_[FLOVA_COMMAND_DEDUP_CAPACITY];
   mutable PendingResult resultWorkspace_;
   HistoryRecord historyWorkspace_; size_t historyHead_, historyCount_; ResourceManager resources_;

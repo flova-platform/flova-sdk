@@ -79,7 +79,11 @@ int main() {
                                   sizeof(storageKey)));
   assert(strcmp(storageKey, "r1_127") == 0);
   assert(!flova::makeNvsStorageKey("history:256", storageKey,
-                                   sizeof(storageKey)));
+                                 sizeof(storageKey)));
+  assert(flova::makeNvsStorageKey("cmd:0", storageKey, sizeof(storageKey)) && !strcmp(storageKey, "c0"));
+  assert(flova::makeNvsStorageKey("cmd:255", storageKey, sizeof(storageKey)) && !strcmp(storageKey, "c255"));
+  assert(!flova::makeNvsStorageKey("cmd:256", storageKey, sizeof(storageKey)));
+  assert(!flova::makeNvsStorageKey("cmd:-1", storageKey, sizeof(storageKey)));
   assert(!flova::makeNvsStorageKey("unknown", storageKey,
                                    sizeof(storageKey)));
 

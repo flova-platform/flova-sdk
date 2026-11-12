@@ -86,7 +86,7 @@ class ScheduleRuntime {
 
   bool begin() {
     if (!storage_.read("schedule.active", &manifest_, sizeof(manifest_))) return false;
-    if (!valid(manifest_)) { storage_.remove("schedule.active"); return false; }
+    if (!valid(manifest_)) { manifest_.reset(); storage_.remove("schedule.active"); return false; }
     restoreProgress();
     return true;
   }
@@ -181,11 +181,14 @@ class ScheduleRuntime {
     if (!expectedRevision) return true;
     if (!storage_.read("schedule.active", &manifest_, sizeof(manifest_)) ||
         !valid(manifest_) || manifest_.revision != expectedRevision ||
-        !storage_.read("schedule.progress", &progress_, sizeof(progress_))) return false;
+        !storage_.read("schedule.progress", &progress_, sizeof(progress_))) {
+      manifest_.reset();
+      return false;
+    }
     for (size_t i = 0; i < manifest_.scheduleCount; ++i) {
       const uint8_t actions = manifest_.schedules[i].actionCount ? manifest_.schedules[i].actionCount : 1;
       if (progress_.occurrence[i] > manifest_.schedules[i].occurrenceCount ||
-          progress_.action[i] >= actions) return false;
+          progress_.action[i] >= actions) { manifest_.reset(); return false; }
     }
     return true;
   }
@@ -203,6 +206,7 @@ class ScheduleRuntime {
   }
 
   static uint32_t checksum(const ScheduleManifest& manifest) {
+    if (!structurallyValid(manifest)) return 0;
     uint32_t hash = 2166136261UL;
     mix(hash, manifest.revision); mix64(hash, manifest.generatedAt); mix64(hash, manifest.validUntil); mix64(hash, manifest.renewBefore);
     mix(hash, manifest.scheduleCount);
@@ -221,15 +225,25 @@ class ScheduleRuntime {
   }
 
  private:
-  bool valid(const ScheduleManifest& value) const {
+  static bool structurallyValid(const ScheduleManifest& value) {
     if (value.magic != 0x46534D32UL || !value.revision || !value.validUntil || !value.renewBefore ||
-        value.scheduleCount > kMaxSchedules || value.checksum != checksum(value)) return false;
-    for (size_t i = 0; i < value.scheduleCount; ++i)
-      if (value.schedules[i].occurrenceCount > kMaxOccurrencesPerSchedule ||
-          value.schedules[i].actionCount > flova::config::kConfigurationScheduleActions ||
-          !value.schedules[i].id[0] ||
-          !(value.schedules[i].actionCount ? flovaValidDatastreamId(value.schedules[i].actions[0].datastreamId) : flovaValidDatastreamId(value.schedules[i].action.datastreamId))) return false;
+        value.scheduleCount > kMaxSchedules) return false;
+    for (size_t i = 0; i < value.scheduleCount; ++i) {
+      const CompiledSchedule& schedule = value.schedules[i];
+      if (schedule.occurrenceCount > kMaxOccurrencesPerSchedule ||
+          schedule.actionCount > flova::config::kConfigurationScheduleActions ||
+          !schedule.id[0] || strnlen(schedule.id, sizeof(schedule.id)) == sizeof(schedule.id)) return false;
+      const uint8_t count = schedule.actionCount ? schedule.actionCount : 1;
+      for (uint8_t j = 0; j < count; ++j) {
+        const ScheduleAction& action = schedule.actionCount ? schedule.actions[j] : schedule.action;
+        if (!flovaValidDatastreamId(action.datastreamId) || !validValue(action.value)) return false;
+      }
+    }
     return true;
+  }
+
+  bool valid(const ScheduleManifest& value) const {
+    return structurallyValid(value) && value.checksum == checksum(value);
   }
 
   void requestRenew(uint64_t now) {
@@ -243,8 +257,9 @@ class ScheduleRuntime {
       progress_ = Progress();
     for (size_t i = 0; i < manifest_.scheduleCount; ++i)
       if (progress_.occurrence[i] > manifest_.schedules[i].occurrenceCount ||
-          progress_.action[i] > manifest_.schedules[i].actionCount) {
-        progress_.occurrence[i] = 0;
+          progress_.action[i] >= (manifest_.schedules[i].actionCount ? manifest_.schedules[i].actionCount : 1)) {
+        // A corrupt cursor must not index an action or replay old hardware work.
+        progress_.occurrence[i] = manifest_.schedules[i].occurrenceCount;
         progress_.action[i] = 0;
       }
   }

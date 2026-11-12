@@ -366,7 +366,7 @@ class ArduinoFlovaHardware final : public flova::Hardware {
                                 : input.type == flova::ValueType::Float
                                       ? input.scalar.floating
                                       : input.scalar.number;
-      if (actual < mapping->minimum || actual > mapping->maximum)
+      if (!isfinite(actual) || actual < mapping->minimum || actual > mapping->maximum)
         return flova::WriteResult::reject("out_of_range");
       const double ratio = (actual - mapping->minimum) /
                            (mapping->maximum - mapping->minimum);

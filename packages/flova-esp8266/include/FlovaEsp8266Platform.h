@@ -13,6 +13,7 @@
 #include <new>
 
 #include <FlovaArduinoPlatform.h>
+#include <FlovaOtaTimeout.h>
 #include <FlovaEsp8266TlsProfile.h>
 
 class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
@@ -129,6 +130,7 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
   bool otaRollbackCapable() const override { return false; }
 
   flova::OtaInstallResult installOta(const FlovaLinkOtaOffer& offer) override {
+    const uint32_t startedAt = millis();
     if (!linkClosed() || !trustAnchors_) return flova::OtaInstallResult::ResourceUnavailable;
     if (strncmp(offer.url, "https://", 8) != 0 || !offer.sizeBytes ||
         offer.sizeBytes > otaMaxImageBytes())
@@ -168,6 +170,11 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
     uint32_t written = 0;
     uint32_t lastProgressAt = millis();
     while (http.connected() && written < offer.sizeBytes) {
+      if (flovaOtaTimedOut(millis(), startedAt, lastProgressAt, flova::kHttpsTimeoutMs)) {
+        writer.abort();
+        http.end();
+        return flova::OtaInstallResult::DownloadFailed;
+      }
       const size_t available = stream->available();
       if (!available) {
         if (millis() - lastProgressAt >= flova::kHttpsTimeoutMs) {

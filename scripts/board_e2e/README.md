@@ -91,9 +91,13 @@ backups contain credentials. Do not attach it to issues or commit it.
 - `original-flash.bin`: full original board image. **Keep this until restoration
   has succeeded.** The report distinguishes compile-only from hardware success.
 
-Benchmarks measure `client.run()` only: weighted mean, maximum, and **p95 of
-one-second window maxima**, not p95 of individual calls. Serial output, Wi-Fi
-setup and reporting callbacks are outside that timer. Heap low-water counters,
+Benchmarks retain `client.run()`-only timing and separately measure SDK work per
+iteration: `run()` plus reporting calls, including their synchronous persistence
+and publishing work. Both expose weighted mean, maximum, and **p95 of one-second
+window maxima**, not p95 of individual calls. Serial output, Wi-Fi setup and test
+command handling (including explicit flush) remain outside those timers. The
+`sdk_work_*` fields are required by the current runner; rebuild its firmware
+alongside host updates. Heap low-water counters,
 largest connected block and stack headroom are included. Compare the same
 board, toolchain, workload and Engine; do not infer a hard latency bound, an
 absence of leaks, or the universal firmware's memory headroom from this sketch.

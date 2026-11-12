@@ -150,6 +150,35 @@ are separate safety records and are not disabled by a stream's policy.
 MQTT continues to use application-owned state; these local storage policies
 are Link-only.
 
+### Command delivery and runtime safety
+
+Remote Link commands require writable, read-back-verifiable storage. The SDK
+persists an intent **before** invoking hardware and retains the original result,
+including rejections, across retries/reboots. Delivery ACKs do not erase that
+result. The ledger holds `FLOVA_COMMAND_DEDUP_CAPACITY` records; only the oldest
+delivered record can be replaced. A full/unavailable ledger returns
+`command_storage_unavailable` without invoking hardware. Budget for two record
+writes per new command plus one when its result is acknowledged.
+
+A reset between hardware execution and durable completion returns
+`command_outcome_unknown` on retry, without executing the command again. This is
+not an exactly-once guarantee. After ledger eviction, ID-based deduplication is
+no longer guaranteed: use command expiry and idempotent handlers for older
+retries. Retained accepted results also restore desired-version fences.
+
+NaN/infinity are rejected before numeric writes/reports update state. Restored
+actuator values must satisfy current safety limits; failed restoration retries
+no faster than once per second. Arduino monotonic time extends 32-bit rollover;
+keep clock calls on the board loop and sample at least once every 49.7 days.
+
+Arduino Link coalesces up to four readings per state frame, honors system
+`batch_flush_ms` (50 ms by default), and retires only the revisions covered by
+the batch ACK. Flow control also gates direct reports/writes. ESP8266's stock
+BearSSL connect/write calls remain synchronous. OTA additionally enforces
+`FLOVA_OTA_TOTAL_TIMEOUT_MS` (300,000 ms by default), checked between bounded
+network calls; treat ESP8266 OTA as a maintenance pause. Physical latency,
+power-loss recovery and reconnect endurance still need hardware acceptance.
+
 Stream helpers cache resolved runtime handles, and history caches only its head
 metadata. These bounded internal optimizations do not require user settings.
 ESP8266 filesystem capacity is cached at mount; advanced integrations can

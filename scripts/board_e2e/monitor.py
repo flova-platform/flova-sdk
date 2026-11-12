@@ -8,7 +8,7 @@ PREFIX = b"FLOVA_E2E "
 SAMPLE_FIELDS = (
     "ms", "ready", "wifi", "connected", "heap", "min_heap", "largest", "stack",
     "run_count", "run_total_us", "run_max_us", "reports", "rejected",
-    "storage_failures", "dirty",
+    "storage_failures", "dirty", "sdk_work_total_us", "sdk_work_max_us",
 )
 EVENT_FIELDS = {
     "sample": SAMPLE_FIELDS,
@@ -125,12 +125,17 @@ def summarize(samples):
     if not connected:
         raise ValueError("no connected benchmark samples")
     peaks = sorted(s["run_max_us"] for s in connected)
+    work_peaks = sorted(s["sdk_work_max_us"] for s in connected)
     return {
         "connected_windows": len(connected),
         "mean_run_us": sum(s["run_total_us"] for s in connected) /
                        sum(s["run_count"] for s in connected),
         "maximum_run_us": max(peaks),
         "p95_window_maximum_us": peaks[math.ceil(len(peaks) * .95) - 1],
+        "mean_sdk_work_us": sum(s["sdk_work_total_us"] for s in connected) /
+                            sum(s["run_count"] for s in connected),
+        "maximum_sdk_work_us": max(work_peaks),
+        "p95_sdk_work_window_maximum_us": work_peaks[math.ceil(len(work_peaks) * .95) - 1],
         "minimum_heap_bytes": min(s["min_heap"] for s in samples),
         "minimum_connected_largest_block_bytes": min(s["largest"] for s in connected),
         "minimum_stack_headroom_bytes": min(s["stack"] for s in samples),
