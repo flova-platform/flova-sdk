@@ -65,6 +65,10 @@ class FlovaEsp32 final {
   template <typename T>
   bool report(const char* key, const T& value) { return mqttTransport_ && mqttTransport_->report(key, value); }
   template <typename T>
+  flova::Datastream<T> flovaDatastream(const char* key) {
+    return mqttSelected_ ? flova::Datastream<T>() : client_.datastream<T>(key);
+  }
+  template <typename T>
   flova::WriteResult flovaWrite(const char* key, const T& value) {
     if (mqttSelected_) return flova::WriteResult::failure("local_state_unavailable");
     return client_.datastream<T>(key).write(value);
@@ -136,9 +140,9 @@ class FlovaEsp32 final {
     return true;
   }
   template <typename T>
-  bool flovaPersist(const char* key, flova::PersistencePolicy value) {
+  bool flovaPersist(const char* key, flova::PersistencePolicy value, uint32_t intervalMs = 1000) {
     if (mqttSelected_) return false;
-    client_.datastream<T>(key).persist(value);
+    client_.datastream<T>(key).persist(value, intervalMs);
     return true;
   }
   bool heartbeat(JsonObjectConst payload) { return mqttTransport_ && mqttTransport_->heartbeat(payload); }

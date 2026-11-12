@@ -282,6 +282,7 @@ bool FlovaLinux::Impl::connected() const { return state_->link.connected(); }
 bool FlovaLinux::Impl::ready() const { return state_->device.ready(); }
 bool FlovaLinux::Impl::running() const { return state_->started; }
 const char* FlovaLinux::Impl::lastError() const { return state_->error; }
+flova::Device& FlovaLinux::Impl::device() { return state_->device; }
 
 template <typename T>
 flova::WriteResult FlovaLinux::Impl::write(const char* key, const T& value) {

@@ -95,29 +95,37 @@ class FlovaDatastream {
   FlovaDatastream(Client& client, const char* key) : client_(client), key_(key) {}
 
   const char* key() const { return key_; }
-  flova::WriteResult write(const T& value) { return client_.flovaWrite(key_, value); }
-  bool hasValue() const { return client_.template flovaHasValue<T>(key_); }
-  T value() const { return client_.template flovaValue<T>(key_); }
+  flova::WriteResult write(const T& value) {
+    return resolve().valid() ? cached_.write(value) : client_.flovaWrite(key_, value);
+  }
+  bool hasValue() const {
+    return resolve().valid() ? cached_.hasValue() : client_.template flovaHasValue<T>(key_);
+  }
+  T value() const {
+    return resolve().valid() ? cached_.value() : client_.template flovaValue<T>(key_);
+  }
   flova::WriteResult report(const T& value,
                             flova::Origin origin = flova::Origin::SensorRead) {
-    return client_.flovaReport(key_, value, origin);
+    return resolve().valid() ? cached_.report(value, origin)
+                             : client_.flovaReport(key_, value, origin);
   }
   FlovaDatastream& mode(flova::Mode value) {
-    client_.template flovaMode<T>(key_, value);
+    resolve().mode(value);
     return *this;
   }
   FlovaDatastream& offline(flova::OfflinePolicy value) {
-    client_.template flovaOffline<T>(key_, value);
+    resolve().offline(value);
     return *this;
   }
   FlovaDatastream& retention(const flova::HistoryRetentionPolicy& value) {
-    client_.template flovaRetention<T>(key_, value);
+    resolve().retention(value);
     return *this;
   }
-  FlovaDatastream& persist(flova::PersistencePolicy value) {
-    client_.template flovaPersist<T>(key_, value);
+  FlovaDatastream& persist(flova::PersistencePolicy value, uint32_t intervalMs = 1000) {
+    resolve().persist(value, intervalMs);
     return *this;
   }
+  bool flush() { return resolve().flush(); }
 
   FlovaDatastream& onWrite(typename FlovaDatastreamBinding<T>::ResultHandler handler) {
     binding_.kind = FlovaDatastreamHandlerKind::Result;
@@ -149,8 +157,15 @@ class FlovaDatastream {
   }
 
  private:
+  flova::Datastream<T>& resolve() const {
+    // Slots remain stable for the runtime's lifetime. Resolve lazily: global
+    // helper construction must never mount storage or register descriptors.
+    if (!cached_.valid()) cached_ = client_.template flovaDatastream<T>(key_);
+    return cached_;
+  }
   Client& client_;
   const char* key_;
+  mutable flova::Datastream<T> cached_;
   FlovaDatastreamBinding<T> binding_;
 };
 

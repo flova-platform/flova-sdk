@@ -133,7 +133,6 @@ class FlovaEsp8266Storage : public flova::Storage {
       return false;
     }
     LittleFS.remove(backup);
-    refreshCapacity();
     clearError();
     return true;
   }
@@ -160,7 +159,6 @@ class FlovaEsp8266Storage : public flova::Storage {
       setError("remove");
       return false;
     }
-    refreshCapacity();
     clearError();
     return true;
   }
@@ -188,11 +186,7 @@ class FlovaEsp8266Storage : public flova::Storage {
     return value;
   }
 
- private:
-  static const size_t kMaximumKeyBytes = 21;
-  static const size_t kMaximumRecordBytes = 2048;
-
-  void refreshCapacity() {
+  void refreshCapacity() override {
     FSInfo info = {};
     if (!mounted_ || !LittleFS.info(info)) return;
     totalBytes_ = info.totalBytes;
@@ -200,6 +194,10 @@ class FlovaEsp8266Storage : public flova::Storage {
                           ? info.totalBytes - info.usedBytes
                           : 0;
   }
+
+ private:
+  static const size_t kMaximumKeyBytes = 21;
+  static const size_t kMaximumRecordBytes = 2048;
 
   static bool makePaths(const char* key, char* path, size_t pathCapacity,
                         char* backup, size_t backupCapacity) {

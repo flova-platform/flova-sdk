@@ -2,6 +2,7 @@
 #include <FlovaDevice.h>
 #include <FlovaWifiProvisioning.h>
 #include <unity.h>
+#include <memory>
 
 class TestLink final : public flova::Link {
  public:
@@ -45,8 +46,12 @@ class TestLink final : public flova::Link {
 class TestStorage final : public flova::Storage {
  public:
   bool read(const char*, void*, size_t) override { return false; }
-  bool write(const char*, const void*, size_t) override { return true; }
+  bool write(const char* key, const void*, size_t) override {
+    if (strncmp(key, "dsid:", 5) == 0) ++valueWrites;
+    return true;
+  }
   bool remove(const char*) override { return true; }
+  unsigned valueWrites = 0;
 };
 
 class TestClock final : public flova::Clock {
@@ -79,7 +84,8 @@ static void test_typed_state_uses_bound_compact_id() {
   TestStorage storage;
   TestClock clock;
   TestLogger logger;
-  flova::Device device(link, storage, clock, logger);
+  std::unique_ptr<flova::Device> runtime(new flova::Device(link, storage, clock, logger));
+  flova::Device& device = *runtime;
   flova::Datastream<float> temperature = device.datastream<float>("temperature");
   TEST_ASSERT_TRUE(device.begin());
   TEST_ASSERT_TRUE(temperature.report(31.5f).accepted());
@@ -93,7 +99,8 @@ static void test_rejected_hardware_write_does_not_change_state() {
   TestStorage storage;
   TestClock clock;
   TestLogger logger;
-  flova::Device device(link, storage, clock, logger);
+  std::unique_ptr<flova::Device> runtime(new flova::Device(link, storage, clock, logger));
+  flova::Device& device = *runtime;
   flova::Datastream<bool> relay = device.datastream<bool>("relay");
   relay.onWrite(writeRelay);
   TEST_ASSERT_TRUE(device.begin());
@@ -108,7 +115,8 @@ static void test_state_retries_until_matching_ack() {
   TestStorage storage;
   TestClock clock;
   TestLogger logger;
-  flova::Device device(link, storage, clock, logger);
+  std::unique_ptr<flova::Device> runtime(new flova::Device(link, storage, clock, logger));
+  flova::Device& device = *runtime;
   flova::Datastream<bool> relay = device.datastream<bool>("relay");
   TEST_ASSERT_TRUE(device.begin());
   TEST_ASSERT_TRUE(relay.report(true).accepted());
@@ -122,7 +130,7 @@ static void test_state_retries_until_matching_ack() {
   clock.now += 1;
   device.run();
   TEST_ASSERT_EQUAL_UINT16(2, link.sends);
-  TEST_ASSERT_EQUAL_UINT64(messageId, link.last.messageId);
+  TEST_ASSERT_TRUE(messageId == link.last.messageId);
 
   flova::Message ack;
   ack.kind = flova::MessageKind::Acknowledgement;
@@ -138,7 +146,8 @@ static void test_configured_datastream_owns_its_key() {
   TestStorage storage;
   TestClock clock;
   TestLogger logger;
-  flova::Device device(link, storage, clock, logger);
+  std::unique_ptr<flova::Device> runtime(new flova::Device(link, storage, clock, logger));
+  flova::Device& device = *runtime;
   flova::config::Unit unit = {};
   unit.kind = flova::config::UnitKind::Datastream;
   unit.data.datastream.id = 7;
@@ -152,6 +161,32 @@ static void test_configured_datastream_owns_its_key() {
   TEST_ASSERT_TRUE(device.applyConfigurationUnit(unit));
   TEST_ASSERT_EQUAL_UINT16(2, device.datastreamCount());
   TEST_ASSERT_TRUE(device.begin());
+}
+
+static void test_persistence_is_optional_and_coalesced() {
+  TestLink link; TestStorage storage; TestClock clock; TestLogger logger;
+  std::unique_ptr<flova::Device> runtime(new flova::Device(link, storage, clock, logger));
+  flova::Device& device = *runtime;
+  auto sample = device.datastream<float>("sample");
+  TEST_ASSERT_TRUE(device.begin());
+  link.online = false;
+  TEST_ASSERT_TRUE(sample.report(1).accepted());
+  TEST_ASSERT_EQUAL_UINT(0, storage.valueWrites);
+  sample.persist(flova::PersistencePolicy::OnChange);
+  TEST_ASSERT_TRUE(sample.report(1).accepted());
+  TEST_ASSERT_TRUE(sample.report(1).accepted());
+  TEST_ASSERT_EQUAL_UINT(1, storage.valueWrites);
+  sample.persist(flova::PersistencePolicy::Deferred, 1000);
+  TEST_ASSERT_TRUE(sample.report(2).accepted());
+  clock.now += 999; device.run();
+  TEST_ASSERT_EQUAL_UINT(1, storage.valueWrites);
+  TEST_ASSERT_TRUE(sample.report(3).accepted());
+  ++clock.now; device.run();
+  TEST_ASSERT_EQUAL_UINT(2, storage.valueWrites);
+  TEST_ASSERT_EQUAL_FLOAT(3, sample.value());
+  TEST_ASSERT_TRUE(sample.report(4).accepted());
+  TEST_ASSERT_TRUE(sample.flush());
+  TEST_ASSERT_EQUAL_UINT(3, storage.valueWrites);
 }
 
 static void test_provisioning_parser_is_bounded_and_rejects_duplicates() {
@@ -186,11 +221,14 @@ static void test_provisioning_parser_is_bounded_and_rejects_duplicates() {
 }
 
 void setup() {
+  Serial.begin(115200);
+  delay(2000);
   UNITY_BEGIN();
   RUN_TEST(test_typed_state_uses_bound_compact_id);
   RUN_TEST(test_rejected_hardware_write_does_not_change_state);
   RUN_TEST(test_state_retries_until_matching_ack);
   RUN_TEST(test_configured_datastream_owns_its_key);
+  RUN_TEST(test_persistence_is_optional_and_coalesced);
   RUN_TEST(test_provisioning_parser_is_bounded_and_rejects_duplicates);
   UNITY_END();
 }

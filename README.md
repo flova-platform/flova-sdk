@@ -102,6 +102,60 @@ void loop() { device.run(); }
 The same `FLOVA_*` helpers work with both transports. Datastream keys must
 match the device's template.
 
+## Datastream storage policies
+
+For Flova Link on **ESP32, ESP8266, and Linux**, current values stay in RAM.
+Value persistence and offline history are independently opt-in per stream.
+Configure them in `setup()` before `begin()`; declaring a global stream helper
+does not access storage.
+
+```cpp
+// No value writes to flash (the default).
+temperature.persist(flova::PersistencePolicy::None);
+
+// Save accepted changes immediately; identical sensor reports do not rewrite.
+relay.persist(flova::PersistencePolicy::OnChange);
+
+// Alternatively, coalesce the latest value for up to 30 seconds.
+temperature.persist(flova::PersistencePolicy::Deferred, 30000);
+
+// Optional offline history, independent of value persistence.
+flova::HistoryRetentionPolicy history;
+history.minimumIntervalMs = 60000;
+history.maximumRecords = 4;
+history.maximumAgeSeconds = 3600;
+temperature.offline(flova::OfflinePolicy::StoreHistory).retention(history);
+```
+
+`Persistent` retains its original immediate-write behavior, including every
+sensor report. `Immediate` is an alias. `OnChange` only changes storage writes;
+reports still update timestamps/revisions and participate in normal delivery.
+
+`Deferred` starts a fixed deadline on the first unsaved update, so continuous
+sampling cannot postpone persistence forever. Call `run()` frequently, even
+offline; it saves at most one due stream per iteration and retries failed
+writes after a delay. The interval must be 1–2,147,483,647 milliseconds.
+**A reset or power loss can lose unflushed changes.** Call `stream.flush()` and
+check its result before an application-controlled reset, or use immediate
+persistence for critical state. The portable `Device::flushPersistence()`
+flushes all pending streams; Arduino OTA/power-down preparation also flushes
+before proceeding.
+
+The default offline policy is `KeepLatest`, not history. History's default
+minimum interval is zero; set it explicitly for frequent samples. Retention
+is also bounded by the board's history capacity and resource budget.
+
+Configuration transactions, durable command results, and schedule progress
+are separate safety records and are not disabled by a stream's policy.
+MQTT continues to use application-owned state; these local storage policies
+are Link-only.
+
+Stream helpers cache resolved runtime handles, and history caches only its head
+metadata. These bounded internal optimizations do not require user settings.
+ESP8266 filesystem capacity is cached at mount; advanced integrations can
+request fresh accounting with `Device::storageCapabilities(true)` rather than
+paying for a filesystem traversal on every write/removal.
+
 ## MQTT transport
 
 MQTT is optional. Create your MQTT client, then pass it to the device:

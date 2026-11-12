@@ -31,6 +31,11 @@ class FlovaLinux {
   }
 
   template <typename T>
+  flova::Datastream<T> flovaDatastream(const char* key) {
+    return impl_->device().datastream<T>(key);
+  }
+
+  template <typename T>
   flova::WriteResult flovaWrite(const char* key, const T& value);
 
   template <typename T>
@@ -58,6 +63,7 @@ class FlovaLinux {
     bool ready() const;
     bool running() const;
     const char* lastError() const;
+    flova::Device& device();
 
     template <typename T>
     flova::WriteResult write(const char* key, const T& value);

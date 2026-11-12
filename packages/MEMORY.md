@@ -51,9 +51,9 @@ python3 scripts/check_flova_memory.py universal-esp32 universal-esp8266
 python3 scripts/check_flova_memory.py --stock-dram universal-esp8266
 ```
 
-The final command is expected to fail until the product memory target is met.
-Do not weaken that gate to promote the candidate. Normal invocation enforces
-reviewed linked-image ceilings from `scripts/flova_memory_budgets.json`.
+The final command checks an optimistic necessary bound, not physical product
+acceptance. Do not weaken that gate to promote the candidate. Normal invocation
+enforces reviewed linked-image ceilings from `scripts/flova_memory_budgets.json`.
 Changing those ceilings requires reviewing the actual RAM/flash delta. ESP8266
 figures include `.noinit`, unlike PlatformIO's RAM summary.
 
@@ -66,8 +66,8 @@ Current linked images (bytes):
 
 | Environment | Static DRAM including `.noinit` | IRAM | Firmware image |
 | --- | ---: | ---: | ---: |
-| `universal-esp8266` | 46,684 | 29,015 | 563,680 |
-| `universal-esp32` | 73,016 | 84,714 | 1,043,680 |
+| `universal-esp8266` | 47,712 | 29,015 | 567,616 |
+| `universal-esp32` | 75,896 | 84,714 | 1,048,192 |
 
 Compared with the first reduction pass, the 64-stream universal image sheds
 18,860 static DRAM bytes and the SDK probe sheds 18,732. Some storage moved to
@@ -93,7 +93,7 @@ actually support read-after-write; an adapter which discards successful writes
 cannot provide these services.
 
 `FlovaPhaseStorage<T>` owns compile-time-sized Arduino phase objects. Measured
-ESP8266 allocation payloads are 2,248 bytes for configuration, 1,648 for schedules,
+ESP8266 allocation payloads are 2,248 bytes for configuration, 1,656 for schedules,
 2,528 for transport framing, and 984 for pending control records. These are
 additional heap allocations, not hidden static savings. Control/frame buffers
 are allocated after TLS handshake. Borrowed callback records remain alive until
@@ -106,15 +106,15 @@ bounded-endpoint candidate, the checker therefore reports:
 | Phase | Additional minimum heap, including safety/TCP reserves |
 | --- | ---: |
 | Link handshake | 22,810 |
-| Connected runtime | 24,906 |
-| Configuration transfer | 27,154 |
+| Connected runtime | 24,914 |
+| Configuration transfer | 27,162 |
 | OTA | 26,906 |
 
 These optimistic bounds exclude pre-existing Wi-Fi, filesystem, trust-anchor
 and allocator heap. They use the actual 80 KiB allocator region, ending at
 `0x3fffc000`, not the whole address range up to `0x40000000`.
 The universal 64-stream candidate passes this theoretical linked-image bound by
-7,922 bytes at the configuration phase. That estimate excludes existing Wi-Fi,
+7,046 bytes at the configuration phase. That estimate excludes existing Wi-Fi,
 filesystem, trust-anchor and fragmentation costs, so the product target remains
 unaccepted until endpoint captures and physical runtime measurements pass. The
 custom SDK probe retains the full-record profile and its 8 KiB application
@@ -167,3 +167,62 @@ only after the 8 KiB target passes; publish only a measured allowance.
 The universal ESP8266 example emits periodic loop samples.
 These samples do not observe allocations inside a blocking TLS call and must
 not be described as the absolute handshake low-water mark.
+
+## Datastream storage-policy validation (2026-11-12)
+
+`Persistent`/`Immediate` keep synchronous durability. Optional `OnChange` and
+`Deferred` policies add two 32-bit timer fields per runtime entry (512 bytes
+at 64 entries), plus bounded dirty/stored flags, a persistence cursor and
+history-head metadata. Deferred writes run one due stream per loop, with a
+fixed first-update deadline and delayed failure retries. Configuration key
+fingerprints reuse the phase-owned validation/image union; the ESP8266
+configuration allocation remains 2,248 bytes. The fair schedule cursor adds
+8 bytes including alignment to the schedule allocation. No TLS reserve or
+runtime phase minimum was reduced.
+
+Clean baseline commit `d3a91d4` and the working tree built with the same
+toolchains give:
+
+| Environment | Baseline static DRAM | New static DRAM | Baseline image | New image |
+| --- | ---: | ---: | ---: | ---: |
+| `universal-esp8266` | 47,176 | 47,712 (+536) | 566,464 | 567,616 (+1,152) |
+| `universal-esp32` | 75,352 | 75,896 (+544) | 1,046,864 | 1,048,192 (+1,328) |
+
+IRAM is unchanged. The ESP8266 baseline already exceeded its previous image
+ceiling by 192 bytes. Reviewed ceilings now allow 569,344 image bytes there
+(the next 4 KiB boundary) and 76,032 static DRAM bytes on ESP32 (the next
+256-byte boundary). Other image/static ceilings and all safety reserves are
+unchanged. The four theoretical stock-DRAM phase checks still do not establish
+ESP8266 physical acceptance.
+
+Validation passed: 18 host tests; universal and datastream example builds on
+both chips; all three embedded test compile targets; protocol/public-surface
+and stack-usage guards; normal and stock-DRAM footprint gates; exported SDK
+builds on ESP32 and ESP8266 (shared IRAM and stock MMU). Six datastream tests
+also ran successfully on a physical ESP32. Host regressions cover failed
+persistence writes, rollover, deferred
+deadline/coalescing, history metadata failures, fingerprint collisions and
+bounded schedule catch-up.
+
+A private ESP32 application used two streams on a dedicated development device
+and the local Engine through a temporary certificate-verified TLS ingress.
+The application seeded UTC from the host for this test; SNTP was not tested.
+It reported both streams every 200 ms, with temperature deferred by 5 seconds
+and humidity nonpersistent. Engine confirmed applied configuration generation 1
+and both latest readings as `synced`. Reboot restored temperature but not
+humidity; explicit flush succeeded. Three application-triggered Wi-Fi
+disconnect/reconnect cycles recovered without reprovisioning. Connected free
+heap returned to about 148–152 kB (148,380–151,920 bytes); the
+minimum sampled ESP heap low-water counter was 142,756 bytes and the connected
+largest free block was 77,812 bytes. The smallest observed loop-task stack
+headroom was 4,700 bytes. Most five-second-window `run()` maxima were 6–11 ms;
+one window reached 47.95 ms. These are sampled application-loop durations,
+not a hard latency bound or a long-duration leak test.
+
+This ESP32 smoke test does not replace the still-required ESP8266 hardware
+measurements, 10,000-cycle reconnect stress, OTA interruption, router reboot,
+or interrupted configuration/power-loss acceptance. Credentials, private test
+firmware and the original full-flash backup remain outside the repository.
+After testing, the original 4 MiB flash image was restored with esptool hash
+verification and the temporary TLS ingress was stopped. The dedicated local
+development fixture remains available for future tests.

@@ -99,7 +99,7 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
   bool resourceRecoveryRequired() const override { return resourceUnavailable_; }
   const char* linkError() const override { return linkError_; }
   bool linkWriteBusy() const override {
-    return writeOffset_ < writeLength_ || writeAwaitingFlush_;
+    return writeOffset_ < writeLength_;
   }
 
   bool submitLinkWrite(const uint8_t* data, size_t length) override {
@@ -112,26 +112,14 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
   }
 
   bool serviceLinkWrite() override {
-    if (writeAwaitingFlush_) {
-      // BearSSL may report a short wait timeout even though the TLS record is
-      // already queued for TCP. Do not tear down a healthy link for that
-      // advisory result; clear the application frame and let the next loop
-      // service the socket normally.
-      if (static_cast<int32_t>(millis() - writeFlushReadyAt_) < 0) return true;
-      (void)client_->flush(5000);
-      writeAwaitingFlush_ = false;
-      writeFlushReadyAt_ = 0;
-      return true;
-    }
     if (!linkWriteBusy()) return true;
+    // Stock BearSSL::write() already flushes each TLS fragment. A second TCP
+    // flush here only adds another peer-ACK wait; application delivery is
+    // tracked by Link ACKs, not by waiting synchronously for TCP ACKs.
     const size_t written = client_->write(writeData_ + writeOffset_,
                                          writeLength_ - writeOffset_);
     if (!written) return false;
     writeOffset_ += written;
-    if (writeOffset_ == writeLength_) {
-      writeAwaitingFlush_ = true;
-      writeFlushReadyAt_ = millis() + 1UL;
-    }
     return true;
   }
 
@@ -229,8 +217,6 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
   void clearWrite() {
     writeLength_ = 0;
     writeOffset_ = 0;
-    writeAwaitingFlush_ = false;
-    writeFlushReadyAt_ = 0;
   }
 
   static bool hashMatches(const uint8_t* bytes, size_t length,
@@ -253,8 +239,6 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
   uint8_t writeData_[526] = {};
   size_t writeLength_ = 0;
   size_t writeOffset_ = 0;
-  bool writeAwaitingFlush_ = false;
-  uint32_t writeFlushReadyAt_ = 0;
   bool resourceUnavailable_ = false;
   const char* linkError_ = "link_open_failed";
 };

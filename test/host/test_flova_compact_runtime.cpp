@@ -1,4 +1,4 @@
-#include <FlovaDevice.h>
+#include <FlovaCustomCode.h>
 #include <assert.h>
 #include <map>
 #include <string>
@@ -7,8 +7,9 @@
 struct Storage : flova::Storage {
   std::map<std::string, std::vector<uint8_t>> records;
   bool failRead = false, failWrite = false;
-  unsigned writes = 0;
+  unsigned writes = 0, reads = 0;
   bool read(const char* key, void* out, size_t size) override {
+    ++reads;
     const auto it = records.find(key);
     if (failRead || it == records.end() || it->second.size() != size) return false;
     memcpy(out, it->second.data(), size); return true;
@@ -55,7 +56,45 @@ static flova::WriteResult writeInteger(int64_t) { ++hardwareWrites; return flova
 static void keyFor(unsigned i, char (&key)[49]) {
   memset(key, 'k', 48); key[48] = 0; key[0] = 'a' + i / 26; key[1] = 'a' + i % 26;
 }
+struct Facade {
+  flova::Device& device;
+  template <typename T> flova::Datastream<T> flovaDatastream(const char* key) {
+    return device.datastream<T>(key);
+  }
+  template <typename T> flova::WriteResult flovaWrite(const char* key, const T& value) {
+    return device.datastream<T>(key).write(value);
+  }
+  template <typename T> flova::WriteResult flovaReport(const char* key, const T& value, flova::Origin origin) {
+    return device.datastream<T>(key).report(value, origin);
+  }
+  template <typename T> bool flovaHasValue(const char* key) {
+    return device.datastream<T>(key).hasValue();
+  }
+  template <typename T> T flovaValue(const char* key) {
+    return device.datastream<T>(key).value();
+  }
+};
+static void verifyCachedHelpers() {
+  Storage storage; Link link; Clock clock; Logger logger;
+  flova::Device device(link, storage, clock, logger);
+  Facade facade{device};
+  char firstKey[49], secondKey[49]; keyFor(0, firstKey); keyFor(1, secondKey);
+  FlovaDatastream<int64_t, Facade> first(facade, firstKey), second(facade, secondKey);
+  assert(storage.reads == 0 && storage.writes == 0);
+  first.mode(flova::Mode::Sample); second.mode(flova::Mode::Sample);
+  assert(device.begin());
+  assert(first.report(1).accepted() && second.report(2).accepted());
+  const unsigned reads = storage.reads, writes = storage.writes;
+  storage.failRead = true;
+  for (unsigned i = 0; i < 100; ++i) {
+    assert(first.hasValue() && first.value() == 1);
+    assert(second.hasValue() && second.value() == 2);
+  }
+  assert(storage.reads == reads && storage.writes == writes);
+  assert(device.datastreamCount() == 2);
+}
 int main() {
+  verifyCachedHelpers();
   Storage storage; Link link; Clock clock; Logger logger;
   flova::Device device(link, storage, clock, logger);
   char key[49]; char text[flova::kMaxText]; memset(text, 'v', sizeof(text)); text[sizeof(text) - 1] = 0;

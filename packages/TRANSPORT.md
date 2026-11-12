@@ -52,6 +52,8 @@ restores the persisted configuration and establishes a new Link session.
 
 Stock BearSSL can block inside connection and write operations, including
 cryptographic work that cannot be interrupted by a Flova polling deadline.
+Flova does not add a second per-frame TCP flush after BearSSL's own write;
+this removes a redundant peer-ACK wait, not the synchronous work in BearSSL.
 Applications requiring uninterrupted low-latency hardware handling should use
 ESP32 or hardware peripherals that operate independently of the application loop.
 

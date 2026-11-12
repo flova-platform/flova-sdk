@@ -121,7 +121,7 @@ class ScheduleRuntime {
     return true;
   }
 
-  void run() {
+  void run(size_t maximumActions = 1) {
     if (!clock_.utcValid() || !manifest_.revision) return;
     const uint64_t now = clock_.utcMilliseconds();
     if (now >= manifest_.validUntil) {
@@ -132,7 +132,9 @@ class ScheduleRuntime {
     }
     if (now >= manifest_.renewBefore) requestRenew(now);
 
-    for (size_t i = 0; i < manifest_.scheduleCount; ++i) {
+    const size_t start = nextSchedule_;
+    for (size_t n = 0; n < manifest_.scheduleCount; ++n) {
+      const size_t i = (start + n) % manifest_.scheduleCount;
       CompiledSchedule& schedule = manifest_.schedules[i];
       if (!schedule.enabled) continue;
       while (progress_.occurrence[i] < schedule.occurrenceCount) {
@@ -143,6 +145,7 @@ class ScheduleRuntime {
                                            : schedule.action;
         const uint64_t occurrence = schedule.occurrences[occurrenceIndex];
         if (occurrence + action.offsetMs > now) break;
+        if (!maximumActions) return;
         const uint8_t previousAction = progress_.action[i];
         const uint8_t previousOccurrence = progress_.occurrence[i];
         ++progress_.action[i];
@@ -158,6 +161,8 @@ class ScheduleRuntime {
           return;
         }
         if (apply_) apply_(context_, schedule.id, action, occurrence);
+        --maximumActions;
+        nextSchedule_ = (i + 1) % manifest_.scheduleCount;
       }
     }
   }
@@ -256,6 +261,7 @@ class ScheduleRuntime {
   }
 
   Storage& storage_;
+  size_t nextSchedule_ = 0;
   Clock& clock_;
   ScheduleManifest manifest_;
   struct Progress {

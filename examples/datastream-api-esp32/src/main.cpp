@@ -55,6 +55,9 @@ void setup() {
   FLOVA_ON_WRITE(relay, writeRelay);
   FLOVA_ON_WRITE(cookMode, writeCookMode, nullptr);
   FLOVA_ON_WRITE(lampColor, applyColor);
+  relay.persist(flova::PersistencePolicy::OnChange);
+  // Explicit opt-in: at most one coalesced sensor value per 30-second window.
+  temperature.persist(flova::PersistencePolicy::Deferred, 30000);
   if (!client.begin()) Serial.println("[flova] client startup failed");
 }
 

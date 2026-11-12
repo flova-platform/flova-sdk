@@ -165,8 +165,7 @@ class FlovaClient {
       return false;
     }
 
-    memset(&configurationMemory_->image, 0,
-           sizeof(configurationMemory_->image));
+    memset(validationWorkspace(), 0, kValidationBytes);
     const bool hasConfiguration =
         storage_.read("config", &configurationMemory_->image,
                       sizeof(configurationMemory_->image)) &&
@@ -473,7 +472,7 @@ class FlovaClient {
       powerDownDraining_ = true;
     }
     if (!link_.maintenanceReady()) return FlovaPowerDownStatus::Draining;
-    if (link_.maintenanceFailed()) {
+    if (link_.maintenanceFailed() || !device_.flushPersistence()) {
       link_.endMaintenance();
       powerDownDraining_ = false;
       return FlovaPowerDownStatus::Failed;
@@ -1203,6 +1202,8 @@ class FlovaClient {
     }
     if (configurationMemory_->unit.kind ==
         flova::config::UnitKind::Datastream) {
+      setValidationKeyHash(configurationWork_.sequence,
+                           configurationKeyHash(configurationWork_.keyTarget));
       configurationWork_.priorSequence = 0;
       configurationWork_.phase = ConfigurationWorkPhase::KeyScan;
       return;
@@ -1211,6 +1212,12 @@ class FlovaClient {
   }
 
   void stepConfigurationKeyScan() {
+    const uint32_t hash = validationKeyHash(configurationWork_.sequence);
+    // Fingerprints only filter candidates. Exact comparison below remains
+    // authoritative, including when distinct untrusted keys collide.
+    while (configurationWork_.priorSequence < configurationWork_.sequence &&
+           validationKeyHash(configurationWork_.priorSequence) != hash)
+      ++configurationWork_.priorSequence;
     if (configurationWork_.priorSequence < configurationWork_.sequence) {
       if (!decodeGenerationUnit(configurationWork_.generation,
                                 configurationWork_.priorSequence)) {
@@ -1520,16 +1527,31 @@ class FlovaClient {
   static const size_t kValidationDatastreamBytes =
       FLOVA_DATASTREAM_CAPACITY * sizeof(DatastreamId);
   static const size_t kValidationScheduleOffset = kValidationDatastreamBytes;
-  static_assert(kValidationScheduleOffset +
-                        FLOVA_SCHEDULE_CAPACITY * sizeof(ValidationSchedule) <=
-                    sizeof(flova::ConfigurationImage),
-                "configuration validation workspace exceeds the shared image buffer");
+  static const size_t kValidationKeyHashOffset = kValidationScheduleOffset +
+      FLOVA_SCHEDULE_CAPACITY * sizeof(ValidationSchedule);
+  static const size_t kValidationBytes = kValidationKeyHashOffset +
+      kMaximumConfigurationRecords * sizeof(uint32_t);
 
   uint8_t* validationWorkspace() {
-    return reinterpret_cast<uint8_t*>(&configurationMemory_->image);
+    return configurationMemory_->validation;
   }
   const uint8_t* validationWorkspace() const {
-    return reinterpret_cast<const uint8_t*>(&configurationMemory_->image);
+    return configurationMemory_->validation;
+  }
+  static uint32_t configurationKeyHash(const char* key) {
+    uint32_t hash = 2166136261UL;
+    while (*key) { hash ^= static_cast<uint8_t>(*key++); hash *= 16777619UL; }
+    return hash ? hash : 1;
+  }
+  uint32_t validationKeyHash(size_t sequence) const {
+    uint32_t hash = 0;
+    memcpy(&hash, validationWorkspace() + kValidationKeyHashOffset +
+                      sequence * sizeof(hash), sizeof(hash));
+    return hash;
+  }
+  void setValidationKeyHash(size_t sequence, uint32_t hash) {
+    memcpy(validationWorkspace() + kValidationKeyHashOffset +
+               sequence * sizeof(hash), &hash, sizeof(hash));
   }
   DatastreamId validatedDatastreamId(size_t index) const {
     DatastreamId id = FLOVA_INVALID_DATASTREAM_ID;
@@ -2003,6 +2025,7 @@ class FlovaClient {
     return true;
   }
   bool suspendSchedules() {
+    if (!device_.flushPersistence()) return false;
     if (!scheduleMemory_) return true;
     if (!scheduleMemory_->runtime.checkpoint()) return false;
     suspendedScheduleRevision_ = scheduleMemory_->runtime.revision();
@@ -2045,7 +2068,10 @@ class FlovaClient {
     flova::config::Installer installer;
     flova::config::Digest digest;
     flova::DeviceConfiguration runtime = {};
-    flova::ConfigurationImage image = {};
+    union {
+      flova::ConfigurationImage image = {};
+      uint8_t validation[kValidationBytes];
+    };
     union {
       FlovaLinkConfigurationRecord record = {};
       flova::config::Unit unit;

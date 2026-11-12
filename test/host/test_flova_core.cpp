@@ -51,16 +51,21 @@ class AsyncBindingLink : public TestLink {
 };
 class TestStorage : public flova::Storage { public:
   std::map<std::string, std::vector<uint8_t>> records;
+  std::map<std::string, unsigned> reads, writes, removals;
+  bool failWrites = false;
   bool read(const char* key, void* out, size_t size) override {
+    ++reads[key];
     auto found = records.find(key);
     if (found == records.end() || found->second.size() != size) return false;
     memcpy(out, found->second.data(), size); return true;
   }
   bool write(const char* key, const void* data, size_t size) override {
+    ++writes[key];
+    if (failWrites) return false;
     const auto* bytes = static_cast<const uint8_t*>(data);
     records[key] = std::vector<uint8_t>(bytes, bytes + size); return true;
   }
-  bool remove(const char* key) override { records.erase(key); return true; } flova::StorageCapabilities capabilities() const override { flova::StorageCapabilities value; value.usableBytes = 65536; value.availableBytes = 65536; value.persistent = true; return value; } };
+  bool remove(const char* key) override { ++removals[key]; records.erase(key); return true; } flova::StorageCapabilities capabilities() const override { flova::StorageCapabilities value; value.usableBytes = 65536; value.availableBytes = 65536; value.persistent = true; return value; } };
 class PersistentTestStorage : public TestStorage {
  public:
   bool read(const char* key, void* output, size_t size) override {
@@ -106,6 +111,154 @@ static int manifestRuns, renewals;
 static flova::WriteResult applySchedule(void*, const char*, const flova::ScheduleAction&, uint64_t) { manifestRuns++; return flova::WriteResult::accept(); }
 static void renewSchedule(void*, uint32_t, uint64_t) { renewals++; }
 static void scheduleStatus(void*, const char*, uint32_t, uint64_t) {}
+
+static void verifyPersistencePolicies() {
+  TestStorage storage; TestLink link; TestClock clock; TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  auto immediate = device.datastream<int64_t>("immediate");
+  auto changed = device.datastream<int64_t>("changed");
+  auto deferred = device.datastream<int64_t>("deferred");
+  auto transient = device.datastream<int64_t>("transient");
+  immediate.persist(flova::PersistencePolicy::Persistent);
+  changed.persist(flova::PersistencePolicy::OnChange);
+  deferred.persist(flova::PersistencePolicy::Deferred, 1000);
+  assert(device.begin());
+  link.online = false;
+  for (unsigned i = 0; i < 2; ++i) {
+    assert(immediate.report(7).accepted());
+    assert(changed.report(7).accepted());
+    assert(transient.report(7).accepted());
+  }
+  assert(storage.writes["dsid:1"] == 2); // Legacy immediate durability.
+  assert(storage.writes["dsid:2"] == 1);
+  assert(storage.writes["dsid:4"] == 0);
+  assert(changed.report(8).accepted() && storage.writes["dsid:2"] == 2);
+  for (unsigned i = 0; i < 10; ++i) {
+    clock.now = 1 + i * 100;
+    assert(deferred.report(i).accepted());
+    device.run();
+    assert(storage.writes["dsid:3"] == 0);
+  }
+  clock.now = 1001; device.run();
+  assert(storage.writes["dsid:3"] == 1 && deferred.value() == 9);
+  assert(deferred.report(9).accepted());
+  clock.now = 5001; device.run();
+  assert(storage.writes["dsid:3"] == 1);
+  assert(deferred.report(10).accepted() && deferred.flush());
+  assert(storage.writes["dsid:3"] == 2);
+  assert(deferred.report(11).accepted() && device.flushPersistence());
+  assert(storage.writes["dsid:3"] == 3);
+
+  storage.failWrites = true;
+  assert(changed.report(9).accepted());
+  assert(changed.snapshot().quality == flova::Quality::HardwareError);
+  const unsigned failedAttempts = storage.writes["dsid:2"];
+  device.run();
+  assert(storage.writes["dsid:2"] == failedAttempts);
+  storage.failWrites = false;
+  clock.now += 1000; device.run();
+  assert(storage.writes["dsid:2"] == failedAttempts + 1);
+  assert(changed.snapshot().quality == flova::Quality::Good);
+
+  // Deferred state restores from the last completed flush, not unsaved RAM.
+  assert(deferred.report(12).accepted());
+  TestLink restoredLink; flova::Device restored(restoredLink, storage, clock, logger);
+  restored.datastream<int64_t>("immediate");
+  auto restoredChanged = restored.datastream<int64_t>("changed");
+  auto restoredDeferred = restored.datastream<int64_t>("deferred");
+  restoredChanged.persist(flova::PersistencePolicy::OnChange);
+  restoredDeferred.persist(flova::PersistencePolicy::Deferred, 1000);
+  assert(restored.begin());
+  assert(restoredDeferred.hasValue() && restoredDeferred.value() == 11);
+  const unsigned previous = storage.writes["dsid:2"];
+  assert(restoredChanged.report(9).accepted());
+  assert(storage.writes["dsid:2"] == previous);
+
+  deferred.persist(flova::PersistencePolicy::None);
+  clock.now += 2000; device.run();
+  assert(storage.writes["dsid:3"] == 3);
+  clock.now = 0xfffffff0ULL;
+  deferred.persist(flova::PersistencePolicy::Deferred, 100);
+  assert(deferred.report(13).accepted());
+  clock.now += 99; device.run();
+  assert(storage.writes["dsid:3"] == 3);
+  ++clock.now; device.run();
+  assert(storage.writes["dsid:3"] == 4);
+  auto invalid = device.datastream<int64_t>("deferred");
+  invalid.persist(flova::PersistencePolicy::Deferred, 0);
+  assert(!invalid.valid());
+}
+
+static void verifyHistoryMaintenance() {
+  TestStorage storage; TestLink link; TestClock clock; TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  auto sample = device.datastream<float>("history");
+  flova::HistoryRetentionPolicy retention;
+  retention.maximumRecords = 2;
+  retention.minimumIntervalMs = 100;
+  retention.maximumAgeSeconds = 10;
+  sample.offline(flova::OfflinePolicy::StoreHistory).retention(retention);
+  clock.utc = 100000;
+  assert(device.begin());
+  link.online = false;
+  assert(sample.report(1).accepted());
+  clock.now = 50; assert(sample.report(2).accepted());
+  assert(storage.writes["history.meta"] == 1);
+  clock.now = 101; assert(sample.report(3).accepted());
+  clock.now = 201; assert(sample.report(4).accepted());
+  assert(storage.records.count("history:0") == 0);
+  assert(storage.writes["history.meta"] == 4);
+  link.online = true;
+  device.run();
+  const unsigned headReads = storage.reads["history:1"];
+  for (unsigned i = 0; i < 100; ++i) device.run();
+  assert(storage.reads["history:1"] == headReads);
+  assert(link.last.kind == flova::MessageKind::StateUpdate);
+  const uint64_t headId = link.last.messageId;
+  storage.failWrites = true;
+  link.acknowledge(headId);
+  assert(storage.records.count("history:1") == 1);
+  storage.failWrites = false;
+  link.acknowledge(headId);
+  assert(storage.records.count("history:1") == 0);
+  clock.now += 20000;
+  const int sent = link.stateSends;
+  device.run();
+  assert(device.diagnostics().expiredHistory == 1);
+  assert(link.stateSends == sent); // Never send the next expired record.
+  assert(storage.records.count("history:2") == 0);
+}
+
+static void verifyScheduleBudget() {
+  TestStorage storage; TestClock clock;
+  flova::ScheduleRuntime runtime(storage, clock);
+  runtime.handlers(applySchedule, renewSchedule, scheduleStatus, nullptr);
+  flova::ScheduleManifest manifest;
+  manifest.revision = 1; manifest.validUntil = 100000; manifest.renewBefore = 90000;
+  manifest.scheduleCount = 2;
+  for (unsigned i = 0; i < 2; ++i) {
+    auto& schedule = manifest.schedules[i];
+    flova::Value::copy(schedule.id, i ? "second" : "first");
+    schedule.enabled = true; schedule.action.datastreamId = 1;
+    schedule.occurrenceCount = 2;
+    schedule.occurrences[0] = 1000; schedule.occurrences[1] = 2000;
+  }
+  manifest.checksum = flova::ScheduleRuntime::checksum(manifest);
+  assert(runtime.install(manifest));
+  clock.utc = 3000;
+  const int before = manifestRuns;
+  const unsigned writesBefore = storage.writes["schedule.progress"];
+  storage.failWrites = true; runtime.run();
+  assert(manifestRuns == before);
+  storage.failWrites = false;
+  for (unsigned i = 1; i <= 4; ++i) {
+    runtime.run();
+    assert(manifestRuns == before + static_cast<int>(i));
+    assert(storage.writes["schedule.progress"] == writesBefore + 1 + i);
+  }
+  runtime.run(); assert(manifestRuns == before + 4);
+  manifestRuns = before;
+}
 
 static void verifyFullCapacityAndIntegerSafety() {
   TestLink link;
@@ -181,6 +334,9 @@ static void verifyCustomCodeHelpers() {
 }
 
 int main() {
+  verifyPersistencePolicies();
+  verifyHistoryMaintenance();
+  verifyScheduleBudget();
   flova::RgbColor rgb = {0, 0, 0};
   assert(flova::parseRgbHex(flova::Text("#fF8000"), rgb));
   assert(rgb.r == 255 && rgb.g == 128 && rgb.b == 0);

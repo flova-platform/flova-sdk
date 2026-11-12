@@ -25,12 +25,14 @@ namespace {
 class TestStorage final : public flova::Storage {
  public:
   bool read(const char* key, void* output, size_t length) override {
+    if (strstr(key, "_r_")) ++recordReads;
     auto found = records.find(key);
     if (found == records.end() || found->second.size() != length) return false;
     memcpy(output, found->second.data(), length);
     return true;
   }
   bool write(const char* key, const void* input, size_t length) override {
+    if (failWrites) return false;
     const auto* bytes = static_cast<const uint8_t*>(input);
     records[key] = std::vector<uint8_t>(bytes, bytes + length);
     return true;
@@ -38,6 +40,8 @@ class TestStorage final : public flova::Storage {
   bool remove(const char* key) override { records.erase(key); return true; }
   bool clear() override { records.clear(); return true; }
   std::map<std::string, std::vector<uint8_t>> records;
+  unsigned recordReads = 0;
+  bool failWrites = false;
 };
 
 class TestClock final : public flova::Clock {
@@ -95,6 +99,10 @@ class TestHardware final : public flova::Hardware {
 class TestLink final : public FlovaClientLink {
  public:
   bool begin() override { return true; }
+  bool bindDatastreams(const char* const*, size_t count, DatastreamId* ids) override {
+    for (size_t i = 0; i < count; ++i) ids[i] = static_cast<DatastreamId>(i + 1);
+    return true;
+  }
   bool connected() const override { return online; }
   bool applicationPaused() const override { return maintenance; }
   bool send(const flova::Message&) override { return online && !maintenance; }
@@ -139,6 +147,15 @@ class TestLink final : public FlovaClientLink {
   bool decodeStoredConfigurationUnit(
       const uint8_t* payload, size_t length, flova::config::Unit& output) override {
     assert(length == 16);
+    if (!configurationKeys.empty()) {
+      const size_t index = payload[0];
+      assert(index < configurationKeys.size());
+      output.kind = flova::config::UnitKind::Datastream;
+      output.data.datastream.id = static_cast<DatastreamId>(index + 1);
+      output.data.datastream.valueType = 0;
+      assert(flova::copyBounded(configurationKeys[index].c_str(), output.data.datastream.key, true));
+      return true;
+    }
     // Writing the typed alternative must not destroy the installer's copy.
     output = flova::config::Unit();
     for (size_t i = 0; i < length; ++i) assert(payload[i] == 0x5a);
@@ -181,6 +198,7 @@ class TestLink final : public FlovaClientLink {
   unsigned reports = 0;
   FlovaLinkConfigurationRecord configuration = {};
   FlovaLinkConfigurationReport lastReport = {};
+  std::vector<std::string> configurationKeys;
 
  private:
   flova::MessageReceiver receiver_ = nullptr;
@@ -249,9 +267,14 @@ void verifyPowerDownPreparation() {
   link.online = true;
   FlovaClient client(link, provisioning, network, tlsClock, identity, storage,
                      clock, logger, entropy, hardware);
+  auto deferred = client.datastream<int64_t>("deferred");
+  deferred.persist(flova::PersistencePolicy::Deferred, 1000);
   assert(client.begin(false));
   for (unsigned i = 0; i < 128 && !client.runtimeReady(); ++i) client.run();
   assert(client.ready());
+
+  assert(deferred.report(42).accepted());
+  assert(storage.records.count("dsid:1") == 0);
 
   assert(client.prepareForPowerDown() == FlovaPowerDownStatus::Draining);
   assert(link.maintenanceBegins == 1 && link.maintenancePolls == 1);
@@ -259,6 +282,7 @@ void verifyPowerDownPreparation() {
   assert(link.maintenanceBegins == 1);
   link.maintenanceReadyNow = true;
   assert(client.prepareForPowerDown() == FlovaPowerDownStatus::Ready);
+  assert(storage.records.count("dsid:1") == 1);
   assert(client.prepareForPowerDown() == FlovaPowerDownStatus::Ready);
   assert(link.maintenanceBegins == 1 && link.maintenanceEnds == 0);
 
@@ -286,9 +310,57 @@ void verifyPowerDownPreparation() {
   assert(failedLink.maintenanceEnds == 1 && !failedLink.maintenance);
 }
 
+void verifyIndexedRestore(const std::vector<std::string>& keys, bool valid) {
+  TestStorage storage; seedRuntimeConfiguration(storage);
+  FlovaLinkConfigurationStorage configStorage(storage, 64);
+  flova::config::Installer installer(configStorage, 64);
+  flova::config::Begin begin;
+  begin.generation = 2; begin.schemaVersion = 1;
+  begin.maximumRecordBytes = flova::config::kMaximumRecordBytes;
+  begin.recordCount = keys.size();
+  std::vector<flova::config::Record> records(keys.size());
+  flova::config::Digest digest;
+  for (size_t i = 0; i < keys.size(); ++i) {
+    auto& record = records[i];
+    record.generation = 2; record.sequence = i; record.length = 16;
+    record.body[0] = i;
+    digest.addRecord(record);
+  }
+  digest.finish(begin.checksum);
+  assert(installer.begin(begin).accepted());
+  for (const auto& record : records) assert(installer.record(record).accepted());
+  flova::config::End end;
+  end.generation = 2; end.recordCount = keys.size(); end.checksum = begin.checksum;
+  assert(installer.end(end).accepted() && installer.promote(2));
+  storage.recordReads = 0;
+  TestLink link; TestClock clock; TestLogger logger; TestEntropy entropy;
+  TestIdentity identity; TestNetwork network; TestTlsClock tlsClock;
+  TestProvisioning provisioning; TestHardware hardware;
+  link.configurationKeys = keys;
+  link.online = network.online = tlsClock.clockReady = true;
+  FlovaClient client(link, provisioning, network, tlsClock, identity, storage,
+                     clock, logger, entropy, hardware);
+  assert(client.begin(false));
+  for (unsigned i = 0; i < 4096 && !client.runtimeReady(); ++i) client.run();
+  assert(client.runtimeReady());
+  assert(link.configurationGeneration() == (valid ? 2U : 1U));
+  assert(client.device().datastreamCount() == (valid ? keys.size() : 0));
+  if (valid) assert(storage.recordReads == keys.size() * 5 + 1);
+  else assert(storage.recordReads == 8);
+}
+
+void verifyConfigurationKeyIndex() {
+  // These distinct keys have the same FNV-1a fingerprint (0x5e4daa9d).
+  std::vector<std::string> keys = {"costarring", "liquid"};
+  for (unsigned i = 2; i < 64; ++i) keys.push_back("stream-" + std::to_string(i));
+  verifyIndexedRestore(keys, true);
+  verifyIndexedRestore({"costarring", "liquid", "costarring"}, false);
+}
+
 }  // namespace
 
 int main() {
+  verifyConfigurationKeyIndex();
   TestLink link;
   TestStorage storage;
   TestClock clock;
