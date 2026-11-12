@@ -1,0 +1,9 @@
+{
+  "development": true,
+  "wifi_ssid": "your-development-wifi",
+  "wifi_password": "your-development-password",
+  "provision_token": "replace-with-a-fresh-device-link-provisioning-token",
+  "lan_address": "192.168.1.10",
+  "engine_port": 4000,
+  "tls_port": 9443
+}

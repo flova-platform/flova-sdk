@@ -37,6 +37,25 @@ taking over networking, servers, GPIO, clock policy, or reboot. The stack guard 
 The public-surface guard prevents removed compatibility names and internal
 adapter headers from leaking into normal examples.
 
+## Development hardware E2E and SDK benchmarks
+
+[`board_e2e/README.md`](board_e2e/README.md) describes the development-only
+ESP32 build → backup → Unity tests → erase/upload → verified-TLS telemetry →
+reconnect/persistence benchmark → original-flash restoration runner:
+
+```sh
+python scripts/test_board.py --config .local/board-e2e-config.json
+# Hardware access is opt-in and requires an explicit serial port:
+python scripts/test_board.py --config .local/board-e2e-config.json \
+  --flash --port /dev/ttyACM0
+python -m unittest discover -s scripts/board_e2e -t scripts -v
+```
+
+Build-only is the default. Use a dedicated local Engine fixture and keep the
+configuration and all generated artifacts private. Board tooling, firmware
+metrics and host scenarios are separate so additional boards can be validated
+later; currently only the 4 MiB ESP32 DevKit profile is enabled.
+
 ## SDK release validation
 
 Check that the SDK, firmware, package manifests, dependencies, and exported
