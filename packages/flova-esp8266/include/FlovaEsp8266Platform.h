@@ -1,5 +1,7 @@
 #pragma once
 
+#include <FlovaEsp8266OtaWriter.h>
+
 #include <FlovaFlashLog.h>
 
 #include <Arduino.h>
@@ -170,6 +172,7 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
       http.end();
       return flova::OtaInstallResult::FlashFailed;
     }
+    flova::Esp8266OtaWriter<UpdaterClass> writer(Update, offer.sizeBytes);
 
     br_sha256_context hash;
     br_sha256_init(&hash);
@@ -180,7 +183,7 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
       const size_t available = stream->available();
       if (!available) {
         if (millis() - lastProgressAt >= flova::kHttpsTimeoutMs) {
-          abortUpdate();
+          writer.abort();
           http.end();
           return flova::OtaInstallResult::DownloadFailed;
         }
@@ -189,8 +192,8 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
       }
       const size_t remaining = offer.sizeBytes - written;
       const size_t count = stream->readBytes(writeData_, min(remaining, min(available, sizeof(writeData_))));
-      if (!count || Update.write(writeData_, count) != count) {
-        abortUpdate();
+      if (!count || !writer.write(writeData_, count)) {
+        writer.abort();
         http.end();
         return flova::OtaInstallResult::FlashFailed;
       }
@@ -202,10 +205,10 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
     uint8_t digest[32] = {};
     br_sha256_out(&hash, digest);
     if (written != offer.sizeBytes || !hashMatches(digest, sizeof(digest), offer.sha256)) {
-      abortUpdate();
+      writer.finish(false);
       return flova::OtaInstallResult::HashMismatch;
     }
-    return Update.end(true) ? flova::OtaInstallResult::Installed
+    return writer.finish(true) ? flova::OtaInstallResult::Installed
                             : flova::OtaInstallResult::FlashFailed;
   }
 
@@ -229,8 +232,6 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
     writeAwaitingFlush_ = false;
     writeFlushReadyAt_ = 0;
   }
-
-  void abortUpdate() { Update.end(false); }
 
   static bool hashMatches(const uint8_t* bytes, size_t length,
                           const char* expected) {

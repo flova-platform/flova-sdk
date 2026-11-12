@@ -4,8 +4,8 @@
 // Universal firmware is the no-code/full-device composition. Unlike the
 // passive FlovaEsp32 facade, it owns setup SoftAP, Wi-Fi credential storage,
 // universal GPIO mappings, OTA policy, and automatic restart policy.
-// Development keeps the legacy open AP. Production must pass the stable,
-// device-unique 8-63 character WPA password printed on the device label.
+// FLOVA_SETUP_PASSWORD is optional; omitting it leaves the setup AP open.
+// For production, pass a device-unique 8-63 character WPA label password.
 FlovaUniversalEsp32 device;
 
 void setup() {

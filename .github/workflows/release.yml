@@ -78,7 +78,7 @@ jobs:
           scripts/check_sdk_release.sh "$RUNNER_TEMP/flova-sdk-check"
 
       - name: Store SDK package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: flova-sdk-${{ steps.version.outputs.version }}
           path: ${{ runner.temp }}/flova-sdk-check/FlovaSDK.tar.gz
@@ -107,7 +107,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
       - name: Download SDK package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: flova-sdk-${{ needs.validate.outputs.version }}
           path: ${{ runner.temp }}/flova-sdk-artifact
@@ -118,7 +118,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/flova-sdk-artifact/FlovaSDK.tar.gz" -C "$RUNNER_TEMP/FlovaSDK"
 
       - name: Compile Arduino example
-        uses: arduino/compile-sketches@v1
+        uses: arduino/compile-sketches@3f3921bad94c706a153e6d7294445b49d7f76a63 # v1
         with:
           fqbn: ${{ matrix.fqbn }}
           platforms: |
@@ -157,7 +157,7 @@ jobs:
           pio --version
 
       - name: Download SDK package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: flova-sdk-${{ needs.validate.outputs.version }}
           path: ${{ runner.temp }}/flova-sdk-artifact

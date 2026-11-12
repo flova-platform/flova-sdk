@@ -124,7 +124,8 @@ firmware یونیورسال را در پروژه خودتان build و upload ک
 #include <Arduino.h>
 #include <FlovaUniversalEsp32.h>
 
-FlovaUniversalEsp32 device;
+// اختیاری: نبود رمز، شبکهٔ راه‌اندازی را باز نگه می‌دارد.
+FlovaUniversalEsp32 device(FLOVA_SETUP_PASSWORD);
 
 void setup() {
   Serial.begin(115200);

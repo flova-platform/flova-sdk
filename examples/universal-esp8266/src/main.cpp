@@ -4,8 +4,8 @@
 // No-code universal firmware. It intentionally owns the whole board
 // lifecycle: SoftAP provisioning, Wi-Fi credentials, dynamic datastream
 // configuration, universal GPIO mappings, OTA, and automatic restart policy.
-// Development keeps the legacy open AP. Production must pass the stable,
-// device-unique 8-63 character WPA password printed on the device label.
+// FLOVA_SETUP_PASSWORD is optional; omitting it leaves the setup AP open.
+// For production, pass a device-unique 8-63 character WPA label password.
 FlovaUniversalEsp8266 device;
 
 void setup() {

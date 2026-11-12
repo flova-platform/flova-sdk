@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <FlovaConfiguration.h>
 #include <FlovaProvisioningAdapter.h>
+#include <FlovaProvisioningSecurity.h>
 #include <FlovaSoftApPortal.h>
 #include <FlovaWifiProvisioning.h>
 #include <FlovaEsp32Services.h>
@@ -13,7 +14,7 @@
 class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
  public:
   explicit FlovaEsp32Provisioning(FlovaEsp32Storage& storage,
-                                  const char* setupPassword = nullptr)
+                                  const char* setupPassword = FLOVA_SETUP_PASSWORD)
       : storage_(storage), setupPassword_(setupPassword) {}
 
   ~FlovaEsp32Provisioning() override { delete setup_; }
@@ -31,6 +32,7 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
   }
 
   bool startProvisioning() override {
+    if (!flova::validSetupPassword(setupPassword_)) return false;
     stopProvisioning();
     if (!storage_.remove("wifi")) return false;
     setup_ = new (std::nothrow) Setup;
@@ -43,10 +45,6 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
     char ssid[32] = {};
     snprintf(ssid, sizeof(ssid), "Flova-Setup-%08lx",
              static_cast<unsigned long>(ESP.getEfuseMac()));
-    if (setupPassword_) {
-      const size_t length = strlen(setupPassword_);
-      if (length < 8 || length > 63) { stopProvisioning(); return false; }
-    }
     if (!WiFi.softAP(ssid, setupPassword_)) { stopProvisioning(); return false; }
     setup_->server.begin();
     provisioning_ = true;

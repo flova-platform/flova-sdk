@@ -8,6 +8,7 @@
 #include <ESP8266WiFi.h>
 #include <FlovaConfiguration.h>
 #include <FlovaProvisioningAdapter.h>
+#include <FlovaProvisioningSecurity.h>
 #include <FlovaSoftApPortal.h>
 #include <FlovaWifiProvisioning.h>
 #include <FlovaEsp8266Services.h>
@@ -15,7 +16,7 @@
 class FlovaEsp8266Provisioning : public FlovaProvisioningAdapter {
  public:
   explicit FlovaEsp8266Provisioning(FlovaEsp8266Storage& storage,
-                                    const char* setupPassword = nullptr)
+                                    const char* setupPassword = FLOVA_SETUP_PASSWORD)
       : storage_(storage), setupPassword_(setupPassword) {}
 
   ~FlovaEsp8266Provisioning() override { stopProvisioning(); }
@@ -33,6 +34,7 @@ class FlovaEsp8266Provisioning : public FlovaProvisioningAdapter {
   }
 
   bool startProvisioning() override {
+    if (!flova::validSetupPassword(setupPassword_)) return false;
     stopProvisioning();
     if (!storage_.remove("wifi")) return false;
     setup_ = new (std::nothrow) Setup;
@@ -47,10 +49,6 @@ class FlovaEsp8266Provisioning : public FlovaProvisioningAdapter {
     char ssid[32] = {};
     FLOVA_FORMAT(ssid, sizeof(ssid), "Flova-Setup-%06lx",
              static_cast<unsigned long>(ESP.getChipId()));
-    if (setupPassword_) {
-      const size_t length = strlen(setupPassword_);
-      if (length < 8 || length > 63) { stopProvisioning(); return false; }
-    }
     if (!WiFi.softAP(ssid, setupPassword_, 1, false, 4)) { stopProvisioning(); return false; }
     setup_->server.begin();
     provisioning_ = true;

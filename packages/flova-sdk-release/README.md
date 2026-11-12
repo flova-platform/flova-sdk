@@ -15,7 +15,8 @@ In Arduino IDE, select an ESP32 board, install `FlovaSDK`, and use:
 #include <Arduino.h>
 #include <FlovaUniversalEsp32.h>
 
-FlovaUniversalEsp32 device;
+// Optional: define FLOVA_SETUP_PASSWORD with the device-unique label password.
+FlovaUniversalEsp32 device(FLOVA_SETUP_PASSWORD);
 
 void setup() {
   Serial.begin(115200);
@@ -60,3 +61,14 @@ Link. See the [main MQTT example](../../README.md#mqtt-transport) and the
 
 The canonical source is maintained in
 [`flova-platform/flova-sdk`](https://github.com/flova-platform/flova-sdk).
+
+`FLOVA_SETUP_PASSWORD` is optional and defaults to `nullptr` (an open setup AP).
+For protected setup, define it before including the SDK, or pass an 8–63
+character WPA password to the universal constructor. A supplied password must
+meet that length limit. Production should use device-unique passwords.
+BLE variants require device-unique
+proof of possession through their constructor or
+`FLOVA_SETUP_PROOF_OF_POSSESSION` (1–64 characters). Do not ship shared setup
+credentials. `FLOVA_ALLOW_UNAUTHENTICATED_PROVISIONING=1` explicitly enables
+BLE setup without proof of possession for local development only, never
+production. An open SoftAP does not require that flag.

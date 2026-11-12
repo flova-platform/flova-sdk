@@ -76,6 +76,18 @@ target_include_directories(flova-lifecycle-test PRIVATE
   test/host/arduino-shim packages/flova-arduino/include)
 target_link_libraries(flova-lifecycle-test PRIVATE flova-core)
 enable_testing()
+add_executable(flova-esp8266-ota-writer-test test/host/test_flova_esp8266_ota_writer.cpp)
+target_include_directories(flova-esp8266-ota-writer-test PRIVATE packages/flova-esp8266/include)
+add_test(NAME flova-esp8266-ota-writer-test COMMAND flova-esp8266-ota-writer-test)
+foreach(mode IN ITEMS production development)
+  set(target flova-provisioning-security-${mode}-test)
+  add_executable(${target} test/host/test_flova_provisioning_security.cpp)
+  target_include_directories(${target} PRIVATE packages/flova-arduino/include)
+  if(mode STREQUAL "development")
+    target_compile_definitions(${target} PRIVATE FLOVA_ALLOW_UNAUTHENTICATED_PROVISIONING=1)
+  endif()
+  add_test(NAME ${target} COMMAND ${target})
+endforeach()
 add_executable(flova-hardware-test test/host/test_flova_hardware.cpp)
 target_include_directories(flova-hardware-test PRIVATE
   test/host/arduino-shim packages/flova-arduino/include

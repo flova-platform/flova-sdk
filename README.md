@@ -165,6 +165,20 @@ void loop() { device.run(); }
 
 Use an ESP32 board. Arduino IDE or PlatformIO will upload the complete image.
 
+`FLOVA_SETUP_PASSWORD` is optional and defaults to `nullptr`, leaving the
+setup SoftAP open. To protect setup, supply a device-unique WPA password
+(8–63 characters) to the universal constructor or define `FLOVA_SETUP_PASSWORD`
+before including the SDK. A supplied password must meet that length limit.
+For production, print the unique password on the device label; do not
+ship a shared password. BLE compositions require a device-unique
+proof of possession via their constructor or `FLOVA_SETUP_PROOF_OF_POSSESSION`
+(1–64 characters).
+
+For local development only, defining
+`FLOVA_ALLOW_UNAUTHENTICATED_PROVISIONING=1` explicitly allows BLE setup
+without proof of possession. Never enable it in production. This flag is not
+needed for an open SoftAP.
+
 For ESP8266, use `<FlovaUniversalEsp8266.h>` with Arduino IDE or PlatformIO.
 See [transport behavior](packages/TRANSPORT.md) for ESP8266 timing and memory requirements.
 
