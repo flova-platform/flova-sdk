@@ -5,13 +5,13 @@
     <a href="README.md">English</a> ·
     <a href="https://docs.flova.ir">مستندات</a> ·
     <a href="examples">نمونه‌ها</a> ·
-    <a href="https://github.com/flova-platform/flova-firmware/tags">نسخه‌های SDK</a>
+    <a href="https://github.com/flova-platform/flova-sdk/tags">نسخه‌های SDK</a>
   </p>
   <p>
-    <a href="https://github.com/flova-platform/flova-firmware/tags"><img alt="نسخه SDK" src="https://img.shields.io/github/v/tag/flova-platform/flova-firmware?filter=v*&amp;sort=semver&amp;style=flat-square&amp;label=SDK"></a>
+    <a href="https://github.com/flova-platform/flova-sdk/tags"><img alt="نسخه SDK" src="https://img.shields.io/github/v/tag/flova-platform/flova-sdk?filter=v*&amp;sort=semver&amp;style=flat-square&amp;label=SDK"></a>
     <a href="https://registry.platformio.org/libraries/flova-platform/FlovaSDK"><img alt="PlatformIO Registry" src="https://badges.registry.platformio.org/packages/flova-platform/library/FlovaSDK.svg"></a>
     <a href="https://github.com/arduino/library-registry/pull/9043"><img alt="Arduino Library Manager" src="https://img.shields.io/badge/Arduino%20Library%20Manager-FlovaSDK-00878F?style=flat-square&amp;logo=arduino&amp;logoColor=white"></a>
-    <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/github/license/flova-platform/flova-firmware?style=flat-square"></a>
+    <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/github/license/flova-platform/flova-sdk?style=flat-square"></a>
   </p>
 </div>
 
@@ -145,8 +145,8 @@ void loop() { device.run(); }
 - [مستندات](https://docs.flova.ir)
 - [رجیستری PlatformIO](https://registry.platformio.org/libraries/flova-platform/FlovaSDK)
 - [نمونه‌ها](examples)
-- [نسخه‌های SDK](https://github.com/flova-platform/flova-firmware/tags)
-- [گزارش مشکل](https://github.com/flova-platform/flova-firmware/issues)
+- [نسخه‌های SDK](https://github.com/flova-platform/flova-sdk/tags)
+- [گزارش مشکل](https://github.com/flova-platform/flova-sdk/issues)
 
 ## مجوز
 

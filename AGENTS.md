@@ -1,4 +1,4 @@
-# Flova firmware repository guide
+# Flova SDK repository guide
 
 This repository contains the portable Flova device SDK, Arduino services,
 ESP32/ESP8266 board packages, firmware examples, and the bounded Flova Link

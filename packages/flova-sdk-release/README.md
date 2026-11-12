@@ -59,4 +59,4 @@ Link. See the [main MQTT example](../../README.md#mqtt-transport) and the
 [complete example](../../examples/custom-mqtt).
 
 The canonical source is maintained in
-[`flova-platform/flova-firmware`](https://github.com/flova-platform/flova-firmware).
+[`flova-platform/flova-sdk`](https://github.com/flova-platform/flova-sdk).

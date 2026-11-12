@@ -4,13 +4,13 @@
   "version": "0.3.12",
   "description": "Flova Arduino services and bounded Device Link transport",
   "keywords": ["flova", "iot", "device-link", "websocket"],
-  "homepage": "https://github.com/flova-platform/flova-firmware",
+  "homepage": "https://github.com/flova-platform/flova-sdk",
   "repository": {
     "type": "git",
-    "url": "https://github.com/flova-platform/flova-firmware.git"
+    "url": "https://github.com/flova-platform/flova-sdk.git"
   },
   "authors": [
-    {"name": "Flova", "url": "https://github.com/flova-platform/flova-firmware", "maintainer": true}
+    {"name": "Flova", "url": "https://github.com/flova-platform/flova-sdk", "maintainer": true}
   ],
   "license": "MIT",
   "frameworks": ["arduino"],

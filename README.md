@@ -5,13 +5,13 @@
     <a href="README_FA.md">فارسی</a> ·
     <a href="https://docs.flova.ir">Documentation</a> ·
     <a href="examples">Examples</a> ·
-    <a href="https://github.com/flova-platform/flova-firmware/tags">SDK versions</a>
+    <a href="https://github.com/flova-platform/flova-sdk/tags">SDK versions</a>
   </p>
   <p>
-    <a href="https://github.com/flova-platform/flova-firmware/tags"><img alt="SDK version" src="https://img.shields.io/github/v/tag/flova-platform/flova-firmware?filter=v*&amp;sort=semver&amp;style=flat-square&amp;label=SDK"></a>
+    <a href="https://github.com/flova-platform/flova-sdk/tags"><img alt="SDK version" src="https://img.shields.io/github/v/tag/flova-platform/flova-sdk?filter=v*&amp;sort=semver&amp;style=flat-square&amp;label=SDK"></a>
     <a href="https://registry.platformio.org/libraries/flova-platform/FlovaSDK"><img alt="PlatformIO Registry" src="https://badges.registry.platformio.org/packages/flova-platform/library/FlovaSDK.svg"></a>
     <a href="https://github.com/arduino/library-registry/pull/9043"><img alt="Arduino Library Manager" src="https://img.shields.io/badge/Arduino%20Library%20Manager-FlovaSDK-00878F?style=flat-square&amp;logo=arduino&amp;logoColor=white"></a>
-    <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/github/license/flova-platform/flova-firmware?style=flat-square"></a>
+    <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/github/license/flova-platform/flova-sdk?style=flat-square"></a>
   </p>
 </div>
 
@@ -173,8 +173,8 @@ See [transport behavior](packages/TRANSPORT.md) for ESP8266 timing and memory re
 - [Documentation](https://docs.flova.ir)
 - [PlatformIO Registry](https://registry.platformio.org/libraries/flova-platform/FlovaSDK)
 - [Examples](examples)
-- [SDK versions](https://github.com/flova-platform/flova-firmware/tags)
-- [Report an issue](https://github.com/flova-platform/flova-firmware/issues)
+- [SDK versions](https://github.com/flova-platform/flova-sdk/tags)
+- [Report an issue](https://github.com/flova-platform/flova-sdk/issues)
 
 ## License
 

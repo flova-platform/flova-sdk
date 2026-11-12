@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(flova_firmware_core LANGUAGES C CXX)
+project(flova_sdk_core LANGUAGES C CXX)
 include(GNUInstallDirs)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)

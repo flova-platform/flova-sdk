@@ -47,7 +47,7 @@ matches both package manifests, publishes PlatformIO, replaces the generated
 `library-release` contents, and creates the immutable Arduino tag `vX.Y.Z`.
 ```
 
-Submit `https://github.com/flova-platform/flova-firmware` to the Arduino
+Submit `https://github.com/flova-platform/flova-sdk` to the Arduino
 Library Registry. Arduino Library Manager metadata supports ESP32 and ESP8266.
 
 Do not move or replace a published version tag. Release a new version for any

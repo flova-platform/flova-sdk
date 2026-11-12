@@ -4,13 +4,13 @@
   "version": "0.3.12",
   "description": "Flova ESP8266 board package with plug-in and universal firmware entry points",
   "keywords": ["flova", "iot", "esp8266", "arduino"],
-  "homepage": "https://github.com/flova-platform/flova-firmware",
+  "homepage": "https://github.com/flova-platform/flova-sdk",
   "repository": {
     "type": "git",
-    "url": "https://github.com/flova-platform/flova-firmware.git"
+    "url": "https://github.com/flova-platform/flova-sdk.git"
   },
   "authors": [
-    {"name": "Flova", "url": "https://github.com/flova-platform/flova-firmware", "maintainer": true}
+    {"name": "Flova", "url": "https://github.com/flova-platform/flova-sdk", "maintainer": true}
   ],
   "license": "MIT",
   "frameworks": ["arduino"],
