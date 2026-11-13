@@ -163,13 +163,23 @@ Recommended behavior:
 - command/RPC response: preserve until timeout or delivery policy resolves it
 - critical durable event: move to bounded persistent storage
 
+The last policy applies only to an explicitly requested durability contract;
+queue saturation alone is not permission to introduce a flash journal. See
+`storage.md` for write budgets and failure semantics.
+
 Network loss must never cause unlimited RAM growth.
 
 ## Durable storage
 
+Persistent storage is optional, disabled by default, and explicitly configured
+by the developer. Keep default mutable runtime state in bounded RAM; do not use
+storage as an automatic overflow mechanism. See `storage.md` for disabled-mode
+behavior and operations that must reject unavailable durability.
+
 RAM is not durable backlog storage.
 
 Use a bounded flash journal or flash ring when offline persistence is required.
+Do not add offline persistence for replaceable telemetry by default.
 
 Define:
 
@@ -237,6 +247,13 @@ Expose deltas against the previous accepted build.
 
 Unexpected RAM or flash growth must be investigated and justified.
 
+Measure the affected production feature profiles, not only universal examples.
+Disabled optional features must remove their buffers and exclusive dependencies
+as well as executable code. Keep immutable data in target-appropriate flash/ROM;
+do not spend writable RAM to satisfy the phrase "RAM-first." Use linker maps to
+explain growth, and retain partition/OTA-slot checks. Budget changes require an
+explicit reviewed tradeoff, not automatic rounding to accommodate a regression.
+
 ## ESP8266 acceptance and resource lifetime
 
 Use `packages/MEMORY.md` and `scripts/check_flova_memory.py` for the current
@@ -284,7 +301,16 @@ per telemetry message. Include these heap objects in the phase budget: moving
 a buffer out of BSS is not itself a reduction in peak memory. The stock core
 frees X509 after handshake but retains the TLS secondary stack.
 
-ESP8266 stream descriptors are verified storage records with one bounded cache.
-Keep callbacks and live values resident; registration belongs in setup after
-board services exist. Missing descriptors must fail closed. Slot handles and
-revision-aware ACKs must survive cache eviction and delayed responses.
+The current ESP8266 implementation uses verified storage-backed stream
+descriptors with one bounded cache. This is an existing RAM/I/O tradeoff, not a
+preferred pattern or proof of RAM-first acceptance. Cache misses can reach
+storage during safety validation; alternating streams must be included in the
+I/O and latency evidence. Do not expand this pattern without a measured exception
+under `storage.md`. A future change should keep hot safety/routing metadata
+resident without copying every cold key or descriptor into RAM.
+
+Until separately redesigned and verified, preserve the existing behavior:
+callbacks and live values remain resident; registration belongs in setup after
+board services exist; missing descriptors fail closed. Slot handles and
+revision-aware ACKs must survive cache eviction and delayed responses. Do not
+claim the current implementation meets a zero-storage-I/O hot-path contract.

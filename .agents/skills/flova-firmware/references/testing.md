@@ -145,3 +145,54 @@ keys/text values, bounded delivery fairness, stale ACKs and failed policy writes
 Retest pause/checkpoint/restore failures, callback borrows during disconnect,
 and the exported SDK whenever phase ownership changes. Report all four
 `--stock-dram` phases; never treat linked-size savings as runtime acceptance.
+
+## Storage traffic and latency regression checks
+
+Use a counting storage test double through the existing storage interface;
+exercise the real runtime, not a simplified implementation. Count reads,
+writes, removals, and bytes, plus backend commits where observable. Reset
+counters after initialization/restore so boot work cannot hide runtime I/O.
+
+For affected paths, prove:
+
+- the default RAM-only profile performs no storage initialization, mount, read,
+  write, remove, commit, erase, format, or implicit platform credential save;
+- storage-backed capabilities require explicit developer configuration, disabled
+  modes exclude optional buffers/dependencies, and insufficient RAM never causes
+  automatic spill to persistent storage;
+- RAM-only reset behavior is documented and operations requiring unavailable
+  durability fail before effects or durable acknowledgement;
+- ordinary nonpersistent processing has zero storage reads/writes;
+- alternating streams, including numeric safety validation, cannot hide cache
+  thrashing behind repeated access to a single stream;
+- unchanged settings and repeated registration do not cause redundant commits
+  where verified persisted state already matches;
+- deferred writes meet maximum dirty age under continuous updates, timer
+  rollover, and fair servicing of multiple dirty streams;
+- failures retain correct dirty/recovery state and have bounded retry frequency;
+- rejected hardware writes leave authoritative and durable state unchanged;
+- full storage and interrupted durable writes/promotion/checkpoints preserve
+  the required recovery and acknowledgement guarantees.
+
+The current ESP8266 descriptor cache is a known exception, not evidence that
+zero-I/O acceptance passes. Record observed operation counts and the exception;
+do not weaken assertions or claim an unimplemented RAM-first redesign. New
+RAM-first paths must have regression tests enforcing their contract.
+
+On hardware, record storage operation latency, maximum loop gap, deadline
+misses, and watchdog behavior under normal/nearly-full storage, maintenance,
+bursts, and relevant reconnect/OTA workloads. Distinguish logical traffic from
+physical program/erase counts; host tests cannot establish timing or endurance.
+Use `storage.md` for the required budgets and evidence. Missing hardware evidence
+must remain explicitly unverified; do not manipulate devices for build-only work.
+
+## Production image regression checks
+
+For affected production profiles, compare before/after builds with the same
+toolchain and feature settings. Report image, static DRAM, IRAM, stack, and
+phase peak-heap evidence separately; unavailable runtime evidence stays
+unverified. Inspect linker maps for unexplained growth or new dependencies.
+Verify disabled optional features remove their buffers and exclusive linked
+dependencies. Run existing resource gates and actual partition/OTA-slot fit
+checks; universal/probe compilation alone is insufficient. Never increase a
+ceiling merely to make validation green.
