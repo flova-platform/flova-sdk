@@ -320,6 +320,7 @@ class FlovaEsp8266Identity final : public FlovaBoardIdentity {
   }
 
   const char* firmwareTarget() const override { return firmwareTarget_; }
+  uint32_t resetReason() const override { return ESP.getResetInfoPtr()->reason; }
 
  private:
   const char* firmwareTarget_;

@@ -107,6 +107,16 @@ schedule-renew = [renew-generation: generation, renew-revision: uint32]
 time-request = [time-request-id: uint64, time-request-monotonic-ms: uint64]
 config-ack = [ack-generation: generation, ack-sequence: sequence, ack-status: 0..255, ack-reason: error-code]
 
+; 0x19 bounded, replayable lifecycle transitions. No free-text payloads or secrets.
+; code: boot=0, lifecycle=1, network=2, link=3, ready=4, config=5,
+; error=6, maintenance=7, diagnostic-counter-total=8, connection-attempt-count=9,
+; connection-failure-count=10. Boot detail is the platform reset reason.
+lifecycle-report = [log-boot-id: uint64, log-sequence: uint32, log-uptime-ms: uint64, log-code: 0..10, log-detail: uint32, log-generation: generation, log-dropped: uint32]
+; 0x2d opt-in advertisement in response to PING with reserved message ID
+; UINT64_MAX. Ordinary pings receive only PONG, keeping old firmware compatible.
+; New SDKs never upload logs to an Engine that did not advertise support.
+lifecycle-ready = []
+
 ; 0x20..0x27 Engine-to-device hot-path and reliability messages.
 command = [command-generation: generation, command-id: uuid, command-compact-id: compact-id, typed-value-fields, command-desired-version: uint32, command-expires-at-utc-ms: uint64, command-correlation-id: correlation-id]
 ingestion-ack = []

@@ -96,6 +96,8 @@ static bool decode_ota_desired(zcbor_state_t *state, struct ota_desired *result)
 static bool decode_config_desired(zcbor_state_t *state, struct config_desired *result);
 static bool decode_ingestion_ack(zcbor_state_t *state, void *result);
 static bool decode_command(zcbor_state_t *state, struct command *result);
+static bool decode_lifecycle_ready(zcbor_state_t *state, void *result);
+static bool decode_lifecycle_report(zcbor_state_t *state, struct lifecycle_report *result);
 static bool decode_config_ack(zcbor_state_t *state, struct config_ack *result);
 static bool decode_time_request(zcbor_state_t *state, struct time_request *result);
 static bool decode_schedule_renew(zcbor_state_t *state, struct schedule_renew *result);
@@ -1356,6 +1358,39 @@ static bool decode_command(
 	return res;
 }
 
+static bool decode_lifecycle_ready(
+		zcbor_state_t *state, void *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_decode(state) && zcbor_list_end_decode(state))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_lifecycle_report(
+		zcbor_state_t *state, struct lifecycle_report *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_decode(state) && ((((zcbor_uint64_decode(state, (&(*result).lifecycle_report_log_boot_id))))
+	&& ((zcbor_uint64_decode(state, (&(*result).lifecycle_report_log_sequence)))
+	&& ((((((*result).lifecycle_report_log_sequence <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((zcbor_uint64_decode(state, (&(*result).lifecycle_report_log_uptime_ms))))
+	&& ((zcbor_uint64_decode(state, (&(*result).lifecycle_report_log_code)))
+	&& ((((*result).lifecycle_report_log_code <= 10)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((zcbor_uint64_decode(state, (&(*result).lifecycle_report_log_detail)))
+	&& ((((((*result).lifecycle_report_log_detail <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((zcbor_uint64_decode(state, (&(*result).lifecycle_report_log_generation)))
+	&& ((((((((*result).lifecycle_report_log_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((zcbor_uint64_decode(state, (&(*result).lifecycle_report_log_dropped)))
+	&& ((((((*result).lifecycle_report_log_dropped <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
 static bool decode_config_ack(
 		zcbor_state_t *state, struct config_ack *result)
 {
@@ -1885,6 +1920,30 @@ int cbor_decode_config_ack(
 
 	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
 		(zcbor_decoder_t *)decode_config_ack, sizeof(states) / sizeof(zcbor_state_t), 1);
+}
+
+
+int cbor_decode_lifecycle_report(
+		const uint8_t *payload, size_t payload_len,
+		struct lifecycle_report *result,
+		size_t *payload_len_out)
+{
+	zcbor_state_t states[3];
+
+	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
+		(zcbor_decoder_t *)decode_lifecycle_report, sizeof(states) / sizeof(zcbor_state_t), 1);
+}
+
+
+int cbor_decode_lifecycle_ready(
+		const uint8_t *payload, size_t payload_len,
+		void *result,
+		size_t *payload_len_out)
+{
+	zcbor_state_t states[3];
+
+	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
+		(zcbor_decoder_t *)decode_lifecycle_ready, sizeof(states) / sizeof(zcbor_state_t), 1);
 }
 
 

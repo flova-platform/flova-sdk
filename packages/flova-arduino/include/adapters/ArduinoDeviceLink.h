@@ -235,6 +235,11 @@ class ArduinoDeviceLink final {
   }
 
   bool resourceRecoveryRequired() const { return resourceUnavailable_; }
+  bool takeConnectionAttemptFailure() {
+    const bool failed = connectionAttemptFailed_;
+    connectionAttemptFailed_ = false;
+    return failed;
+  }
 
   void setConfigurationGeneration(uint32_t generation) {
     configurationGeneration_ = generation;
@@ -287,6 +292,21 @@ class ArduinoDeviceLink final {
       result.command_result_error_result_error_version = message.desiredVersion;
     }
     return sendEncoded(0x12, message.messageId, value, cbor_encode_command_result);
+  }
+
+  bool lifecycleLogsSupported() const { return lifecycleSupported_; }
+
+  bool publishLifecycle(const FlovaLinkLifecycleReport& message) {
+    if (!connected() || !lifecycleSupported_) return false;
+    struct lifecycle_report value = {};
+    value.lifecycle_report_log_boot_id = message.bootId;
+    value.lifecycle_report_log_sequence = message.sequence;
+    value.lifecycle_report_log_uptime_ms = message.uptimeMs;
+    value.lifecycle_report_log_code = message.code;
+    value.lifecycle_report_log_detail = message.detail;
+    value.lifecycle_report_log_generation = message.generation;
+    value.lifecycle_report_log_dropped = message.dropped;
+    return sendEncoded(0x19, message.messageId, value, cbor_encode_lifecycle_report);
   }
 
   bool publishHeartbeat(const FlovaLinkHeartbeat& message) {
@@ -463,6 +483,10 @@ class ArduinoDeviceLink final {
         disconnect();
       }
       return;
+    }
+    if (active_ && authenticated_ && !bindingPending_ && lifecycleProbePending_ && !platform_.linkWriteBusy() && !websocket_.controlPending()) {
+      const uint8_t empty = 0;
+      if (sendEncoded(0x04, UINT64_MAX, empty, encodeLifecycleProbe)) lifecycleProbePending_ = false;
     }
     if (active_ && bindingPending_) {
       if (bindingBatchCount_) {
@@ -810,11 +834,17 @@ class ArduinoDeviceLink final {
     bootstrapErrorPending_ = true;
   }
 
+  static int encodeLifecycleProbe(uint8_t* output, size_t length, const uint8_t* value, size_t* written) {
+    return cbor_encode_ping(output, length, value, written);
+  }
+
   void handleFrame(const flova::link::FrameView& frame) {
     if (frame.messageType == 0x02) {
       struct auth_ok value = {};
       if (decode(frame, value, cbor_decode_auth_ok, cbor_encode_auth_ok)) {
         authenticated_ = true;
+        lifecycleSupported_ = false;
+        lifecycleProbePending_ = true;
         bindingPending_ = bindingCount_ != 0;
         bindingOffset_ = bindingBatchCount_ = 0;
       } else {
@@ -825,6 +855,7 @@ class ArduinoDeviceLink final {
     }
     if (frame.messageType == 0x0a && authenticated_) return handleDatastreamBound(frame);
     if (frame.messageType == 0x03) {
+      connectionAttemptFailed_ = true;
       zcbor_string reason = {};
       if (decode(frame, reason, cbor_decode_auth_error, cbor_encode_auth_error)) {
         FLOVA_SERIAL_PRINTF_ERROR("[flova] Link auth rejected reason=%.*s\n",
@@ -863,6 +894,11 @@ class ArduinoDeviceLink final {
       return;
     }
     if (!authenticated_ && !bootstrap_) return;
+    if (frame.messageType == 0x2d && authenticated_) {
+      // The empty schema is canonical CBOR 0x80. No payload is retained.
+      lifecycleSupported_ = frame.payloadLength == 1 && frame.payload[0] == 0x80;
+      return;
+    }
     if (frame.messageType == 0x20) return handleCommand(frame);
     if (frame.messageType == 0x21) {
       // INGESTION_ACK has an empty payload; the frame id identifies the
@@ -1491,6 +1527,8 @@ class ArduinoDeviceLink final {
   uint64_t bindingRequestId_ = 0;
   DatastreamId bindingIds_[kMaximumDatastreamBindings] = {};
   uint32_t configurationGeneration_ = 0;
+  bool lifecycleSupported_ = false;
+  bool lifecycleProbePending_ = false;
   flova::HardwareCapabilities hardwareCapabilities_;
   FlovaMessageCallback callback_ = nullptr;
   FlovaMessageCallbackWithContext callbackWithContext_ = nullptr;

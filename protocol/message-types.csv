@@ -18,6 +18,7 @@ type,name,direction,payload_type,reliability
 0x16,schedule_renew,device_to_engine,schedule-renew,durable
 0x17,time_request,device_to_engine,time-request,best_effort
 0x18,config_ack,device_to_engine,config-ack,transactional
+0x19,lifecycle_report,device_to_engine,lifecycle-report,durable
 0x20,command,engine_to_device,command,durable
 0x21,ingestion_ack,engine_to_device,ingestion-ack,durable
 0x22,config_desired,engine_to_device,config-desired,durable
@@ -31,4 +32,5 @@ type,name,direction,payload_type,reliability
 0x2a,config_end,engine_to_device,config-end,transactional
 0x2b,schedule_record,engine_to_device,schedule-record-message,transactional
 0x2c,schedule_end,engine_to_device,schedule-end,transactional
+0x2d,lifecycle_ready,engine_to_device,lifecycle-ready,session
 0x7f,error,bidirectional,error,session

@@ -23,6 +23,17 @@ static const size_t FLOVA_LINK_RECORD_BYTES = 448;
 // the final 512-byte frame invariant.
 static const uint8_t FLOVA_LINK_MAX_STATE_READINGS = 4;
 
+struct FlovaLinkLifecycleReport {
+  uint64_t messageId;
+  uint64_t bootId;
+  uint64_t uptimeMs;
+  uint32_t sequence;
+  uint32_t detail;
+  uint32_t generation;
+  uint32_t dropped;
+  uint8_t code;
+};
+
 enum class FlovaLinkMessageType : uint8_t {
   State,
   Command,

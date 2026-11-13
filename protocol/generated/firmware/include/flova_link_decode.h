@@ -136,6 +136,18 @@ int cbor_decode_config_ack(
 		size_t *payload_len_out);
 
 
+int cbor_decode_lifecycle_report(
+		const uint8_t *payload, size_t payload_len,
+		struct lifecycle_report *result,
+		size_t *payload_len_out);
+
+
+int cbor_decode_lifecycle_ready(
+		const uint8_t *payload, size_t payload_len,
+		void *result,
+		size_t *payload_len_out);
+
+
 int cbor_decode_command(
 		const uint8_t *payload, size_t payload_len,
 		struct command *result,

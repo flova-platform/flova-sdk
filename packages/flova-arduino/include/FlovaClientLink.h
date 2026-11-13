@@ -38,6 +38,11 @@ class FlovaClientLink : public flova::Link {
   virtual bool publishConfigurationState(
       const FlovaLinkConfigurationState& state) = 0;
   virtual bool publishHeartbeat(const FlovaLinkHeartbeat& heartbeat) = 0;
+  virtual bool lifecycleLogsSupported() const { return false; }
+  virtual bool publishLifecycle(const FlovaLinkLifecycleReport&) { return false; }
+  virtual bool takeLifecycleAck(uint64_t) { return false; }
+  virtual uint32_t connectionAttempts() const { return 0; }
+  virtual uint32_t connectionFailures() const { return 0; }
   virtual bool publishScheduleStatus(const FlovaLinkScheduleStatus& status) = 0;
   virtual bool publishScheduleRenew(const FlovaLinkScheduleStatus& status) = 0;
   virtual bool takeOtaOffer(FlovaLinkOtaOffer& offer) = 0;

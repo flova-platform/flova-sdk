@@ -11,7 +11,8 @@
 #include <vector>
 
 HardwareSerial Serial;
-uint32_t millis() { return 1; }
+static uint32_t testNow = 1;
+uint32_t millis() { return testNow; }
 unsigned long micros() { return 1; }
 void delay(unsigned long) {}
 void pinMode(uint8_t, uint8_t) {}
@@ -46,7 +47,7 @@ class TestStorage final : public flova::Storage {
 
 class TestClock final : public flova::Clock {
  public:
-  uint64_t milliseconds() const override { return 1; }
+  uint64_t milliseconds() const override { return testNow; }
 };
 
 class TestLogger final : public flova::Logger {
@@ -133,6 +134,16 @@ class TestLink final : public FlovaClientLink {
   bool publishConfigurationState(
       const FlovaLinkConfigurationState&) override { return true; }
   bool publishHeartbeat(const FlovaLinkHeartbeat&) override { return true; }
+  bool lifecycleLogsSupported() const override { return logSupport; }
+  bool publishLifecycle(const FlovaLinkLifecycleReport& report) override {
+    logReports.push_back(report);
+    return true;
+  }
+  bool takeLifecycleAck(uint64_t id) override {
+    if (!id || id != logAck) return false;
+    logAck = 0;
+    return true;
+  }
   bool publishScheduleStatus(const FlovaLinkScheduleStatus&) override {
     return true;
   }
@@ -187,6 +198,9 @@ class TestLink final : public FlovaClientLink {
   }
 
   bool online = false;
+  bool logSupport = false;
+  uint64_t logAck = 0;
+  std::vector<FlovaLinkLifecycleReport> logReports;
   bool maintenance = false;
   bool maintenanceReadyNow = false;
   bool maintenanceFailedNow = false;
@@ -357,9 +371,49 @@ void verifyConfigurationKeyIndex() {
   verifyIndexedRestore({"costarring", "liquid", "costarring"}, false);
 }
 
+void verifyOfflineLifecycleReplay() {
+  TestStorage storage;
+  TestLink link;
+  TestClock clock;
+  TestLogger logger;
+  TestEntropy entropy;
+  TestIdentity identity;
+  TestNetwork network;
+  TestTlsClock tlsClock;
+  TestProvisioning provisioning;
+  TestHardware hardware;
+  FlovaClient client(link, provisioning, network, tlsClock, identity, storage,
+                     clock, logger, entropy, hardware);
+  assert(client.begin());
+  client.run(); // no listener, network, clock, or server required for capture
+  assert(link.logReports.empty());
+  link.online = true;
+  client.run(); // older Engine: no capability advertisement
+  assert(link.logReports.empty());
+  link.logSupport = true;
+  client.run();
+  assert(link.logReports.size() == 1 && link.logReports[0].code == 0);
+  const auto boot = link.logReports[0];
+  assert(boot.sequence == 1 && boot.uptimeMs == 1 && boot.messageId);
+  testNow += 4999;
+  client.run();
+  assert(link.logReports.size() == 1);
+  testNow += 1;
+  client.run();
+  assert(link.logReports.size() == 2 && link.logReports.back().messageId == boot.messageId);
+  assert(link.logReports.back().sequence == boot.sequence);
+  link.logAck = boot.messageId;
+  client.run();
+  client.run();
+  assert(link.logReports.size() == 3 && link.logReports.back().sequence == 2);
+  assert(link.logReports.back().bootId == boot.bootId);
+  testNow = 1;
+}
+
 }  // namespace
 
 int main() {
+  verifyOfflineLifecycleReplay();
   verifyConfigurationKeyIndex();
   TestLink link;
   TestStorage storage;

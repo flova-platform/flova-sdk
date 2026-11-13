@@ -100,6 +100,9 @@ VECTORS = [
     (0x06, "bootstrap_pin_references", {0: b"t" * 32, 1: SECRET, 2: "esp-aabbcc", 3: "universal-esp8266", 4: {**CAPS, 8: True}}),
     (0x29, "config_record_symbolic", {0: 8, 1: 0, 2: {0: 0, 1: 1, 2: UUID1, 3: "analog", 4: 2, 8: {0: 2, 1: "A0"}}}),
     (0x29, "config_system_symbolic", {0: 8, 1: 1, 2: {0: 1, 2: "GPIO2", 5: "GPIO0"}}),
+    (0x19, "lifecycle_report", [123456789, 1, 42, 0, 0, 7, 0]),
+    (0x2D, "lifecycle_ready", []),
+    (0x19, "lifecycle_report_bounds", [0xFFFFFFFFFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 10, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF]),
 ]
 
 

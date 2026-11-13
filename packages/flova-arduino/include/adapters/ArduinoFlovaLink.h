@@ -23,12 +23,13 @@ class ArduinoFlovaLink : public FlovaClientLink {
   }
 
   bool beginBootstrap(const char* url, const char* token, const char* hardwareId,
-                      const char* firmwareTarget, const char* secret) {
+                       const char* firmwareTarget, const char* secret) {
+    ++connectionAttempts_;
     if (!transport_.configure(url)) return false;
     if (!ensureTransport()) return false;
     if (!enterHandshake()) return false;
     const bool started = transport_.connectBootstrap(token, hardwareId, firmwareTarget, secret);
-    if (!started) leaveHandshake();
+    if (!started) { ++connectionFailures_; transport_.takeConnectionAttemptFailure(); leaveHandshake(); }
     return started;
   }
 
@@ -103,6 +104,20 @@ class ArduinoFlovaLink : public FlovaClientLink {
   bool publishConfigurationState(
       const FlovaLinkConfigurationState& state) override {
     return transport_.publishConfigurationState(state);
+  }
+
+  bool lifecycleLogsSupported() const override { return transport_.lifecycleLogsSupported(); }
+  uint32_t connectionAttempts() const override { return connectionAttempts_; }
+  uint32_t connectionFailures() const override { return connectionFailures_; }
+  bool publishLifecycle(const FlovaLinkLifecycleReport& report) override {
+    if (!transport_.publishLifecycle(report)) return false;
+    lifecyclePendingId_ = report.messageId;
+    return true;
+  }
+  bool takeLifecycleAck(uint64_t id) override {
+    if (lifecycleAckId_ != id || !id) return false;
+    lifecycleAckId_ = 0;
+    return true;
   }
 
   bool publishHeartbeat(const FlovaLinkHeartbeat& heartbeat) override {
@@ -289,7 +304,12 @@ class ArduinoFlovaLink : public FlovaClientLink {
     if (!transport_.connected() && !transport_.connectionInProgress() &&
         static_cast<int32_t>(millis() - nextReconnectAt_) >= 0) {
       bound_ = false;
-      if (enterHandshake() && !transport_.connect()) leaveHandshake();
+      ++connectionAttempts_;
+      if (!enterHandshake() || !transport_.connect()) {
+        ++connectionFailures_;
+        transport_.takeConnectionAttemptFailure();
+        leaveHandshake();
+      }
       nextReconnectAt_ = millis() + reconnectBackoff_.next(static_cast<uint8_t>(messageNonce_));
     }
   }
@@ -379,6 +399,7 @@ class ArduinoFlovaLink : public FlovaClientLink {
   }
   void serviceTransport() {
     transport_.loop();
+    if (transport_.takeConnectionAttemptFailure()) ++connectionFailures_;
     if (handshakePaused_ && !transport_.tlsOpening()) {
       if (transport_.connectionInProgress() || transport_.connected()) {
         if (!pendingRecords_.create()) {
@@ -394,6 +415,7 @@ class ArduinoFlovaLink : public FlovaClientLink {
   void* handshakeContext_ = nullptr;
   bool handshakePaused_ = false;
   bool maintenance_ = false;
+  uint32_t connectionAttempts_ = 0, connectionFailures_ = 0;
   flova::RetryBackoff reconnectBackoff_;
   static uint32_t readNonce(FlovaEntropySource& entropy) {
     uint32_t value = 0;
@@ -524,6 +546,12 @@ class ArduinoFlovaLink : public FlovaClientLink {
       bound_ = true;
       return;
     }
+    if (inbound.type == FlovaLinkMessageType::Acknowledgement && lifecyclePendingId_ &&
+        inbound.body.acknowledgement.acknowledgedMessageId == lifecyclePendingId_) {
+      lifecycleAckId_ = lifecyclePendingId_;
+      lifecyclePendingId_ = 0;
+      return;
+    }
     if (inbound.type == FlovaLinkMessageType::Acknowledgement &&
         pendingHeartbeatId_ &&
         inbound.body.acknowledgement.acknowledgedMessageId ==
@@ -587,6 +615,8 @@ class ArduinoFlovaLink : public FlovaClientLink {
   uint32_t messageNonce_;
   static const uint32_t kHeartbeatAckTimeoutMs = 15000UL;
   uint64_t pendingHeartbeatId_ = 0;
+  uint64_t lifecyclePendingId_ = 0;
+  uint64_t lifecycleAckId_ = 0;
   uint32_t pendingHeartbeatAt_ = 0;
   bool heartbeatAckSupported_ = false;
   FlovaOtaStrategy otaStrategy_ = FlovaOtaStrategy::None;

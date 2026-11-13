@@ -14,7 +14,7 @@ python3 "$generator" code \
   --entry-types \
   auth auth-ok auth-error ping pong bootstrap-auth bootstrap-committed \
   bootstrap-error datastream-bind datastream-bound heartbeat state command-result config-reported \
-  ota-reported schedule-reported schedule-renew time-request config-ack \
+  ota-reported schedule-reported schedule-renew time-request config-ack lifecycle-report lifecycle-ready \
   command ingestion-ack config-desired ota-desired schedule-desired \
   time-response flow-control message-rejected config-begin config-record \
   config-end schedule-record-message schedule-end error \

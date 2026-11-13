@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include <FlovaDevice.h>
+#include <FlovaLifecycleLog.h>
 #include "FlovaSdkVersion.h"
 #include <FlovaConfiguration.h>
 #include <FlovaClientLink.h>
@@ -140,6 +141,12 @@ class FlovaClient {
     flovaFirmwareMetadataRuntimePointer = flovaFirmwareMetadata;
 #endif
     if (lifecycle_ != FlovaLifecycle::Idle) return false;
+    uint64_t bootId = 0;
+    for (size_t i = 0; i < sizeof(bootId); ++i) bootId = (bootId << 8) | entropy_.byte();
+    lifecycleLog_.begin(bootId);
+    lifecycleLog_.append(0, identity_.resetReason(), 0, clock_.milliseconds());
+    captureStatus(statusEventWorkspace_.previous);
+    statusSnapshotValid_ = true;
     flovaPrintStartup();
     managedProvisioning_ = allowProvisioning;
     pending_.lastError[0] = 0;
@@ -231,6 +238,7 @@ class FlovaClient {
   void run() {
     runLifecycle();
     dispatchStatusChanges();
+    drainLifecycleLog();
   }
 
 #if defined(FLOVA_EXTERNAL_CONFIGURATION_ENABLED)
@@ -488,11 +496,6 @@ class FlovaClient {
                          void* context = nullptr) {
     statusListener_ = listener;
     statusContext_ = context;
-    statusSnapshotValid_ = false;
-    if (statusListener_) {
-      captureStatus(statusEventWorkspace_.previous);
-      statusSnapshotValid_ = true;
-    }
   }
   void setRestartHandler(FlovaRestartHandler handler, void* context = nullptr) {
     restartHandler_ = handler;
@@ -549,7 +552,6 @@ class FlovaClient {
   }
 
   void dispatchStatusChanges() {
-    if (!statusListener_) return;
     captureStatus(statusEventWorkspace_.current);
     if (!statusSnapshotValid_) {
       statusEventWorkspace_.previous = statusEventWorkspace_.current;
@@ -578,8 +580,54 @@ class FlovaClient {
 
   void dispatchStatusEvent(FlovaStatusEventKind kind) {
     statusEventWorkspace_.kind = kind;
+    const FlovaStatusSnapshot& s = statusEventWorkspace_.current;
+    uint32_t detail = 0;
+    switch (kind) {
+      case FlovaStatusEventKind::LifecycleChanged: detail = static_cast<uint32_t>(s.lifecycle); break;
+      case FlovaStatusEventKind::NetworkChanged: detail = (s.networkConnected ? 1 : 0) | (s.tlsReady ? 2 : 0); break;
+      case FlovaStatusEventKind::LinkChanged: detail = s.linkConnected; break;
+      case FlovaStatusEventKind::ReadyChanged: detail = (s.runtimeReady ? 1 : 0) | (s.ready ? 2 : 0); break;
+      case FlovaStatusEventKind::ConfigurationChanged: detail = s.configurationGeneration; break;
+      case FlovaStatusEventKind::ErrorChanged: detail = s.errorCode[0] ? 1 : 0; break;
+      case FlovaStatusEventKind::MaintenanceChanged: detail = s.maintenance; break;
+    }
+    lifecycleLog_.append(static_cast<uint8_t>(kind) + 1, detail, s.configurationGeneration, clock_.milliseconds());
     if (statusListener_) statusListener_(statusContext_, statusEventWorkspace_);
   }
+
+  void drainLifecycleLog() {
+    if (link_.connectionAttempts() != loggedConnectionAttempts_) {
+      loggedConnectionAttempts_ = link_.connectionAttempts();
+      lifecycleLog_.append(9, loggedConnectionAttempts_, link_.configurationGeneration(), clock_.milliseconds());
+    }
+    if (link_.connectionFailures() != loggedConnectionFailures_) {
+      loggedConnectionFailures_ = link_.connectionFailures();
+      lifecycleLog_.append(10, loggedConnectionFailures_, link_.configurationGeneration(), clock_.milliseconds());
+    }
+    const flova::Diagnostics& d = device_.diagnostics();
+    const uint32_t failures = d.storageFailures + d.queueOverflow + d.rejectedDeliveries + d.clockSyncFailures + d.droppedHistory + d.expiredHistory;
+    if (failures != loggedDiagnosticFailures_) {
+      lifecycleLog_.append(8, failures, link_.configurationGeneration(), clock_.milliseconds());
+      loggedDiagnosticFailures_ = failures;
+    }
+    FlovaLinkLifecycleReport* event = lifecycleLog_.front();
+    if (!event) return;
+    if (event->messageId && link_.takeLifecycleAck(event->messageId)) {
+      lifecycleLog_.acknowledge();
+      lifecycleLogSent_ = false;
+      return;
+    }
+    if (!link_.connected() || !link_.lifecycleLogsSupported() || link_.applicationPaused()) return;
+    const uint32_t now = millis();
+    if (lifecycleLogSent_ && now - lifecycleLogSentAt_ < 5000UL) return;
+    if (!event->messageId) event->messageId = nextControlMessageId();
+    if (link_.publishLifecycle(*event)) { lifecycleLogSentAt_ = now; lifecycleLogSent_ = true; }
+  }
+
+  flova::LifecycleLog lifecycleLog_;
+  uint32_t lifecycleLogSentAt_ = 0, loggedDiagnosticFailures_ = 0;
+  uint32_t loggedConnectionAttempts_ = 0, loggedConnectionFailures_ = 0;
+  bool lifecycleLogSent_ = false;
 
   flova::ConfigurationActivation configurationActivation_;
   bool otaDraining_ = false;

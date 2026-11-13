@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include <FlovaLinkCbor.h>
+#include <FlovaLifecycleLog.h>
 #include <flova_link_vectors.h>
 
 namespace {
@@ -61,6 +62,7 @@ void verifyVector(const FlovaLinkVector& vector) {
     case 0x16: VERIFY_SCHEMA(schedule_renew, cbor_decode_schedule_renew, cbor_encode_schedule_renew); break;
     case 0x17: VERIFY_SCHEMA(time_request, cbor_decode_time_request, cbor_encode_time_request); break;
     case 0x18: VERIFY_SCHEMA(config_ack, cbor_decode_config_ack, cbor_encode_config_ack); break;
+    case 0x19: VERIFY_SCHEMA(lifecycle_report, cbor_decode_lifecycle_report, cbor_encode_lifecycle_report); break;
     case 0x20: VERIFY_SCHEMA(command, cbor_decode_command, cbor_encode_command); break;
     case 0x21: verifyEmpty(frame.payload, frame.payloadLength, cbor_decode_ingestion_ack, cbor_encode_ingestion_ack); break;
     case 0x22: VERIFY_SCHEMA(config_desired, cbor_decode_config_desired, cbor_encode_config_desired); break;
@@ -74,6 +76,7 @@ void verifyVector(const FlovaLinkVector& vector) {
     case 0x2a: VERIFY_SCHEMA(config_end, cbor_decode_config_end, cbor_encode_config_end); break;
     case 0x2b: VERIFY_SCHEMA(schedule_record_message, cbor_decode_schedule_record_message, cbor_encode_schedule_record_message); break;
     case 0x2c: VERIFY_SCHEMA(schedule_end, cbor_decode_schedule_end, cbor_encode_schedule_end); break;
+    case 0x2d: verifyEmpty(frame.payload, frame.payloadLength, cbor_decode_lifecycle_ready, cbor_encode_lifecycle_ready); break;
     case 0x7f: VERIFY_SCHEMA(zcbor_string, cbor_decode_error, cbor_encode_error); break;
     default: assert(false);
   }
@@ -149,6 +152,20 @@ void testCborRejections() {
 }  // namespace
 
 int main() {
+  flova::LifecycleLog logs;
+  logs.begin(42);
+  for (size_t i = 0; i < flova::LifecycleLog::capacity; ++i) assert(logs.append(0, 0, 1, i));
+  assert(!logs.append(1, 1, 1, 20));
+  assert(logs.front()->bootId == 42 && logs.front()->sequence == 1 && logs.front()->dropped == 1);
+  logs.front()->messageId = 123;
+  assert(logs.front()->messageId == 123); // retained until acknowledged
+  logs.acknowledge();
+  assert(logs.front()->sequence == 2);
+  assert(logs.append(2, 1, 2, 21));
+  for (size_t i = 0; i < flova::LifecycleLog::capacity - 1; ++i) logs.acknowledge();
+  assert(logs.front()->sequence == 18 && logs.front()->uptimeMs == 21);
+  logs.acknowledge();
+  assert(!logs.front());
   testFrameBounds();
   for (size_t i = 0; i < flova_link_vector_count; ++i) verifyVector(flova_link_vectors[i]);
   testCborRejections();

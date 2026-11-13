@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 // Normal network ownership is independent from the temporary provisioning
 // channel. Passive compositions observe application-owned connectivity;
@@ -35,4 +36,5 @@ class FlovaBoardIdentity {
   virtual ~FlovaBoardIdentity() {}
   virtual bool hardwareId(char*, size_t) const { return false; }
   virtual const char* firmwareTarget() const { return nullptr; }
+  virtual uint32_t resetReason() const { return 0; }
 };

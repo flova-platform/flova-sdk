@@ -136,6 +136,18 @@ int cbor_encode_config_ack(
 		size_t *payload_len_out);
 
 
+int cbor_encode_lifecycle_report(
+		uint8_t *payload, size_t payload_len,
+		const struct lifecycle_report *input,
+		size_t *payload_len_out);
+
+
+int cbor_encode_lifecycle_ready(
+		uint8_t *payload, size_t payload_len,
+		const void *input,
+		size_t *payload_len_out);
+
+
 int cbor_encode_command(
 		uint8_t *payload, size_t payload_len,
 		const struct command *input,

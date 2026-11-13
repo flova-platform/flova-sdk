@@ -129,6 +129,7 @@ class FlovaEsp32Identity final : public FlovaBoardIdentity {
   }
 
   const char* firmwareTarget() const override { return firmwareTarget_; }
+  uint32_t resetReason() const override { return static_cast<uint32_t>(esp_reset_reason()); }
 
  private:
   const char* firmwareTarget_;

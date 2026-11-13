@@ -120,6 +120,16 @@ struct config_ack {
 	struct zcbor_string config_ack_ack_reason;
 };
 
+struct lifecycle_report {
+	uint64_t lifecycle_report_log_boot_id;
+	uint64_t lifecycle_report_log_sequence;
+	uint64_t lifecycle_report_log_uptime_ms;
+	uint64_t lifecycle_report_log_code;
+	uint64_t lifecycle_report_log_detail;
+	uint64_t lifecycle_report_log_generation;
+	uint64_t lifecycle_report_log_dropped;
+};
+
 struct typed_value_fields_r {
 	union {
 		struct {

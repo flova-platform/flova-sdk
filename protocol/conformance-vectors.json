@@ -257,5 +257,26 @@
     "message_id": 37,
     "payload_hex": "a30008010102a3000102654750494f3205654750494f30",
     "frame_hex": "290000170000000000000025a30008010102a3000102654750494f3205654750494f30"
+  },
+  {
+    "name": "lifecycle_report",
+    "message_type": 25,
+    "message_id": 38,
+    "payload_hex": "871a075bcd1501182a00000700",
+    "frame_hex": "1900000d0000000000000026871a075bcd1501182a00000700"
+  },
+  {
+    "name": "lifecycle_ready",
+    "message_type": 45,
+    "message_id": 39,
+    "payload_hex": "80",
+    "frame_hex": "2d000001000000000000002780"
+  },
+  {
+    "name": "lifecycle_report_bounds",
+    "message_type": 25,
+    "message_id": 40,
+    "payload_hex": "871bffffffffffffffff1affffffff1bffffffffffffffff0a1affffffff1affffffff1affffffff",
+    "frame_hex": "190000280000000000000028871bffffffffffffffff1affffffff1bffffffffffffffff0a1affffffff1affffffff1affffffff"
   }
 ]
