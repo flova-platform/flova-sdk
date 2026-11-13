@@ -82,6 +82,18 @@ int cbor_decode_datastream_bound(
 		size_t *payload_len_out);
 
 
+int cbor_decode_scheduling_ready(
+		const uint8_t *payload, size_t payload_len,
+		void *result,
+		size_t *payload_len_out);
+
+
+int cbor_decode_scheduling_declarations(
+		const uint8_t *payload, size_t payload_len,
+		struct scheduling_declarations *result,
+		size_t *payload_len_out);
+
+
 int cbor_decode_heartbeat(
 		const uint8_t *payload, size_t payload_len,
 		struct heartbeat *result,
@@ -109,18 +121,6 @@ int cbor_decode_config_reported(
 int cbor_decode_ota_reported(
 		const uint8_t *payload, size_t payload_len,
 		struct ota_reported *result,
-		size_t *payload_len_out);
-
-
-int cbor_decode_schedule_reported(
-		const uint8_t *payload, size_t payload_len,
-		struct schedule_reported *result,
-		size_t *payload_len_out);
-
-
-int cbor_decode_schedule_renew(
-		const uint8_t *payload, size_t payload_len,
-		struct schedule_renew *result,
 		size_t *payload_len_out);
 
 
@@ -172,12 +172,6 @@ int cbor_decode_ota_desired(
 		size_t *payload_len_out);
 
 
-int cbor_decode_schedule_desired(
-		const uint8_t *payload, size_t payload_len,
-		struct schedule_desired *result,
-		size_t *payload_len_out);
-
-
 int cbor_decode_time_response(
 		const uint8_t *payload, size_t payload_len,
 		struct time_response *result,
@@ -211,18 +205,6 @@ int cbor_decode_config_record(
 int cbor_decode_config_end(
 		const uint8_t *payload, size_t payload_len,
 		struct config_end *result,
-		size_t *payload_len_out);
-
-
-int cbor_decode_schedule_record_message(
-		const uint8_t *payload, size_t payload_len,
-		struct schedule_record_message *result,
-		size_t *payload_len_out);
-
-
-int cbor_decode_schedule_end(
-		const uint8_t *payload, size_t payload_len,
-		struct schedule_end *result,
 		size_t *payload_len_out);
 
 

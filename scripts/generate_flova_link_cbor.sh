@@ -13,11 +13,11 @@ python3 "$generator" code \
   --cddl "$schema" \
   --entry-types \
   auth auth-ok auth-error ping pong bootstrap-auth bootstrap-committed \
-  bootstrap-error datastream-bind datastream-bound heartbeat state command-result config-reported \
-  ota-reported schedule-reported schedule-renew time-request config-ack lifecycle-report lifecycle-ready \
-  command ingestion-ack config-desired ota-desired schedule-desired \
+   bootstrap-error datastream-bind datastream-bound scheduling-ready scheduling-declarations heartbeat state command-result config-reported \
+  ota-reported   time-request config-ack lifecycle-report lifecycle-ready \
+  command ingestion-ack config-desired ota-desired  \
   time-response flow-control message-rejected config-begin config-record \
-  config-end schedule-record-message schedule-end error \
+  config-end      error \
   --output-c "$generated_dir/src/flova_link.c" \
   --output-h "$generated_dir/include/flova_link.h" \
   --output-h-types "$generated_dir/include/flova_link_types.h"

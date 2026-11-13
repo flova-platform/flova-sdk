@@ -144,12 +144,6 @@ class TestLink final : public FlovaClientLink {
     logAck = 0;
     return true;
   }
-  bool publishScheduleStatus(const FlovaLinkScheduleStatus&) override {
-    return true;
-  }
-  bool publishScheduleRenew(const FlovaLinkScheduleStatus&) override {
-    return true;
-  }
   bool takeOtaOffer(FlovaLinkOtaOffer&) override { return false; }
   bool publishOtaReport(const FlovaLinkOtaReport&) override { return true; }
   flova::OtaInstallResult installOta(const FlovaLinkOtaOffer&) override {
@@ -359,7 +353,7 @@ void verifyIndexedRestore(const std::vector<std::string>& keys, bool valid) {
   assert(client.runtimeReady());
   assert(link.configurationGeneration() == (valid ? 2U : 1U));
   assert(client.device().datastreamCount() == (valid ? keys.size() : 0));
-  if (valid) assert(storage.recordReads == keys.size() * 5 + 1);
+  if (valid) assert(storage.recordReads == keys.size() * 4 + 1);
   else assert(storage.recordReads == 8);
 }
 

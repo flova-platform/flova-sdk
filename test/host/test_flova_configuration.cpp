@@ -66,9 +66,9 @@ int main() {
   assert(flova::provisioningFailureNeedsSetup("invalid_provision_token"));
 
   char storageKey[16] = {};
-  assert(flova::makeNvsStorageKey("schedule.staging", storageKey,
+  assert(flova::makeNvsStorageKey("history.meta", storageKey,
                                   sizeof(storageKey)));
-  assert(strcmp(storageKey, "ss") == 0);
+  assert(strcmp(storageKey, "hm") == 0);
   assert(flova::makeNvsStorageKey("history:63", storageKey,
                                   sizeof(storageKey)));
   assert(strcmp(storageKey, "h63") == 0);

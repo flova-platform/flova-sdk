@@ -117,6 +117,10 @@ class FlovaDatastream {
     resolve().offline(value);
     return *this;
   }
+  FlovaDatastream& scheduling(flova::Scheduling value) {
+    resolve().scheduling(value);
+    return *this;
+  }
   FlovaDatastream& retention(const flova::HistoryRetentionPolicy& value) {
     resolve().retention(value);
     return *this;

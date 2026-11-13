@@ -16,7 +16,6 @@ ESP8266_LIMITS = (
     ("stepConfigurationDigest", re.compile(r"stepConfigurationDigest\(\)"), 256),
     ("stepConfigurationSemantic", re.compile(r"stepConfigurationSemantic\(\)"), 256),
     ("stepConfigurationReferences", re.compile(r"stepConfigurationReferences\(\)"), 256),
-    ("stepConfigurationSchedules", re.compile(r"stepConfigurationSchedules\(\)"), 256),
     ("stepConfigurationApply", re.compile(r"stepConfigurationApply\(\)"), 256),
     ("validateConfigurationUnit", re.compile(r"validateConfigurationUnit\("), 256),
     ("finishConfigurationApply", re.compile(r"finishConfigurationApply\(\)"), 256),
@@ -26,27 +25,22 @@ ESP8266_LIMITS = (
     ("sendDatastreamBinding", re.compile(r"sendDatastreamBinding\(\)"), 768),
     ("handleDatastreamBound", re.compile(r"handleDatastreamBound\("), 768),
     ("dispatchPendingFrame", re.compile(r"dispatchPendingFrame\(\)"), 256),
-    ("Device::receive", re.compile(r"Device::receive\(const flova::Message&\)"), 384),
+    ("Device::receive", re.compile(r"Device::receive\(const flova::Message&\)"), 128),
+    ("ArduinoFlovaLink::accept", re.compile(r"ArduinoFlovaLink::accept\("), 64),
+    ("Device::reserveCommand", re.compile(r"Device::reserveCommand\("), 384),
+    ("Device::replyStorageUnavailable", re.compile(r"Device::replyStorageUnavailable\("), 384),
     ("Device::storeResult", re.compile(r"Device::storeResult\("), 128),
     ("Device::publishBatch", re.compile(r"Device::publishBatch\("), 128),
     ("ArduinoFlovaLink::sendStateBatch", re.compile(r"ArduinoFlovaLink::sendStateBatch\("), 512),
     ("ArduinoDeviceLink::publishState", re.compile(r"ArduinoDeviceLink::publishState\("), 384),
-    ("ScheduleManifest::reset", re.compile(r"ScheduleManifest::reset\("), 512),
-    ("ScheduleRuntime::clear", re.compile(r"ScheduleRuntime::clear\("), 512),
-    ("ScheduleChunkCompiler::reset", re.compile(r"ScheduleChunkCompiler::reset\("), 512),
-)
-
-ESP32_LIMITS = (
-    ("ScheduleManifest::reset", re.compile(r"ScheduleManifest::reset\("), 512),
-    ("ScheduleRuntime::clear", re.compile(r"ScheduleRuntime::clear\("), 512),
-    ("ScheduleChunkCompiler::reset", re.compile(r"ScheduleChunkCompiler::reset\("), 512),
 )
 
 OPTIONAL_LIMITS = {
     "sendDatastreamBinding",
-    "ScheduleManifest::reset",
-    "ScheduleRuntime::clear",
-    "ScheduleChunkCompiler::reset",
+    # With schedule restoration removed, these are inlined into the checked
+    # stepConfigurationWork frame (confirmed by the linked symbol table).
+    "stepConfigurationSemantic",
+    "finishConfigurationApply",
 }
 
 
@@ -55,7 +49,6 @@ def main() -> int:
     failed = False
     for target, directory, limits in (
         ("ESP8266", root / ".pio" / "build" / "universal-esp8266", ESP8266_LIMITS),
-        ("ESP32", root / ".pio" / "build" / "universal-esp32", ESP32_LIMITS),
     ):
         usages = {name: -1 for name, _, _ in limits}
         for path in directory.rglob("*.su"):

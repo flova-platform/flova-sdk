@@ -82,6 +82,12 @@ datastream-binding-keys = [1*64 (tstr .size (1..48))]
 datastream-bound = [bound-generation: generation, bound-ids: datastream-bound-ids]
 datastream-bound-ids = [1*64 compact-id]
 
+; Negotiated by PING(UINT64_MAX-1); older Engines respond only PONG.
+; At most four ordered chunks form one declaration. No partial grants.
+scheduling-ready = []
+scheduling-declarations = [scheduling-generation: generation, scheduling-offset: 0..64, scheduling-total: 0..64, scheduling-streams: [0*16 scheduling-stream]]
+scheduling-stream = [scheduling-id: compact-id, scheduling-mode: 0..1]
+
 ; 0x10..0x18 device-to-Engine hot-path messages.
 heartbeat = [heartbeat-generation: generation, heartbeat-uptime-ms: uint64, heartbeat-status: uint8, heartbeat-firmware-version: tstr .size (1..32), heartbeat-firmware-target: tstr .size (1..32), heartbeat-running-release-id: empty-id / uuid, heartbeat-last-install-id: empty-id / uuid, heartbeat-ota-profile: ota-profile, ? heartbeat-capabilities: capabilities]
 ota-profile = {
@@ -102,8 +108,6 @@ command-result-error = [result-error-generation: generation, result-error-comman
 
 config-reported = [reported-config-generation: generation, reported-config-status: 0..255, reported-config-checksum: sha256]
 ota-reported = [reported-ota-id: uuid, reported-ota-status: 0..255, reported-ota-error: error-code, reported-ota-progress: uint32]
-schedule-reported = [reported-schedule-generation: generation, reported-schedule-revision: uint32, reported-schedule-status: 0..255, reported-schedule-checksum: sha256]
-schedule-renew = [renew-generation: generation, renew-revision: uint32]
 time-request = [time-request-id: uint64, time-request-monotonic-ms: uint64]
 config-ack = [ack-generation: generation, ack-sequence: sequence, ack-status: 0..255, ack-reason: error-code]
 
@@ -130,12 +134,13 @@ ota-desired = {
   ? ota-target: 5 => tstr .size (1..32),
   ? ota-release-id: 6 => uuid
 }
-schedule-desired = [desired-schedule-generation: generation, desired-schedule-revision: uint32, desired-schedule-record-count: uint16, desired-schedule-checksum: sha256]
 time-response = [time-response-request-id: uint64, time-response-server-utc-ms: uint64]
 flow-control = [flow-retry-after-ms: uint32, flow-reason: error-code, flow-capacity: uint16]
 message-rejected = [rejection-reason: error-code]
 
-; 0x28..0x2c transactional configuration and schedule records. Integer-keyed
+; 0x28..0x2a transactional configuration records. Retired schedule opcodes
+; 0x15, 0x16, 0x24, 0x2b, 0x2c are reserved and must never be reassigned.
+; Configuration record kinds 2 and 4 are also retired. Integer-keyed
 ; maps are encoded in ascending key order. CONFIG_RECORD carries one record;
 ; no complete configuration object exists on the wire or in device RAM.
 config-begin = {
@@ -156,7 +161,7 @@ config-record = {
   record-body: 2 => config-record-body
 }
 
-config-record-body = datastream-record / system-record / schedule-record / schedule-occurrence-record / safety-record / parameter-record
+config-record-body = datastream-record / system-record / safety-record / parameter-record
 
 datastream-record = {
   datastream-kind: 0 => 0,
@@ -199,28 +204,6 @@ system-record = {
   ? system-factory-reset-release-confirm: 12 => bool
 }
 
-schedule-record = {
-  schedule-kind: 0 => 2,
-  schedule-id: 1 => uint32,
-  schedule-enabled: 2 => bool,
-  schedule-valid-from: 3 => uint64,
-  schedule-valid-until: 4 => uint64,
-  schedule-actions: 5 => [1*8 schedule-action]
-}
-
-schedule-action = [action-offset-ms: uint32, action-compact-id: compact-id, typed-value-fields]
-
-; Schedule metadata and occurrences are separate records. Each chunk is
-; independently bounded and ordered by chunk-index; CONFIG_END verifies the
-; complete transaction checksum before promotion.
-schedule-occurrence-record = {
-  occurrence-kind: 0 => 4,
-  occurrence-schedule-id: 1 => uint32,
-  occurrence-chunk-index: 2 => uint16,
-  occurrence-chunk-count: 3 => uint16,
-  occurrence-values: 4 => [1*16 uint64]
-}
-
 safety-record = {
   safety-kind: 0 => 3,
   safety-compact-id: 1 => compact-id,
@@ -242,8 +225,6 @@ parameter-record = {
 }
 
 config-end = [end-generation: generation, end-record-count: uint32, end-checksum: sha256]
-schedule-record-message = [schedule-message-generation: generation, schedule-message-sequence: uint32, schedule-message-record: schedule-record]
-schedule-end = [schedule-end-generation: generation, schedule-end-record-count: uint32, schedule-end-checksum: sha256]
 
 ; 0x7f connection/protocol failure.
 error = [protocol-error-code: error-code]

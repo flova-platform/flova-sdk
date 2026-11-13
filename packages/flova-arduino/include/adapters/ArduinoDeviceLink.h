@@ -12,6 +12,7 @@
 #include <FlovaArduinoPlatform.h>
 #include <FlovaWs.h>
 #include <FlovaLinkMessages.h>
+#include <FlovaScheduling.h>
 
 extern "C" {
 #include <flova_link_decode.h>
@@ -157,11 +158,9 @@ class ArduinoDeviceLink final {
           output.recordType = 0; break;
         case config_record_body_r::config_record_body_system_record_m_c:
           output.recordType = 1; break;
-        case config_record_body_r::config_record_body_schedule_record_m_c:
           output.recordType = 2; break;
         case config_record_body_r::config_record_body_safety_record_m_c:
           output.recordType = 3; break;
-        case config_record_body_r::config_record_body_schedule_occurrence_record_m_c:
           output.recordType = 4; break;
         case config_record_body_r::config_record_body_parameter_record_m_c:
           output.recordType = 5; break;
@@ -242,7 +241,22 @@ class ArduinoDeviceLink final {
   }
 
   void setConfigurationGeneration(uint32_t generation) {
+    if (configurationGeneration_ != generation) {
+      schedulingDirty_ = true;
+      schedulingOffset_ = 0;
+      schedulingSent_ = false;
+    }
     configurationGeneration_ = generation;
+  }
+
+  void schedulingDeclarations(flova::SchedulingReader reader, void* context,
+                              size_t count) {
+    schedulingReader_ = reader;
+    schedulingContext_ = context;
+    schedulingCount_ = count;
+    schedulingDirty_ = true;
+    schedulingOffset_ = 0;
+    schedulingSent_ = false;
   }
 
   void setHardwareCapabilities(
@@ -390,25 +404,7 @@ class ArduinoDeviceLink final {
     return sendEncoded(0x14, message.messageId, value, cbor_encode_ota_reported);
   }
 
-  bool publishScheduleStatus(const FlovaLinkScheduleStatus& message) {
-    if (!connected()) return false;
-    struct schedule_reported value = {};
-    value.schedule_reported_reported_schedule_generation = message.generation;
-    value.schedule_reported_reported_schedule_revision = message.revision;
-    value.schedule_reported_reported_schedule_status = static_cast<uint8_t>(message.status);
-    static const uint8_t emptyChecksum[32] = {};
-    value.schedule_reported_reported_schedule_checksum.value = emptyChecksum;
-    value.schedule_reported_reported_schedule_checksum.len = 32;
-    return sendEncoded(0x15, message.messageId, value, cbor_encode_schedule_reported);
-  }
 
-  bool publishScheduleRenew(const FlovaLinkScheduleStatus& message) {
-    if (!connected()) return false;
-    struct schedule_renew value = {};
-    value.schedule_renew_renew_generation = message.generation;
-    value.schedule_renew_renew_revision = message.revision;
-    return sendEncoded(0x16, message.messageId, value, cbor_encode_schedule_renew);
-  }
 
   bool publishTimeRequest(const FlovaLinkTimeRequest& message) {
     if (!connected()) return false;
@@ -487,6 +483,18 @@ class ArduinoDeviceLink final {
     if (active_ && authenticated_ && !bindingPending_ && lifecycleProbePending_ && !platform_.linkWriteBusy() && !websocket_.controlPending()) {
       const uint8_t empty = 0;
       if (sendEncoded(0x04, UINT64_MAX, empty, encodeLifecycleProbe)) lifecycleProbePending_ = false;
+    }
+    if (active_ && authenticated_ && !bindingPending_ && !platform_.linkWriteBusy() && !websocket_.controlPending()) {
+      const uint8_t empty = 0;
+      if (schedulingProbePending_) {
+        if (sendEncoded(0x04, UINT64_MAX - 1, empty, encodeLifecycleProbe)) schedulingProbePending_ = false;
+      } else if (schedulingSupported_ && schedulingDirty_ &&
+                 (!schedulingSent_ || millis() - schedulingSentAt_ >= 5000UL)) {
+        if (sendSchedulingDeclarations()) {
+          schedulingSentAt_ = millis();
+          schedulingSent_ = true;
+        }
+      }
     }
     if (active_ && bindingPending_) {
       if (bindingBatchCount_) {
@@ -593,6 +601,8 @@ class ArduinoDeviceLink final {
   // The embedded memory budget uses 32-bit pointers; host codec records are larger.
   static_assert(sizeof(uintptr_t) > 4 || sizeof(datastream_bind) <= sizeof(FlovaLinkInboundMessage), "Binding encode must fit the existing inbound slot");
   static_assert(sizeof(uintptr_t) > 4 || sizeof(datastream_bound) <= sizeof(FlovaLinkInboundMessage), "Binding decode must fit the existing inbound slot");
+  static_assert(sizeof(scheduling_declarations) <= kPayloadBytes,
+                "Scheduling declarations must fit the shared bounded codec workspace");
   struct Workspace {
     uint8_t tx_[kTransmitWorkspaceBytes] = {};
     uint8_t pendingFrames_[kPendingFrameSlots][kFrameBytes] = {};
@@ -604,6 +614,7 @@ class ArduinoDeviceLink final {
     union {
       struct config_record configurationDecodeWorkspace_ = {};
       char bindingNames_[9][FLOVA_MAX_DATASTREAM_KEY_LENGTH + 1];
+      struct scheduling_declarations schedulingWorkspace_;
     };
   };
   bool ensureWorkspace() {
@@ -757,6 +768,29 @@ class ArduinoDeviceLink final {
     return sendEncoded(0x09, ++bindingRequestId_, value, cbor_encode_datastream_bind);
   }
 
+  bool sendSchedulingDeclarations() {
+    if (!schedulingReader_ || schedulingCount_ > 64 || !ensureWorkspace()) return false;
+    auto& value = workspace_->schedulingWorkspace_;
+    memset(&value, 0, sizeof(value));
+    value.scheduling_declarations_scheduling_generation = configurationGeneration_;
+    const size_t remaining = schedulingCount_ - schedulingOffset_;
+    const size_t count = remaining > 16 ? 16 : remaining;
+    value.scheduling_declarations_scheduling_offset = schedulingOffset_;
+    value.scheduling_declarations_scheduling_total = schedulingCount_;
+    value.scheduling_declarations_scheduling_streams_scheduling_stream_m_count = count;
+    for (size_t i = 0; i < count; ++i) {
+      uint16_t id = 0;
+      flova::Scheduling mode = flova::Scheduling::Disabled;
+      if (!schedulingReader_(schedulingContext_, schedulingOffset_ + i, id, mode)) return false;
+      value.scheduling_declarations_scheduling_streams_scheduling_stream_m[i].scheduling_stream_scheduling_id = id;
+      value.scheduling_declarations_scheduling_streams_scheduling_stream_m[i].scheduling_stream_scheduling_mode = static_cast<uint8_t>(mode);
+    }
+    return sendEncoded(0x2f, schedulingReportId(), value, cbor_encode_scheduling_declarations);
+  }
+  uint64_t schedulingReportId() const {
+    return UINT64_MAX - 2 - static_cast<uint64_t>(configurationGeneration_) * 5 - schedulingOffset_ / 16;
+  }
+
   bool sendBootstrapAuthentication(SendFailure* failure = nullptr) {
     if (failure) *failure = SendFailure::None;
     struct bootstrap_auth value = {};
@@ -776,7 +810,7 @@ class ArduinoDeviceLink final {
     caps.capabilities_input_slots = hardwareCapabilities_.automaticMapping ? hardwareCapabilities_.inputSlots : 0;
     caps.capabilities_output_slots = hardwareCapabilities_.automaticMapping ? hardwareCapabilities_.outputSlots : 0;
     caps.capabilities_command_slots = FLOVA_COMMAND_DEDUP_CAPACITY;
-    caps.capabilities_schedule_slots = FLOVA_SCHEDULE_RUNTIME_ENABLED ? FLOVA_SCHEDULE_CAPACITY : 0;
+    caps.capabilities_schedule_slots = 0;
     caps.capabilities_manifest_bytes = 0;
     caps.capabilities_history_bytes = 0;
     caps.capabilities_pin_references_present = true;
@@ -854,6 +888,11 @@ class ArduinoDeviceLink final {
         authenticated_ = true;
         lifecycleSupported_ = false;
         lifecycleProbePending_ = true;
+        schedulingSupported_ = false;
+        schedulingProbePending_ = true;
+        schedulingDirty_ = true;
+        schedulingSent_ = false;
+        schedulingOffset_ = 0;
         bindingPending_ = bindingCount_ != 0;
         bindingOffset_ = bindingBatchCount_ = 0;
       } else {
@@ -908,8 +947,19 @@ class ArduinoDeviceLink final {
       lifecycleSupported_ = frame.payloadLength == 1 && frame.payload[0] == 0x80;
       return;
     }
+    if (frame.messageType == 0x2e && authenticated_ && frame.messageId == UINT64_MAX - 1) {
+      schedulingSupported_ = frame.payloadLength == 1 && frame.payload[0] == 0x80;
+      return;
+    }
     if (frame.messageType == 0x20) return handleCommand(frame);
     if (frame.messageType == 0x21) {
+      if (schedulingSent_ && frame.messageId == schedulingReportId()) {
+        const size_t remaining = schedulingCount_ - schedulingOffset_;
+        schedulingOffset_ += remaining > 16 ? 16 : remaining;
+        schedulingDirty_ = schedulingOffset_ < schedulingCount_;
+        schedulingSent_ = false;
+        return;
+      }
       // INGESTION_ACK has an empty payload; the frame id identifies the
       // state message being acknowledged.
       workspace_->inbound_ = FlovaLinkInboundMessage();
@@ -1078,9 +1128,7 @@ class ArduinoDeviceLink final {
       switch (value.config_record_record_body.config_record_body_choice) {
         case config_record_body_r::config_record_body_datastream_record_m_c: workspace_->inbound_.body.configuration.recordType = 0; break;
         case config_record_body_r::config_record_body_system_record_m_c: workspace_->inbound_.body.configuration.recordType = 1; break;
-        case config_record_body_r::config_record_body_schedule_record_m_c: workspace_->inbound_.body.configuration.recordType = 2; break;
         case config_record_body_r::config_record_body_safety_record_m_c: workspace_->inbound_.body.configuration.recordType = 3; break;
-        case config_record_body_r::config_record_body_schedule_occurrence_record_m_c: workspace_->inbound_.body.configuration.recordType = 4; break;
         case config_record_body_r::config_record_body_parameter_record_m_c: workspace_->inbound_.body.configuration.recordType = 5; break;
         default: return disconnect();
       }
@@ -1257,42 +1305,8 @@ class ArduinoDeviceLink final {
         out.data.system.factoryResetReleaseConfirm = source.system_record_system_factory_reset_release_confirm.system_record_system_factory_reset_release_confirm;
         return true;
       }
-      case config_record_body_r::config_record_body_schedule_record_m_c: {
-        const schedule_record& source = input.config_record_body_schedule_record_m;
-        if (source.schedule_record_schedule_actions_schedule_action_m_count > 8 || source.schedule_record_schedule_id > UINT32_MAX) return false;
-        out.kind = flova::config::UnitKind::Schedule;
-        out.data.schedule.id = static_cast<uint32_t>(source.schedule_record_schedule_id);
-        out.data.schedule.enabled = source.schedule_record_schedule_enabled;
-        out.data.schedule.validFrom = source.schedule_record_schedule_valid_from;
-        out.data.schedule.validUntil = source.schedule_record_schedule_valid_until;
-        out.data.schedule.actionCount = static_cast<uint8_t>(source.schedule_record_schedule_actions_schedule_action_m_count);
-        for (uint8_t i = 0; i < out.data.schedule.actionCount; ++i) {
-          const schedule_action& action = source.schedule_record_schedule_actions_schedule_action_m[i];
-          if (action.schedule_action_action_offset_ms > UINT32_MAX || action.schedule_action_action_compact_id == 0 || action.schedule_action_action_compact_id > UINT16_MAX ||
-              !readConfigurationValue(out.data.schedule.actions[i].value, action.schedule_action_typed_value_fields_m)) return false;
-          out.data.schedule.actions[i].offsetMs = static_cast<uint32_t>(action.schedule_action_action_offset_ms);
-          out.data.schedule.actions[i].datastreamId = static_cast<DatastreamId>(action.schedule_action_action_compact_id);
-        }
-        return true;
-      }
-      case config_record_body_r::config_record_body_schedule_occurrence_record_m_c: {
-        const schedule_occurrence_record& source = input.config_record_body_schedule_occurrence_record_m;
-        if (source.schedule_occurrence_record_occurrence_schedule_id > UINT32_MAX ||
-            source.schedule_occurrence_record_occurrence_chunk_index > UINT16_MAX ||
-            source.schedule_occurrence_record_occurrence_chunk_count == 0 ||
-            source.schedule_occurrence_record_occurrence_chunk_count > UINT16_MAX ||
-            source.schedule_occurrence_record_occurrence_values_uint64_m_count == 0 ||
-            source.schedule_occurrence_record_occurrence_values_uint64_m_count > flova::config::kConfigurationOccurrenceChunk) return false;
-        out.kind = flova::config::UnitKind::ScheduleOccurrences;
-        out.data.occurrences.scheduleId = static_cast<uint32_t>(source.schedule_occurrence_record_occurrence_schedule_id);
-        out.data.occurrences.chunkIndex = static_cast<uint16_t>(source.schedule_occurrence_record_occurrence_chunk_index);
-        out.data.occurrences.chunkCount = static_cast<uint16_t>(source.schedule_occurrence_record_occurrence_chunk_count);
-        out.data.occurrences.occurrenceCount = static_cast<uint8_t>(source.schedule_occurrence_record_occurrence_values_uint64_m_count);
-        for (uint8_t i = 0; i < out.data.occurrences.occurrenceCount; ++i) {
-          out.data.occurrences.occurrences[i] = source.schedule_occurrence_record_occurrence_values_uint64_m[i];
-        }
-        return true;
-      }
+
+
       case config_record_body_r::config_record_body_safety_record_m_c: {
         const safety_record& source = input.config_record_body_safety_record_m;
         if (source.safety_record_safety_compact_id == 0 || source.safety_record_safety_compact_id > UINT16_MAX || source.safety_record_safety_policy > 4) return false;
@@ -1529,6 +1543,13 @@ class ArduinoDeviceLink final {
   char bootstrapError_[FLOVA_TEXT_CAPACITY] = {};
   char bootstrapHardwareId_[97] = {};
   char bootstrapFirmwareTarget_[65] = {};
+  flova::SchedulingReader schedulingReader_ = nullptr;
+  void* schedulingContext_ = nullptr;
+  size_t schedulingCount_ = 0;
+  size_t schedulingOffset_ = 0;
+  bool schedulingSupported_ = false, schedulingProbePending_ = false;
+  bool schedulingDirty_ = true, schedulingSent_ = false;
+  uint32_t schedulingSentAt_ = 0;
   const char* bindingKeys_[kMaximumDatastreamBindings] = {};
   uint8_t bindingCount_ = 0;
   bool bindingPending_ = false;

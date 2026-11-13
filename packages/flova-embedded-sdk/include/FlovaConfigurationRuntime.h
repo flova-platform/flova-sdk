@@ -14,11 +14,9 @@ namespace flova {
 namespace config {
 
 static const size_t kConfigurationTextBytes = FLOVA_TEXT_CAPACITY;
-static const size_t kConfigurationScheduleActions = 8;
-static const size_t kConfigurationOccurrenceChunk = 16;
 
 enum class ValueKind : uint8_t { Boolean = 0, Int64 = 1, Float32 = 2, Float64 = 3, Text = 4 };
-enum class UnitKind : uint8_t { Datastream = 0, System = 1, Schedule = 2, Safety = 3, ScheduleOccurrences = 4, Parameter = 5 };
+enum class UnitKind : uint8_t { Datastream = 0, System = 1, Safety = 3, Parameter = 5 };
 enum class MappingKind : uint8_t { DigitalInput = 0, DigitalOutput = 1, AnalogInput = 2, PwmOutput = 3 };
 enum class SafetyPolicy : uint8_t { None = 0, Minimum = 1, Maximum = 2, Range = 3, CommandExpiry = 4 };
 
@@ -95,29 +93,6 @@ struct System {
   bool factoryResetReleaseConfirm;
 };
 
-struct ScheduleAction {
-  uint32_t offsetMs;
-  DatastreamId datastreamId;
-  Value value;
-};
-
-struct Schedule {
-  uint32_t id;
-  bool enabled;
-  uint64_t validFrom;
-  uint64_t validUntil;
-  uint8_t actionCount;
-  ScheduleAction actions[kConfigurationScheduleActions];
-};
-
-struct ScheduleOccurrences {
-  uint32_t scheduleId;
-  uint16_t chunkIndex;
-  uint16_t chunkCount;
-  uint8_t occurrenceCount;
-  uint64_t occurrences[kConfigurationOccurrenceChunk];
-};
-
 struct Safety {
   DatastreamId datastreamId;
   SafetyPolicy policy;
@@ -143,8 +118,6 @@ struct Unit {
   union {
     Datastream datastream;
     System system;
-    Schedule schedule;
-    ScheduleOccurrences occurrences;
     Safety safety;
     Parameter parameter;
   } data;

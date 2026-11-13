@@ -38,6 +38,21 @@ review of the CDDL, vectors, generated codecs, and native tests.
 
 ## Runtime boundary
 
+### Scheduling
+
+Platform schedules are cloud-only and use the existing command message with
+an absolute expiry. No schedule manifests are transferred, stored or restored.
+The retired schedule opcodes 0x15, 0x16, 0x24, 0x2b and 0x2c, and configuration
+record kinds 2 and 4, remain reserved and are rejected by new firmware.
+
+The only scheduling-specific exchange reports firmware permission: PING with
+reserved ID UINT64_MAX-1 negotiates SCHEDULING_READY (0x2e). The SDK reports
+SCHEDULING_DECLARATIONS (0x2f) as `[generation, offset, total, stream rules]`,
+with up to 16 `[runtime ID, mode]` pairs per chunk and 64 streams total. Modes
+are disabled (0) and cloud-only (1). These declarations do not contain schedule
+times/actions or storage policy. Legacy capability-map slots 4 and 5 remain
+zero/reserved to preserve the existing bootstrap/configuration envelope.
+
 ### Lifecycle diagnostics
 
 `LIFECYCLE_REPORT` (0x19) is a bounded seven-integer array: boot ID, sequence,

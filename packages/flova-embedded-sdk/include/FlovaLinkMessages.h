@@ -49,9 +49,6 @@ enum class FlovaLinkMessageType : uint8_t {
   DatastreamBound,
   OtaOffer,
   OtaReport,
-  ScheduleRecord,
-  ScheduleReport,
-  ScheduleRenew,
   TimeRequest,
   TimeResponse,
   FlowControl
@@ -194,24 +191,6 @@ struct FlovaLinkOtaReport {
   char errorCode[FLOVA_LINK_TEXT_BYTES];
 };
 
-struct FlovaLinkScheduleRecord {
-  uint64_t messageId;
-  uint32_t generation;
-  uint32_t revision;
-  uint16_t sequence;
-  uint16_t recordLength;
-  uint8_t record[FLOVA_LINK_RECORD_BYTES];
-};
-
-struct FlovaLinkScheduleStatus {
-  uint64_t messageId;
-  uint32_t generation;
-  uint32_t revision;
-  uint64_t validUntilUtcMs;
-  FlovaLinkResultStatus status;
-  char errorCode[FLOVA_LINK_TEXT_BYTES];
-};
-
 struct FlovaLinkHeartbeat {
   uint64_t messageId;
   uint32_t configurationGeneration;
@@ -219,7 +198,6 @@ struct FlovaLinkHeartbeat {
   uint32_t capabilityMask;
   uint16_t protocolVersion;
   uint16_t datastreamSlots;
-  uint16_t scheduleSlots;
   bool otaCapable;
   char firmwareVersion[FLOVA_LINK_OTA_VERSION_BYTES];
   char firmwareTarget[FLOVA_LINK_OTA_TARGET_BYTES];
@@ -252,7 +230,6 @@ struct FlovaLinkInboundMessage {
     FlovaLinkConfigurationRecord configuration;
     FlovaLinkBootstrapCommitted bootstrapCommitted;
     FlovaLinkOtaOffer otaOffer;
-    FlovaLinkScheduleRecord schedule;
     FlovaLinkTimeResponse timeResponse;
     struct {
       uint32_t generation;

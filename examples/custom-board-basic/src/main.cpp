@@ -67,15 +67,8 @@ static flova::WriteResult setRelay(void* context, bool enabled) {
 }
 
 int main() {
-  // Budgets describe physical capacity. They bound history and make storage
-  // pressure deterministic instead of allowing an unbounded backlog.
-  // Board ports choose capacities in their build profile; Engine later clamps
-  // them to deployment policy. They are physical facts, not product limits.
-  flova::ResourceBudget budgets[static_cast<size_t>(flova::ResourceKind::Count)];
-  budgets[static_cast<size_t>(flova::ResourceKind::History)].reservedBytes = 4096;
-  budgets[static_cast<size_t>(flova::ResourceKind::History)].maximumBytes = 8192;
-  budgets[static_cast<size_t>(flova::ResourceKind::History)].elastic = true;
-  flovaDevice.resourcePlan(budgets, static_cast<size_t>(flova::ResourceKind::Count));
+  // Board ports select fixed capacities in their build profile. Storage errors
+  // remain explicit; there is no cross-feature storage allocator.
   // FLOVA_ON_WRITE() receives commands. FLOVA_REPORT() would be used for sensor
   // readings or hardware changes that happened outside this callback.
   FLOVA_ON_WRITE(relay, setRelay, nullptr)

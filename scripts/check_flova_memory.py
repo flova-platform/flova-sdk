@@ -63,8 +63,7 @@ def main():
             # All allocations below are additional to the linked static image.
             # Stock core frees X509 after handshake; it retains its TLS stack.
             connected = (tls['minimum_link_heap'] - tls['x509_context'] +
-                         work['transport'] + work['pending_records'] +
-                         work['schedules'])
+                         work['transport'] + work['pending_records'])
             phases = {
                 'link_handshake': tls['minimum_link_heap'],
                 'connected': connected,

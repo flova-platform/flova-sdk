@@ -102,6 +102,59 @@ void loop() { device.run(); }
 The same `FLOVA_*` helpers work with both transports. Datastream keys must
 match the device's template.
 
+## Cloud schedules and local timers
+
+Platform schedules run in Engine. When an occurrence is due, Engine sends an
+ordinary command over the existing connection. The device must be online.
+Commands expire 60 seconds after the scheduled occurrence; missed occurrences
+are skipped. Firmware safety validation still has final authority.
+
+Custom firmware opts each writable stream in before `begin()`:
+
+```cpp
+relay.scheduling(flova::Scheduling::CloudOnly);
+// The default is Scheduling::Disabled.
+```
+
+Console and AI tools cannot enable this permission. Universal firmware explicitly
+allows cloud scheduling for configured digital/PWM outputs; input mappings remain
+disabled. Custom firmware may opt in virtual writable streams with the same helper.
+MQTT does not currently report these permissions and cannot opt in implicitly.
+
+The shared Arduino/ESP/Linux Link adapter reports only these firmware permissions:
+PING with reserved ID `UINT64_MAX-1` negotiates support, followed by bounded
+16-stream declaration chunks. Partial or stale reports never grant support.
+There are no schedule downloads, installed manifests, checkpoints or renewal jobs.
+
+Developers may independently use the existing RAM-only `flova::Scheduler`.
+Given an application-owned `flova::WallClock` named `wallClock`:
+
+```cpp
+#include <FlovaScheduler.h>
+flova::Scheduler timers(wallClock);
+void turnOff() { relay.write(false); }
+
+// In setup(), with a timezone string that remains valid:
+timers.daily(20, 0, "IRST-3:30", turnOff);
+// In loop(), alongside device.run():
+timers.run();
+```
+
+The application supplies clock synchronization/timezone conversion. Timers run
+only during their due minute, require a valid clock, and do not depend on the
+network. Eight entries and their cursors stay in RAM. Reset loses them; setup
+registers them again. Reboot during a due minute can run the callback again.
+Use datastream `write()` in callbacks to retain hardware safety checks. Platform
+schedules and developer timers are independent; avoid assigning both to the same
+action/time unless that is intentional.
+
+Storage allocation budgets, resource priorities and `Device::resourcePlan()`
+have been removed. Use fixed board capacities and explicit history retention;
+backend failures remain errors. `storageInfo()` is opt-in diagnostics, not
+remote storage policy. Existing provisioning, command-ledger and configuration
+recovery still retain their durability contracts; this change does not turn
+storage-backed board startup into a RAM-only profile.
+
 ## Datastream storage policies
 
 For Flova Link on **ESP32, ESP8266, and Linux**, current values stay in RAM.
@@ -143,7 +196,7 @@ before proceeding.
 
 The default offline policy is `KeepLatest`, not history. History's default
 minimum interval is zero; set it explicitly for frequent samples. Retention
-is also bounded by the board's history capacity and resource budget.
+ is also bounded by the board's fixed history capacity.
 
 Configuration transactions, durable command results, and schedule progress
 are separate safety records and are not disabled by a stream's policy.
@@ -182,7 +235,7 @@ power-loss recovery and reconnect endurance still need hardware acceptance.
 Stream helpers cache resolved runtime handles, and history caches only its head
 metadata. These bounded internal optimizations do not require user settings.
 ESP8266 filesystem capacity is cached at mount; advanced integrations can
-request fresh accounting with `Device::storageCapabilities(true)` rather than
+ request fresh accounting with `Device::storageInfo(true)` rather than
 paying for a filesystem traversal on every write/removal.
 
 ## MQTT transport

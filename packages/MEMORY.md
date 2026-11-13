@@ -291,3 +291,61 @@ firmware and the original full-flash backup remain outside the repository.
 After testing, the original 4 MiB flash image was restored with esptool hash
 verification and the temporary TLS ingress was stopped. The dedicated local
 development fixture remains available for future tests.
+
+
+## Cloud-only platform schedules (2026-11-13)
+
+This supersedes the downloaded-schedule runtime/allocation evidence above.
+Platform schedules run in Engine and send existing expiring commands. SDK
+`FlovaScheduleRuntime`, manifest compilation, schedule persistence, renewal and
+schedule-transfer opcodes/records are removed. `FlovaScheduler.h` remains an
+application-owned, eight-entry RAM helper; it never accepts platform schedules.
+The generic resource allocator is gone; fixed capacities and explicit history
+retention still bound their respective features.
+
+With the same pinned toolchains and universal profiles as the interrupted
+scheduling implementation, the final linked results are:
+
+| Profile | Static DRAM | IRAM | Image | Image delta |
+| --- | ---: | ---: | ---: | ---: |
+| universal-esp32 | 76,288 B | 84,714 B | 1,045,888 B | -7,360 B |
+| universal-esp8266 | 48,248 B | 29,015 B | 566,080 B | -7,328 B |
+
+The static DRAM deltas are -64 B and -188 B respectively. The ESP8266
+stock-DRAM check passes all four phase bounds without a schedule allocation.
+The stack guard passes; `stepConfigurationSemantic` and
+`finishConfigurationApply` are now inlined into the checked
+`stepConfigurationWork` frame (208 B), confirmed by the linked symbol table.
+The command receive frame is 96 B and the Arduino transport receive frame is
+32 B. Rare full-message temporaries use separate call frames; the inbound
+message uses the existing connection-owned workspace instead of overlapping
+the durable command/ACK stack. Its measured total is 1,752 B (including the
+256 B message); the phase budget records the actual target type size.
+
+Verification includes all 18 host CTest targets, the four universal/datastream
+ESP32/ESP8266 profiles, embedded test-image builds (without upload/execution),
+and exported SDK builds for both boards. The Engine migration/full database
+suite passes 392 tests in an isolated database; clients pass type checks.
+
+The physical 4 MiB ESP8266 smoke workload passed 34 checks across two boots:
+explicit cloud permission, local timers without network, invalid-clock blocking,
+hardware-write rejection/state preservation, missed-minute skipping, fresh RAM
+runtime behavior, retired opcodes and zero timer storage operations. Observed
+free heap/largest block were 49,168 B; stack headroom was 3,088 B. No GPIO was
+driven. The original complete flash was restored and verified. The timer workload contains no TLS.
+
+A separate non-GPIO physical run used an isolated Engine database and local
+CA/hostname/date-verified, record-bounded TLS ingress. The device reported its
+firmware permission, Engine created and ran a one-time cloud schedule, and the
+ESP8266 handler accepted the RAM write. Engine recorded reported value `true`
+with desired/acknowledged version 1. The full original flash was restored and
+verified again. The first delivery run exposed insufficient stack headroom;
+the command/transport lifetime fixes above were verified in a repeated run.
+Minimum observed connected heap was 23,728 B,
+largest block 23,472 B and continuation stack headroom 1,456 B, passing the
+8,192 B heap and 1,024 B stack floors. Final report:
+`/tmp/opencode/esp8266-cloud-20261113T172215Z/report.json`.
+Restoration was retried at 115200 baud after a serial failure; both the write
+hash and independent full-flash digest verification matched the original image.
+This proves physical cloud delivery on the custom fixture, not production-profile
+TLS/OTA peak heap, SNTP, universal provisioning, or long-run reconnect acceptance.

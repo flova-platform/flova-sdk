@@ -8,7 +8,8 @@
 #include "FlovaBuildConfig.h"
 #include "FlovaConfigurationRuntime.h"
 #include "FlovaDatastreamId.h"
-#include "FlovaResources.h"
+#include "FlovaStorageTypes.h"
+#include "FlovaScheduling.h"
 
 // Canonical standalone embedded SDK runtime. This header intentionally owns only
 // bounded domain state and service seams; board code supplies Link, Storage,
@@ -210,6 +211,7 @@ class Link {
   // bounded and expose the completed result through readDatastreamBinding().
   virtual bool bindingReady() const { return true; }
   virtual bool readDatastreamBinding(DatastreamId*, size_t) const { return false; }
+  virtual void schedulingDeclarations(SchedulingReader, void*, size_t) {}
 };
 
 class Storage {
@@ -224,6 +226,8 @@ class Storage {
   // Removes only records owned by the Flova runtime.
   virtual bool clear() { return false; }
   virtual StorageCapabilities capabilities() const { return StorageCapabilities(); }
+  // Backend facts for explicit developer diagnostics, never feature opt-in.
+  virtual StorageInfo info() const { return capabilities(); }
   // Explicit diagnostics may refresh expensive filesystem accounting. Normal
   // mutations must not traverse the filesystem just to update a usage counter.
   virtual void refreshCapacity() {}
@@ -269,7 +273,7 @@ class Device {
   typedef WriteResult (*FactoryResetHandler)(void* context,
                                              const char* commandId);
   Device(Link& link, Storage& storage, Clock& clock, Logger& logger)
-      : link_(link), storage_(storage), clock_(clock), logger_(logger), count_(0), historyHead_(0), historyCount_(0), lastTimeRequest_(0), timeRequestStarted_(0), timeSequence_(0), nextMessageId_(static_cast<uint64_t>(link.messageNonce()) << 32), retryNotBefore_(0), historyLastSentAt_(0), factoryResetHandler_(nullptr), factoryResetContext_(nullptr), started_(false), bindingPending_(false), bindingFailed_(false), resourcePlanConfigured_(false) {
+      : link_(link), storage_(storage), clock_(clock), logger_(logger), count_(0), historyHead_(0), historyCount_(0), lastTimeRequest_(0), timeRequestStarted_(0), timeSequence_(0), nextMessageId_(static_cast<uint64_t>(link.messageNonce()) << 32), retryNotBefore_(0), historyLastSentAt_(0), factoryResetHandler_(nullptr), factoryResetContext_(nullptr), started_(false), bindingPending_(false), bindingFailed_(false) {
     pendingTimeId_[0] = 0;
   }
 
@@ -279,7 +283,12 @@ class Device {
   bool begin() {
     if (started_) return false;
     if (!link_.messageNonce()) return false;
-    if (!resourcePlanConfigured_) configureDefaultResources();
+    for (size_t i = 0; i < count_; ++i) {
+      if (states_[i].scheduling != Scheduling::Disabled &&
+          (states_[i].mode == Mode::Sample || states_[i].mode == Mode::Event))
+        return false;
+    }
+    link_.schedulingDeclarations(readScheduling, this, count_);
     link_.setReceiver(receive, this);
     DatastreamId ids[kMaxDatastreams] = {};
 #if FLOVA_STREAM_DESCRIPTORS_IN_STORAGE
@@ -345,10 +354,11 @@ class Device {
   }
 
   const Diagnostics& diagnostics() const { return diagnostics_; }
-  StorageCapabilities storageCapabilities(bool refresh = false) {
+  StorageInfo storageInfo(bool refresh = false) {
     if (refresh) storage_.refreshCapacity();
-    return storage_.capabilities();
+    return storage_.info();
   }
+  StorageInfo storageCapabilities(bool refresh = false) { return storageInfo(refresh); }
   bool flushPersistence() {
     bool ok = true;
     for (size_t i = 0; i < count_; ++i)
@@ -356,6 +366,18 @@ class Device {
     return ok;
   }
   size_t datastreamCount() const { return count_; }
+  // Universal firmware may explicitly delegate cloud scheduling for mapped
+  // outputs. Custom declarations still opt in per stream before begin().
+  bool allowCloudSchedulingForOutputs(bool enabled) {
+    if (started_) return false;
+    cloudSchedulingForOutputs_ = enabled;
+    return true;
+  }
+  Scheduling scheduling(DatastreamId id) const {
+    for (size_t i = 0; i < count_; ++i)
+      if (states_[i].id == id) return states_[i].scheduling;
+    return Scheduling::Disabled;
+  }
   bool ready() const { return started_ && !bindingPending_ && !bindingFailed_ && link_.connected(); }
   uint64_t originateMessageId() { return ++nextMessageId_; }
 
@@ -373,11 +395,6 @@ class Device {
       if (strcmp(resultWorkspace_.message.commandId, commandId) == 0) return true;
     }
     return false;
-  }
-
-  void resourcePlan(const ResourceBudget* budgets, size_t count) {
-    resources_.configure(storage_.capabilities().usableBytes, budgets, count);
-    resourcePlanConfigured_ = true;
   }
 
   template <typename T> Datastream<T> datastream(const char* key);
@@ -445,6 +462,10 @@ class Device {
       if (!current) current = named ? named : state(unit.data.datastream.key, type);
       if (!current) return false;
       current->id = unit.data.datastream.id;
+      if (cloudSchedulingForOutputs_ && unit.data.datastream.hasMapping &&
+          (unit.data.datastream.mapping.kind == config::MappingKind::DigitalOutput ||
+           unit.data.datastream.mapping.kind == config::MappingKind::PwmOutput))
+        current->scheduling = Scheduling::CloudOnly;
       return true;
     }
     if (unit.kind == config::UnitKind::Safety) {
@@ -529,8 +550,7 @@ class Device {
              (!unit.data.parameter.hasValue || config::valueTypeMatches(unit.data.parameter.value, unit.data.parameter.valueType)) &&
              (!unit.data.parameter.hasDefault || config::valueTypeMatches(unit.data.parameter.defaultValue, unit.data.parameter.valueType));
     }
-    return static_cast<uint8_t>(unit.kind) <=
-           static_cast<uint8_t>(config::UnitKind::ScheduleOccurrences);
+    return unit.kind == config::UnitKind::System;
   }
 
  private:
@@ -733,6 +753,7 @@ class Device {
     bool persistenceStored : 1;
     WriteHandlerKind writeKind : 5;
     uint8_t safetyPolicy : 3;
+    Scheduling scheduling = Scheduling::Disabled;
     State() : valueType(ValueType::Text), mode(Mode::State),
         offline(OfflinePolicy::KeepLatest), persistence(PersistencePolicy::None),
         origin(Origin::Unknown), quality(Quality::Stale), hasValue(false),
@@ -740,6 +761,14 @@ class Device {
         persistenceStored(false), writeKind(WriteHandlerKind::None),
         safetyPolicy(0) {}
   };
+  static bool readScheduling(void* context, size_t index, uint16_t& id,
+                             Scheduling& mode) {
+    Device& device = *static_cast<Device*>(context);
+    if (index >= device.count_ || !flovaValidDatastreamId(device.states_[index].id)) return false;
+    id = device.states_[index].id;
+    mode = device.states_[index].scheduling;
+    return true;
+  }
   static Value readValue(const State& state) {
     Value result;
     result.type = state.valueType;
@@ -764,24 +793,6 @@ class Device {
   struct Persisted { uint32_t magic; DatastreamId datastreamId; Value value; uint32_t revision; };
   struct HistoryRecord { DatastreamId datastreamId; Value value; uint64_t messageId; uint64_t timestamp; uint64_t monotonic; uint64_t expiresAt; Origin origin; uint32_t revision; };
   struct HistoryMeta { uint32_t magic; uint16_t head; uint16_t count; };
-
-  void configureDefaultResources() {
-    ResourceBudget budgets[static_cast<size_t>(ResourceKind::Count)];
-    const StorageCapabilities storage = storage_.capabilities();
-    const uint32_t historyCapacity =
-        static_cast<uint32_t>(FLOVA_HISTORY_CAPACITY * sizeof(HistoryRecord));
-    uint32_t historyMaximum = historyCapacity;
-    if (storage.usableBytes < historyMaximum) historyMaximum = storage.usableBytes;
-    if (storage.maxRecordBytes && storage.maxRecordBytes < sizeof(HistoryRecord))
-      historyMaximum = 0;
-    ResourceBudget& history =
-        budgets[static_cast<size_t>(ResourceKind::History)];
-    history.maximumBytes = historyMaximum;
-    history.elastic = true;
-    resources_.configure(storage.usableBytes, budgets,
-                         static_cast<size_t>(ResourceKind::Count));
-    resourcePlanConfigured_ = true;
-  }
 
   State* state(const char* key, ValueType type) {
     if (!key || !*key || strlen(key) > FLOVA_MAX_DATASTREAM_KEY_LENGTH) return nullptr;
@@ -859,9 +870,7 @@ class Device {
       return;
     }
     if (prior == -2 || !reserveCommand(message)) {
-      Message reply;
-      fillReply(reply, message, WriteResult::failure("command_storage_unavailable"), nullptr);
-      link_.send(reply);
+      replyStorageUnavailable(message);
       return;
     }
     if (message.datastreamId == FLOVA_FACTORY_RESET_DATASTREAM_ID) {
@@ -947,6 +956,21 @@ class Device {
     return true;
   }
 
+  // Keep full Message temporaries out of receive's frame. Otherwise GCC keeps
+  // that frame live while acknowledge() builds a second reply, exhausting the
+  // ESP8266 continuation stack during a durable command completion.
+#if defined(__GNUC__)
+  __attribute__((noinline))
+#endif
+  void replyStorageUnavailable(const Message& request) {
+    Message reply;
+    fillReply(reply, request, WriteResult::failure("command_storage_unavailable"), nullptr);
+    link_.send(reply);
+  }
+
+#if defined(__GNUC__)
+  __attribute__((noinline))
+#endif
   bool reserveCommand(const Message& request) {
     if (!request.commandId[0] || strnlen(request.commandId, kMaxText) == kMaxText) return false;
     size_t slot = FLOVA_COMMAND_DEDUP_CAPACITY;
@@ -1335,25 +1359,24 @@ class Device {
     expireHistory();
     const uint32_t recordBytes = sizeof(HistoryRecord);
     const uint32_t recordLimit = history.maximumRecords ? history.maximumRecords : FLOVA_HISTORY_CAPACITY;
-    const uint32_t byteLimit = history.maximumBytes ? history.maximumBytes : resources_.budget(ResourceKind::History).maximumBytes;
+    const size_t byteLimit = history.maximumBytes ? history.maximumBytes : FLOVA_HISTORY_CAPACITY * sizeof(HistoryRecord);
     if (history.overflow == HistoryOverflow::DropNewest &&
-        (historyCount_ >= recordLimit || resources_.usage(ResourceKind::History).usedBytes + recordBytes > byteLimit)) {
+        (historyCount_ >= recordLimit || (historyCount_ + 1) * recordBytes > byteLimit)) {
       diagnostics_.queueOverflow++; diagnostics_.droppedHistory++; return false;
     }
-    while (historyCount_ && (historyCount_ >= recordLimit || resources_.usage(ResourceKind::History).usedBytes + recordBytes > byteLimit))
+    while (historyCount_ && (historyCount_ >= recordLimit || (historyCount_ + 1) * recordBytes > byteLimit))
       if (!dropOldest(false, true)) return false;
-    if (historyCount_ >= FLOVA_HISTORY_CAPACITY || !resources_.reserve(ResourceKind::History, recordBytes)) {
+    if (historyCount_ >= FLOVA_HISTORY_CAPACITY || recordBytes > byteLimit) {
       diagnostics_.queueOverflow++; diagnostics_.droppedHistory++; return false;
     }
     size_t slot = (historyHead_ + historyCount_) % FLOVA_HISTORY_CAPACITY; HistoryRecord& record = historyWorkspace_;
     record.datastreamId = state.id; record.value = readValue(state); record.messageId = originateMessageId(); record.timestamp = clock_.utcValid() ? clock_.utcMilliseconds() : 0; record.monotonic = clock_.milliseconds(); record.expiresAt = record.timestamp && history.maximumAgeSeconds ? record.timestamp + static_cast<uint64_t>(history.maximumAgeSeconds) * 1000 : 0; record.origin = state.origin; record.revision = state.revision; historyCount_++;
     char key[24]; snprintf(key, sizeof(key), "history:%u", (unsigned)slot);
     if (!storage_.write(key, &record, sizeof(record))) {
-      historyCount_--; resources_.release(ResourceKind::History, recordBytes); diagnostics_.storageFailures++; return false;
+      historyCount_--; diagnostics_.storageFailures++; return false;
     }
     if (!persistHistoryMeta()) {
       historyCount_--;
-      resources_.release(ResourceKind::History, recordBytes);
       return false;
     }
     if (historyCount_ == 1) cacheHistoryHead(record);
@@ -1385,7 +1408,6 @@ class Device {
     historyLastSentAt_ = 0;
     char key[24]; snprintf(key, sizeof(key), "history:%u", (unsigned)oldHead);
     if (!storage_.remove(key)) ++diagnostics_.storageFailures;
-    resources_.release(ResourceKind::History, sizeof(HistoryRecord), expired || dropped);
     if (expired) ++diagnostics_.expiredHistory;
     else if (dropped) ++diagnostics_.droppedHistory;
     return true;
@@ -1422,15 +1444,13 @@ class Device {
   }
   bool persistHistoryMeta() { HistoryMeta meta = {0x48495355UL, (uint16_t)historyHead_, (uint16_t)historyCount_}; if (storage_.write("history.meta", &meta, sizeof(meta))) return true; ++diagnostics_.storageFailures; return false; }
   void restoreHistory() {
-    resources_.release(ResourceKind::History,
-                       resources_.usage(ResourceKind::History).usedBytes);
     historyCount_ = 0;
     historyLastSentAt_ = 0;
     historyHeadCached_ = false;
     historyReadRetryAt_ = 0;
     HistoryMeta meta; if (!storage_.read("history.meta", &meta, sizeof(meta)) || meta.magic != 0x48495355UL || meta.head >= FLOVA_HISTORY_CAPACITY || meta.count > FLOVA_HISTORY_CAPACITY) return;
     historyHead_ = meta.head; historyCount_ = 0;
-    for (size_t i = 0; i < meta.count; ++i) { size_t slot = (meta.head + i) % FLOVA_HISTORY_CAPACITY; char key[24]; snprintf(key, sizeof(key), "history:%u", (unsigned)slot); if (!storage_.read(key, &historyWorkspace_, sizeof(HistoryRecord)) || !resources_.reserve(ResourceKind::History, sizeof(HistoryRecord))) { diagnostics_.storageFailures++; break; } historyCount_++; }
+    for (size_t i = 0; i < meta.count; ++i) { size_t slot = (meta.head + i) % FLOVA_HISTORY_CAPACITY; char key[24]; snprintf(key, sizeof(key), "history:%u", (unsigned)slot); if (!storage_.read(key, &historyWorkspace_, sizeof(HistoryRecord))) { diagnostics_.storageFailures++; break; } historyCount_++; }
   }
   void restoreResults() {
     for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {
@@ -1519,10 +1539,11 @@ class Device {
   uint64_t resultSequence_ = 0;
   ResultIndex pendingResults_[FLOVA_COMMAND_DEDUP_CAPACITY];
   mutable PendingResult resultWorkspace_;
-  HistoryRecord historyWorkspace_; size_t historyHead_, historyCount_; ResourceManager resources_;
+  HistoryRecord historyWorkspace_; size_t historyHead_, historyCount_;
   uint64_t lastTimeRequest_, timeRequestStarted_; uint32_t timeSequence_; uint64_t nextMessageId_; uint64_t retryNotBefore_; uint64_t historyLastSentAt_; char pendingTimeId_[kMaxText]; Diagnostics diagnostics_;
   FactoryResetHandler factoryResetHandler_; void* factoryResetContext_;
-  bool started_, bindingPending_, bindingFailed_, resourcePlanConfigured_;
+  bool started_, bindingPending_, bindingFailed_;
+  bool cloudSchedulingForOutputs_ = false;
 };
 
 template <> struct Codec<bool> { static bool valid(bool) { return true; } static Value encode(bool v) { return Value::from(v); } static bool decode(const Value& v) { return v.scalar.boolean; } };
@@ -1543,6 +1564,12 @@ template <typename T> class Datastream {
   WriteResult write(const T& value) { return !Codec<T>::valid(value) ? WriteResult::reject("text_too_long") : state() ? device_->apply(*state(), Codec<T>::encode(value), Origin::LocalLogic) : WriteResult::failure("registration_full"); }
   WriteResult report(const T& value, Origin origin = Origin::SensorRead) { return !Codec<T>::valid(value) ? WriteResult::reject("text_too_long") : state() ? device_->report(*state(), Codec<T>::encode(value), origin) : WriteResult::failure("registration_full"); }
   Datastream& mode(Mode value) { if (state()) state()->mode = value; return *this; }
+  Datastream& scheduling(Scheduling value) {
+    if (!state() || device_->started_ || static_cast<uint8_t>(value) > 1)
+      slot_ = kMaxDatastreams;
+    else state()->scheduling = value;
+    return *this;
+  }
   Datastream& offline(OfflinePolicy value) { if (state()) state()->offline = value; return *this; }
   Datastream& retention(const HistoryRetentionPolicy& value) { if (state() && !device_->retention(*state(), value)) slot_ = kMaxDatastreams; return *this; }
   Datastream& persist(PersistencePolicy value, uint32_t intervalMs = 1000) {

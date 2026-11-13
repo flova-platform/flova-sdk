@@ -26,10 +26,8 @@ static_assert(kMaximumRecordBytes <= 448,
 enum class RecordKind : uint8_t {
   Datastream = 0,
   System = 1,
-  Schedule = 2,
   Safety = 3,
-  ScheduleOccurrences = 4
-  ,Parameter = 5
+  Parameter = 5
 };
 
 struct Checksum {
@@ -474,7 +472,8 @@ class Installer {
 
   static bool valid(const Record& record) {
     return record.length != 0 && record.length <= kMaximumRecordBytes &&
-           static_cast<uint8_t>(record.kind) <= static_cast<uint8_t>(RecordKind::Parameter);
+           (record.kind == RecordKind::Datastream || record.kind == RecordKind::System ||
+            record.kind == RecordKind::Safety || record.kind == RecordKind::Parameter);
   }
 
   static bool matches(const GenerationManifest& manifest, const Begin& begin) {

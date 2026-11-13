@@ -17,6 +17,7 @@ class FlovaUniversalEsp8266 final {
         client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
                 clock_, logger_, entropy_, hardware_) {
     analogWriteRange(255);
+    client_.device().allowCloudSchedulingForOutputs(true);
     client_.setFirmwareTarget("universal_esp8266");
     client_.setOtaEnabled(true);
     client_.setRestartHandler(scheduleRestart, this);

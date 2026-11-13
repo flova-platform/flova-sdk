@@ -10,6 +10,7 @@
 #include <time.h>
 
 #include <FlovaRuntimeServices.h>
+#include <FlovaDevice.h>
 #include <FlovaWifiProvisioning.h>
 #include <adapters/ArduinoFlovaUtcBootstrap.h>
 

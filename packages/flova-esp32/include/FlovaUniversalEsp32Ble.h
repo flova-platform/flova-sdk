@@ -27,6 +27,7 @@ class FlovaUniversalEsp32Ble final {
         identity_(FLOVA_UNIVERSAL_ESP32_BLE_TARGET),
         client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
                 clock_, logger_, entropy_, hardware_) {
+    client_.device().allowCloudSchedulingForOutputs(true);
     client_.setFirmwareTarget(FLOVA_UNIVERSAL_ESP32_BLE_TARGET);
     client_.setOtaProfile(FlovaOtaStrategy::Ab, FLOVA_UNIVERSAL_ESP32_BLE_LAYOUT, true);
     client_.setOtaEnabled(true);

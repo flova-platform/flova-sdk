@@ -30,10 +30,12 @@ class Scheduler {
   static const size_t kCapacity = 8;
   explicit Scheduler(WallClock& clock) : clock_(clock), count_(0) {}
 
+  // The application owns the clock and timezone string for this scheduler's
+  // lifetime. Entries/cursors are RAM-only and are registered again after reset.
   bool daily(uint8_t hour, uint8_t minute, const char* timezone,
              ScheduleHandler handler, uint8_t weekdays = 0x7f) {
     if (count_ == kCapacity || hour > 23 || minute > 59 || !timezone ||
-        !handler || weekdays == 0) return false;
+        !timezone[0] || !handler || weekdays == 0 || weekdays > 0x7f) return false;
     Entry& entry = entries_[count_++];
     entry.hour = hour;
     entry.minute = minute;
@@ -54,7 +56,7 @@ class Scheduler {
           now.minute != entry.minute) continue;
       const uint32_t date = static_cast<uint32_t>(now.year) * 10000UL +
                             static_cast<uint32_t>(now.month) * 100UL + now.day;
-      if (entry.lastDate == date) continue;  // run once during the due minute
+      if (date <= entry.lastDate) continue;  // no replay after a backward clock correction
       entry.lastDate = date;
       entry.handler();
     }

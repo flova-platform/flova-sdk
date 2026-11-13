@@ -14,8 +14,6 @@ type,name,direction,payload_type,reliability
 0x12,command_result,device_to_engine,command-result,durable
 0x13,config_reported,device_to_engine,config-reported,durable
 0x14,ota_reported,device_to_engine,ota-reported,durable
-0x15,schedule_reported,device_to_engine,schedule-reported,durable
-0x16,schedule_renew,device_to_engine,schedule-renew,durable
 0x17,time_request,device_to_engine,time-request,best_effort
 0x18,config_ack,device_to_engine,config-ack,transactional
 0x19,lifecycle_report,device_to_engine,lifecycle-report,durable
@@ -23,14 +21,13 @@ type,name,direction,payload_type,reliability
 0x21,ingestion_ack,engine_to_device,ingestion-ack,durable
 0x22,config_desired,engine_to_device,config-desired,durable
 0x23,ota_desired,engine_to_device,ota-desired,durable
-0x24,schedule_desired,engine_to_device,schedule-desired,durable
 0x25,time_response,engine_to_device,time-response,best_effort
 0x26,flow_control,engine_to_device,flow-control,best_effort
 0x27,message_rejected,engine_to_device,message-rejected,durable
 0x28,config_begin,engine_to_device,config-begin,transactional
 0x29,config_record,engine_to_device,config-record,transactional
 0x2a,config_end,engine_to_device,config-end,transactional
-0x2b,schedule_record,engine_to_device,schedule-record-message,transactional
-0x2c,schedule_end,engine_to_device,schedule-end,transactional
 0x2d,lifecycle_ready,engine_to_device,lifecycle-ready,session
+0x2e,scheduling_ready,engine_to_device,scheduling-ready,session
+0x2f,scheduling_declarations,device_to_engine,scheduling-declarations,session
 0x7f,error,bidirectional,error,session

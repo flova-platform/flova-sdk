@@ -60,7 +60,7 @@ UUID1 = bytes.fromhex("00112233445566778899aabbccddeeff")
 UUID2 = bytes.fromhex("ffeeddccbbaa99887766554433221100")
 SECRET = bytes(range(32))
 SHA = bytes.fromhex("a5" * 32)
-CAPS = {0: 100, 1: 16, 2: 16, 3: 8, 4: 32, 5: 2048, 6: 1024, 7: 512}
+CAPS = {0: 100, 1: 16, 2: 16, 3: 8, 4: 0, 5: 0, 6: 1024, 7: 512}
 
 VECTORS = [
     (0x01, "auth", [UUID1, SECRET]),
@@ -78,23 +78,20 @@ VECTORS = [
     (0x12, "command_result", [7, UUID1, 1, 0, 0, True, 9, b""]),
     (0x13, "config_reported", [7, 0, SHA]),
     (0x14, "ota_reported", [UUID1, 2, "ok", 100]),
-    (0x15, "schedule_reported", [7, 12, 0, SHA]),
-    (0x16, "schedule_renew", [7, 12]),
     (0x17, "time_request", [42, 123_456]),
     (0x18, "config_ack", [7, 3, 0, "ok"]),
     (0x20, "command", [7, UUID1, 1, 3, F64(42.25), 9, 1_800_000_030_000, UUID2]),
     (0x21, "ingestion_ack", []),
     (0x22, "config_desired", [8, SHA, 3]),
     (0x23, "ota_desired", {0: UUID1, 1: "1.1.0", 2: "https://fw.flova.dev/a.bin", 3: SHA, 4: 262144, 5: "universal-esp8266", 6: UUID2}),
-    (0x24, "schedule_desired", [7, 13, 1, SHA]),
     (0x25, "time_response", [42, 1_800_000_000_000]),
     (0x26, "flow_control", [5_000, "overloaded", 8]),
     (0x27, "message_rejected", ["invalid_state"]),
     (0x28, "config_begin", {0: 8, 1: 1, 2: SHA, 3: 2, 4: CAPS, 5: UUID1, 6: UUID2, 7: "wss://link.flova.dev/device", 8: UUID1}),
     (0x29, "config_record", {0: 8, 1: 0, 2: {0: 0, 1: 1, 2: UUID1, 3: "relay", 4: 0, 7: [0, False], 8: {0: 1, 1: 5, 2: True, 6: 300}}}),
     (0x2A, "config_end", [8, 2, SHA]),
-    (0x2B, "schedule_record", [8, 0, {0: 2, 1: 12, 2: True, 3: 1_800_000_000_000, 4: 1_800_086_400_000, 5: [[0, 1, 0, True]]}]),
-    (0x2C, "schedule_end", [8, 1, SHA]),
+    (0x2E, "scheduling_ready", []),
+    (0x2F, "scheduling_declarations", [7, 0, 3, [[1, 1], [2, 1], [3, 0]]]),
     (0x7F, "error", ["malformed_payload"]),
     (0x10, "heartbeat_pin_references", [7, 123_456, 1, "1.0.0", "universal_esp32", b"", b"", {0: 1_310_720, 1: 0, 2: "legacy", 3: False}, {**CAPS, 8: True}]),
     (0x06, "bootstrap_pin_references", {0: b"t" * 32, 1: SECRET, 2: "esp-aabbcc", 3: "universal-esp8266", 4: {**CAPS, 8: True}}),

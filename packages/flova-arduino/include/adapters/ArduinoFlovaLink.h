@@ -3,6 +3,7 @@
 #include <FlovaFlashLog.h>
 
 #include <Arduino.h>
+#include <new>
 
 #include <FlovaDevice.h>
 #include <FlovaClientLink.h>
@@ -11,7 +12,7 @@
 #include "ArduinoDeviceLink.h"
 
 // Canonical flova::Link adapter for Arduino projects. It deliberately maps
-// only the core state/command/time contract; provisioning, OTA, schedules,
+// only the core state/command/time contract; provisioning, OTA,
 // and configuration installation remain opt-in board services.
 class ArduinoFlovaLink : public FlovaClientLink {
  public:
@@ -131,12 +132,9 @@ class ArduinoFlovaLink : public FlovaClientLink {
     return true;
   }
 
-  bool publishScheduleStatus(const FlovaLinkScheduleStatus& status) override {
-    return transport_.publishScheduleStatus(status);
-  }
-
-  bool publishScheduleRenew(const FlovaLinkScheduleStatus& status) override {
-    return transport_.publishScheduleRenew(status);
+  void schedulingDeclarations(flova::SchedulingReader reader, void* context,
+                              size_t count) override {
+    transport_.schedulingDeclarations(reader, context, count);
   }
 
   bool takeOtaOffer(FlovaLinkOtaOffer& offer) override {
@@ -376,6 +374,8 @@ class ArduinoFlovaLink : public FlovaClientLink {
     FlovaLinkBootstrapCommitted bootstrapCommitted_ = {};
     FlovaLinkConfigurationRecord configuration_[2] = {};
     FlovaLinkOtaOffer otaOffer_ = {};
+    // Borrowed for the synchronous receiver call; keep it off the command/ACK stack.
+    flova::Message inboundMessage_;
   };
   FlovaPhaseStorage<PendingRecords> pendingRecords_;
   bool enterHandshake() {
@@ -562,7 +562,9 @@ class ArduinoFlovaLink : public FlovaClientLink {
       return;
     }
     if (!receiver_) return;
-    flova::Message message;
+    flova::Message& message = pendingRecords_->inboundMessage_;
+    message.~Message();
+    new (&message) flova::Message();
     if (inbound.type == FlovaLinkMessageType::Acknowledgement) {
       message.kind = flova::MessageKind::Acknowledgement;
       message.messageId = inbound.body.acknowledgement.acknowledgedMessageId;

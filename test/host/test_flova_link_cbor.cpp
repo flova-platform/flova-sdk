@@ -58,8 +58,6 @@ void verifyVector(const FlovaLinkVector& vector) {
     case 0x12: VERIFY_SCHEMA(command_result_r, cbor_decode_command_result, cbor_encode_command_result); break;
     case 0x13: VERIFY_SCHEMA(config_reported, cbor_decode_config_reported, cbor_encode_config_reported); break;
     case 0x14: VERIFY_SCHEMA(ota_reported, cbor_decode_ota_reported, cbor_encode_ota_reported); break;
-    case 0x15: VERIFY_SCHEMA(schedule_reported, cbor_decode_schedule_reported, cbor_encode_schedule_reported); break;
-    case 0x16: VERIFY_SCHEMA(schedule_renew, cbor_decode_schedule_renew, cbor_encode_schedule_renew); break;
     case 0x17: VERIFY_SCHEMA(time_request, cbor_decode_time_request, cbor_encode_time_request); break;
     case 0x18: VERIFY_SCHEMA(config_ack, cbor_decode_config_ack, cbor_encode_config_ack); break;
     case 0x19: VERIFY_SCHEMA(lifecycle_report, cbor_decode_lifecycle_report, cbor_encode_lifecycle_report); break;
@@ -67,16 +65,15 @@ void verifyVector(const FlovaLinkVector& vector) {
     case 0x21: verifyEmpty(frame.payload, frame.payloadLength, cbor_decode_ingestion_ack, cbor_encode_ingestion_ack); break;
     case 0x22: VERIFY_SCHEMA(config_desired, cbor_decode_config_desired, cbor_encode_config_desired); break;
     case 0x23: VERIFY_SCHEMA(ota_desired, cbor_decode_ota_desired, cbor_encode_ota_desired); break;
-    case 0x24: VERIFY_SCHEMA(schedule_desired, cbor_decode_schedule_desired, cbor_encode_schedule_desired); break;
     case 0x25: VERIFY_SCHEMA(time_response, cbor_decode_time_response, cbor_encode_time_response); break;
     case 0x26: VERIFY_SCHEMA(flow_control, cbor_decode_flow_control, cbor_encode_flow_control); break;
     case 0x27: VERIFY_SCHEMA(zcbor_string, cbor_decode_message_rejected, cbor_encode_message_rejected); break;
     case 0x28: VERIFY_SCHEMA(config_begin, cbor_decode_config_begin, cbor_encode_config_begin); break;
     case 0x29: VERIFY_SCHEMA(config_record, cbor_decode_config_record, cbor_encode_config_record); break;
     case 0x2a: VERIFY_SCHEMA(config_end, cbor_decode_config_end, cbor_encode_config_end); break;
-    case 0x2b: VERIFY_SCHEMA(schedule_record_message, cbor_decode_schedule_record_message, cbor_encode_schedule_record_message); break;
-    case 0x2c: VERIFY_SCHEMA(schedule_end, cbor_decode_schedule_end, cbor_encode_schedule_end); break;
     case 0x2d: verifyEmpty(frame.payload, frame.payloadLength, cbor_decode_lifecycle_ready, cbor_encode_lifecycle_ready); break;
+    case 0x2e: verifyEmpty(frame.payload, frame.payloadLength, cbor_decode_scheduling_ready, cbor_encode_scheduling_ready); break;
+    case 0x2f: VERIFY_SCHEMA(scheduling_declarations, cbor_decode_scheduling_declarations, cbor_encode_scheduling_declarations); break;
     case 0x7f: VERIFY_SCHEMA(zcbor_string, cbor_decode_error, cbor_encode_error); break;
     default: assert(false);
   }
