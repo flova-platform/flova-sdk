@@ -57,26 +57,20 @@ this removes a redundant peer-ACK wait, not the synchronous work in BearSSL.
 Applications requiring uninterrupted low-latency hardware handling should use
 ESP32 or hardware peripherals that operate independently of the application loop.
 
-Arbitrary endpoints use 16,384-byte TLS RX and 512-byte TX profiles. The
-default-MMU production candidate uses 2,048-byte RX only when
-`FLOVA_ESP8266_BOUNDED_TLS_RECORDS` asserts that both Link and OTA endpoints
-bound every server record to that profile. The 512-byte Flova frame bound does
-not constrain TLS records. Memory preflight checks free heap
-and largest block before constructing the secure client; actual allocation can
-still fail. The shipped four-stream profile retains shared IRAM. Default-MMU
-four- and 64-stream bounded-endpoint candidates pass the theoretical static
-gate but remain diagnostic builds until endpoint and hardware acceptance. See [memory
-acceptance](MEMORY.md). A compile result alone proves neither available TLS
-heap nor successful provisioning.
+ESP8266 uses the stock Arduino MMU and DRAM allocator, with 2,048-byte TLS RX
+and 512-byte TX buffers. Flova endpoints must bound every server TLS record to
+2,048 bytes; the official TLS edge provides this contract. The 512-byte Flova
+frame limit does not constrain TLS record size. CA, hostname and certificate-date
+verification remain enabled. For another endpoint without this guarantee, set
+`FLOVA_ESP8266_BOUNDED_TLS_RECORDS=0` to use 16,384-byte RX; this requires more
+contiguous DRAM and may fail preflight on a small device.
 
-Connection and OTA HTTP setup explicitly select DRAM for TLS contexts and TCP
-allocations. The secure client is created only after resource preflight and
-released on Link closure or OTA completion, including failure paths. This also
-releases stock BearSSL's shared 6,200-byte secondary stack when no other client
-owns it. Trust anchors are parsed once from flash-resident PEM data. Stock BearSSL independently prefers IRAM for record buffers and
-falls back to DRAM. Never wrap the entire handshake in an IRAM heap selector:
-the contexts then compete with the receive buffer and invalidate the
-separate DRAM/IRAM preflight budgets.
+No optional IRAM heap or custom MMU is supported. The build rejects
+`MMU_IRAM_HEAP`. Memory preflight checks free DRAM and its largest block before
+constructing the secure client; actual allocation can still fail. The client is
+released on Link closure or OTA completion, including failure paths, releasing
+BearSSL's shared 6,200-byte secondary stack when its last owner exits. Trust
+anchors are parsed once from flash-resident PEM data. See [memory acceptance](MEMORY.md).
 
 ## Build and diagnostics
 

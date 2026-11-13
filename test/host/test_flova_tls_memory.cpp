@@ -24,18 +24,8 @@ int main() {
   assert(status(TlsUse::Ota) == TlsResourceStatus::InsufficientMemory);
   heap.dramFree += 4096;
   assert(status(TlsUse::Ota) == TlsResourceStatus::Ready);
-  // Optional IRAM may be exhausted. BearSSL is permitted to use DRAM instead.
-  heap.iramEnabled = true;
-  assert(status() == TlsResourceStatus::Ready);
-  heap.dramFree = dram;
-  heap.dramMaxBlock = kBearSslStackBytes + kTlsDramBlockReserveBytes;
-  heap.iramFree = input + output + kTlsIramReserveBytes;
-  heap.iramMaxBlock = input;
-  assert(status() == TlsResourceStatus::Ready);
-  --heap.iramMaxBlock;
-  assert(status() == TlsResourceStatus::InsufficientMemory);
-  heap.iramMaxBlock = input;
-  heap.dramFree -= kBearSslStackBytes;
+  // Once allocated, the secondary stack is not charged a second time.
+  heap.dramFree = dram + input + output - kBearSslStackBytes;
   assert(status() == TlsResourceStatus::InsufficientMemory);
   assert(status(TlsUse::Link, true) == TlsResourceStatus::Ready);
 

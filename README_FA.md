@@ -40,7 +40,6 @@ FlovaSDK کیت توسعه رسمی C++ برای اتصال دستگاه‌ها 
 ```ini
   lib_deps = flova-platform/FlovaSDK@^0.3.12
 build_flags =
-  -DPIO_FRAMEWORK_ARDUINO_MMU_CACHE16_IRAM48_SECHEAP_SHARED
 ```
 
 ### Arduino IDE

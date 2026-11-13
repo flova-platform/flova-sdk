@@ -19,6 +19,8 @@ class Board:
 BOARDS = {
     "esp32": Board("datastream-api-esp32", "test-esp32", "esp32", 4 * 1024 * 1024,
                    "platform_esp32.h"),
+    "esp8266": Board("datastream-api-esp8266", "test-esp8266", "esp8266", 4 * 1024 * 1024,
+                     "platform_esp8266.h"),
 }
 
 
@@ -62,5 +64,5 @@ def esptool_path():
     core = Path(os.environ.get("PLATFORMIO_CORE_DIR", Path.home() / ".platformio"))
     path = core / "packages/tool-esptoolpy/esptool.py"
     if not path.is_file():
-        raise RuntimeError("PlatformIO esptool not found; build the ESP32 environment first")
+        raise RuntimeError("PlatformIO esptool not found; build the selected board environment first")
     return path

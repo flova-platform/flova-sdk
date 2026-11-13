@@ -9,6 +9,8 @@
 using TestClient = FlovaEsp32;
 
 namespace board_test {
+inline void sampleMemory() {}
+inline void printMemoryFields() {}
 inline void connect() { WiFi.begin(TEST_WIFI_SSID, TEST_WIFI_PASSWORD); }
 inline void begin() {
   WiFi.persistent(false);

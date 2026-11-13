@@ -72,9 +72,7 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
       // no polling facade can make its cryptographic work nonblocking.
       const uint32_t started = millis();
       bool connected = false;
-      // BearSSL selects IRAM for record buffers itself. Keep its contexts and
-      // TCP allocations in DRAM, matching the separate preflight budgets.
-      { HeapSelectDram dram; connected = client_->connect(linkHost_, linkPort_); }
+      connected = client_->connect(linkHost_, linkPort_);
       if (!connected) {
         linkError_ = "link_tls_failed";
         flova::logLinkTlsFailure(*client_);
@@ -152,8 +150,8 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
       return flova::OtaInstallResult::DownloadFailed;
     http.setTimeout(flova::kHttpsTimeoutMs);
     int status = 0;
-    // OTA uses the same context/buffer heap split as Device Link.
-    { HeapSelectDram dram; status = http.GET(); }
+    // OTA uses the same stock DRAM allocator as Device Link.
+    status = http.GET();
     if (status != HTTP_CODE_OK || static_cast<uint32_t>(http.getSize()) != offer.sizeBytes) {
       http.end();
       return flova::OtaInstallResult::DownloadFailed;
@@ -210,7 +208,6 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
  private:
   bool createClient() {
     if (client_) return true;
-    HeapSelectDram dram;
     client_ = new (std::nothrow) BearSSL::WiFiClientSecure;
     return client_ != nullptr;
   }

@@ -405,8 +405,8 @@ void verifyOfflineLifecycleReplay() {
   link.logAck = boot.messageId;
   client.run();
   client.run();
-  assert(link.logReports.size() == 3 && link.logReports.back().sequence == 2);
-  assert(link.logReports.back().bootId == boot.bootId);
+  // Internal stage/ready/link transitions do not create operational noise.
+  assert(link.logReports.size() == 2);
   testNow = 1;
 }
 

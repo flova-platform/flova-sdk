@@ -590,10 +590,17 @@ class ArduinoDeviceLink final {
   }
 
  private:
+  // The embedded memory budget uses 32-bit pointers; host codec records are larger.
+  static_assert(sizeof(uintptr_t) > 4 || sizeof(datastream_bind) <= sizeof(FlovaLinkInboundMessage), "Binding encode must fit the existing inbound slot");
+  static_assert(sizeof(uintptr_t) > 4 || sizeof(datastream_bound) <= sizeof(FlovaLinkInboundMessage), "Binding decode must fit the existing inbound slot");
   struct Workspace {
     uint8_t tx_[kTransmitWorkspaceBytes] = {};
     uint8_t pendingFrames_[kPendingFrameSlots][kFrameBytes] = {};
-    FlovaLinkInboundMessage inbound_ = {};
+    union {
+      FlovaLinkInboundMessage inbound_ = {};
+      struct datastream_bind bindingEncodeWorkspace_;
+      struct datastream_bound bindingDecodeWorkspace_;
+    };
     union {
       struct config_record configurationDecodeWorkspace_ = {};
       char bindingNames_[9][FLOVA_MAX_DATASTREAM_KEY_LENGTH + 1];
@@ -728,7 +735,9 @@ class ArduinoDeviceLink final {
     const uint8_t remaining = bindingCount_ - bindingOffset_;
     bindingBatchCount_ = remaining > 9 ? 9 : remaining;
     if (!bindingBatchCount_) return false;
-    struct datastream_bind value = {};
+    // Sent before frame dispatch, so the inbound callback slot is idle.
+    auto& value = workspace_->bindingEncodeWorkspace_;
+    value = {};
     value.datastream_bind_binding_generation = configurationGeneration_;
     value.datastream_bind_binding_keys.datastream_binding_keys_tstr1_48_count = bindingBatchCount_;
     for (uint8_t i = 0; i < bindingBatchCount_; ++i) {
@@ -966,7 +975,9 @@ class ArduinoDeviceLink final {
   }
 
   void handleDatastreamBound(const flova::link::FrameView& frame) {
-    struct datastream_bound value = {};
+    // Binding decode borrows the inbound slot, then copies ids before creating the callback.
+    auto& value = workspace_->bindingDecodeWorkspace_;
+    value = {};
     if (!bindingPending_ || !bindingBatchCount_ || frame.messageId != bindingRequestId_ ||
         !decode(frame, value, cbor_decode_datastream_bound, cbor_encode_datastream_bound) ||
         value.datastream_bound_bound_ids.datastream_bound_ids_compact_id_m_count != bindingBatchCount_ ||

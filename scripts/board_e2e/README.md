@@ -1,9 +1,9 @@
 # Development board E2E and SDK benchmarks
 
-Start from the SDK root. **Only the 4 MiB ESP32 DevKit (`esp32dev`) is supported
-and hardware-validated initially.** ESP8266 and other boards are extension
-targets, not claimed support. This is test tooling, not an SDK example or a
-production provisioning service.
+Start from the SDK root. Reviewed profiles are the 4 MiB ESP32 DevKit
+(`esp32dev`) and 4 MiB ESP8266EX NodeMCU (`nodemcuv2`). Other boards are not
+claimed support. This is development test tooling, not a production
+provisioning service. Hardware evidence is recorded below and in private run reports.
 
 ## Prerequisites
 
@@ -18,6 +18,9 @@ production provisioning service.
   session token** for that device. The older Devices REST provisioning-token
   API is not interchangeable with this session token. Do not use a production
   device, token, database or network.
+- ESP8266 additionally needs double, read-only `free_heap_bytes` and
+  `largest_free_block_bytes` streams. These four streams fit its unchanged
+  custom SDK capacity; temperature and humidity are generated test readings.
 - A laptop LAN IPv4 address reachable from the board's Wi-Fi. AP/client
   isolation or a firewall can prevent this even when both devices join Wi-Fi.
   Permit the configured test TLS port only on your development LAN.
@@ -46,7 +49,7 @@ Full hardware run, with explicit authorization to modify the selected board:
 
 ```sh
 python scripts/test_board.py --config .local/board-e2e-config.json \
-  --board esp32 --flash --port /dev/ttyACM0 --seconds 20 --reconnects 3
+  --board esp32 --flash --port /dev/ttyACM0 --benchmark --seconds 20 --reconnects 3
 ```
 
 The hardware pipeline:
@@ -57,7 +60,7 @@ The hardware pipeline:
 4. Start temporary verified-TLS ingress; upload and execute the Unity suite.
 5. Erase flash to isolate the fixture from old credentials/configuration;
    upload E2E firmware and provision the dedicated local device.
-6. Report both streams every 200 ms. Check readiness, successful reporting,
+6. Report both streams once per minute (200 ms with `--benchmark`). Check readiness, successful reporting,
    matching delivery ACKs, storage failures, heap floor and unexpected resets.
 7. Force Wi-Fi disconnect/reconnect cycles and resume acknowledged telemetry.
 8. Flush the deferred temperature value and reboot. Assert its exact restored
@@ -71,9 +74,60 @@ back. No GPIO actuators are driven. Do not run a serial monitor or another
 flashing tool concurrently. An advisory lock serializes hardware phases of this
 runner within this checkout, not unrelated tools or other checkouts.
 
-`--minimum-heap` may raise the default 4,096-byte safety floor, not lower it.
+`--minimum-heap` defaults to 8,192 bytes; ESP8266 cannot use a lower floor.
+The ESP8266 continuation-stack floor is 1,024 bytes.
 `--seconds` accepts 5–1,800; `--reconnects` accepts 0–100. These runs are smoke
 and benchmark evidence, **not** the 10,000-cycle production stress gate.
+
+### ESP8266 account fixture and live mode
+
+From the Engine checkout, prepare one published template, dashboard and claimed
+device for an existing local Auth identity. Use the identity's organization
+that you normally open in Console; its `userId` is the Auth subject, not the
+Console-local user ID. Existing PWA fixtures are not reseeded or rotated.
+
+```sh
+FLOVA_LOCAL_DEV=true PHX_SERVER=false mix flova.dev.board \
+  --identity /absolute/path/to/private-local-identity.json \
+  --wifi-config ../flova-sdk/.local/lifecycle-e2e-config.json \
+  --output ../flova-sdk/.local/esp8266-e2e-config.json
+```
+
+Then from the SDK checkout:
+
+```sh
+python scripts/test_board.py --config .local/esp8266-e2e-config.json \
+  --board esp8266 --flash --port /dev/serial/by-id/YOUR_BOARD \
+  --seconds 600 --reconnects 10 --keep-running
+```
+
+`--keep-running` requires `--flash`. After acceptance it writes `report.json`
+with `status: passed` and `restoration: pending-live-session`, resumes telemetry,
+and keeps the serial monitor and verified TLS ingress alive. `live.json` contains
+the latest typed sample. Stop with Ctrl+C or SIGTERM to restore the original
+full flash. Failures also restore flash. The laptop, local Engine and Wi-Fi must
+stay available; the generated certificate expires after two days (exact dates
+are recorded in the report). This is a running session, not unattended firmware
+that survives stopping the ingress or resetting the board.
+
+ESP8266 uploads pin `platformio/tool-esptoolpy@2.41100.0` in the generated
+project, including Unity uploads: the platform's older uploader can fail with
+CH340 USB control-line errors. Normal SDK platform profiles are unchanged.
+The E2E image uses the default MMU and DRAM heap with 2,048/512-byte TLS
+buffers. A temporary HAProxy edge bounds server TLS records to 2,048 bytes;
+certificate verification stays enabled. No optional IRAM heap is used.
+
+Only temperature and humidity are published. Normal operation sends one batch
+per minute. `--benchmark` explicitly selects 200 ms test traffic, still subject
+to the device's plan limit. After acceptance, `--keep-running` switches back to
+one batch per minute. Every reading still counts toward the monthly quota.
+
+ESP8266 `heap`, `min_heap` and `largest` are DRAM bytes. Private serial samples
+also include fragmentation, continuation-stack headroom and BearSSL stack use.
+These samples never become remote datastreams or operational logs. Minima are
+sampled around SDK calls and can miss allocations inside blocking TLS calls.
+The stock acceptance gates are 8,192 bytes of sampled free DRAM and 1,024 bytes
+of continuation-stack headroom. Live samples retain the latest 4,096 windows.
 
 ## Reports and recovery
 
@@ -125,9 +179,9 @@ python ~/.platformio/packages/tool-esptoolpy/esptool.py \
 - `firmware/platform_esp32.h`: client composition, networking, time/reset and
   hardware metrics. The common firmware is guarded by `FLOVA_DEVELOPMENT_E2E`.
 
-To add ESP8266, supply a platform header and reviewed board profile, then check
-stock/shared-IRAM builds, flash/partition backup coverage, metric units, stack
-usage and real hardware before enabling it. Keep board APIs out of the portable
+To add another board, supply a platform header and reviewed board profile, then
+check flash/partition backup coverage, metric units, stack usage and real
+hardware before claiming validation. Keep board APIs out of the portable
 SDK and the common host scenarios. Do not add unsupported board names as aliases
 to the ESP32 implementation. Future command/OTA/power-cut scenarios need their
 own explicit fixtures and hardware authorization; they are not simulated here.
@@ -154,3 +208,12 @@ That smoke run contained 45 connected measurement windows: mean `run()` time
 135,892 bytes, minimum connected largest block 77,812 bytes, and minimum loop
 stack headroom 4,700 bytes. These are observations for this sketch/environment,
 not portable pass thresholds or evidence for ESP8266 or long-duration stability.
+
+## ESP8266 validation
+
+The earlier shared-heap result is superseded and is not stock-profile
+acceptance. Current private run reports record the exact firmware digest,
+static resources, physical Unity result, ten-minute workload, reconnect and
+persistence checks, sampled memory gates, and verified original-flash recovery.
+A build result alone does not establish runtime TLS memory headroom. A live
+session intentionally defers restoration until its monitor stops.

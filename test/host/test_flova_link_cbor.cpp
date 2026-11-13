@@ -155,7 +155,7 @@ int main() {
   flova::LifecycleLog logs;
   logs.begin(42);
   for (size_t i = 0; i < flova::LifecycleLog::capacity; ++i) assert(logs.append(0, 0, 1, i));
-  assert(!logs.append(1, 1, 1, 20));
+  assert(!logs.append(2, 1, 1, 20));
   assert(logs.front()->bootId == 42 && logs.front()->sequence == 1 && logs.front()->dropped == 1);
   logs.front()->messageId = 123;
   assert(logs.front()->messageId == 123); // retained until acknowledged
@@ -166,6 +166,16 @@ int main() {
   assert(logs.front()->sequence == 18 && logs.front()->uptimeMs == 21);
   logs.acknowledge();
   assert(!logs.front());
+  assert(logs.append(1, 1, 1, 100) && !logs.front());
+  assert(logs.append(9, 50, 1, 100) && !logs.front());
+  assert(logs.append(10, 1, 1, 100) && logs.front());
+  logs.acknowledge();
+  assert(logs.append(10, 2, 1, 101) && !logs.front());
+  assert(logs.append(10, 3, 1, 60100) && logs.front());
+  logs.acknowledge();
+  assert(logs.append(6, 1, 1, 60101) && logs.front());
+  logs.acknowledge();
+  assert(logs.append(6, 0, 1, 60102) && logs.front());
   testFrameBounds();
   for (size_t i = 0; i < flova_link_vector_count; ++i) verifyVector(flova_link_vectors[i]);
   testCborRejections();

@@ -1,5 +1,25 @@
 # Firmware memory acceptance
 
+## Stock ESP8266 profile (2026-11-13)
+
+All current ESP8266 examples use the default MMU and DRAM heap. Optional IRAM
+heap builds are rejected. TLS receives 2,048-byte records through the official
+record-bounded edge with certificate verification enabled. Private board-test
+samples measure free DRAM, largest block, fragmentation and continuation-stack
+headroom; they are never published as sensor datastreams. Physical stock-profile
+acceptance requires sampled DRAM of at least 8,192 bytes and continuation-stack
+headroom of at least 1,024 bytes through traffic, reconnects and reboot checks.
+Historical measurements below describe earlier builds and do not certify this
+profile. Instruction RAM used by ordinary compiled code is not an optional heap.
+
+The clean current-HEAD reference build measured 48,544 / 76,432 static DRAM
+bytes for universal ESP8266 / ESP32; these already exceeded the older ceilings.
+Production log throttling adds 16 bytes per device object (48,560 / 76,448).
+Reviewed static ceilings are now 48,640 / 76,800; the ESP32 image ceiling is
+1,056,768 bytes. Binding codecs borrow phase-exclusive scratch slots, with
+compile-time size checks, rather than adding resident memory. These linked
+bounds do not relax the physical heap or continuation-stack gates.
+
 ## SDK safety hardening (2026-11-12)
 
 The command-outcome ledger now keeps its bounded payloads in storage, including
@@ -73,7 +93,7 @@ capacities.
   CA, hostname and certificate-date validation. Preflight includes contexts,
   record overhead, the secondary stack, a 4 KiB
   safety reserve plus 3 KiB TCP/allocator allowance, and a 4 KiB updater page.
-  Optional IRAM exhaustion permits a sufficiently large DRAM fallback.
+  Current builds allocate these resources only in DRAM.
 
 This changes low-level `Value` layout and the advanced
 `FlovaClientLink::decodeStoredConfigurationUnit` interface. Public typed

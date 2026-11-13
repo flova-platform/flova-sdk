@@ -17,11 +17,10 @@ for target in esp32 esp8266; do
     exit 1
   }
 done
-grep -F -q -- '-DPIO_FRAMEWORK_ARDUINO_MMU_CACHE16_IRAM48_SECHEAP_SHARED' \
-  "$sdk_dir/extras/platformio/esp8266/platformio.ini" || {
-  echo "ESP8266 PlatformIO example is missing the IRAM heap profile" >&2
+if rg -q 'MMU_CACHE16_IRAM48_SECHEAP_SHARED' "$sdk_dir/extras/platformio/esp8266/platformio.ini"; then
+  echo "ESP8266 example must use stock MMU" >&2
   exit 1
-}
+fi
 pio pkg pack "$sdk_dir" -o "$work_dir/FlovaSDK.tar.gz"
 
 for target in esp32 esp8266; do
@@ -32,16 +31,6 @@ for target in esp32 esp8266; do
     "$project_dir/platformio.ini"
   pio run --project-dir "$project_dir"
 done
-
-# Compile stock MMU against the exported package too. This is compile coverage,
-# not promotion of the unaccepted default-DRAM runtime profile.
-cat >> "$work_dir/esp8266/platformio.ini" <<'INI'
-
-[env:nodemcuv2-stock]
-extends = env:nodemcuv2
-build_unflags = -DPIO_FRAMEWORK_ARDUINO_MMU_CACHE16_IRAM48_SECHEAP_SHARED
-INI
-pio run --project-dir "$work_dir/esp8266" -e nodemcuv2-stock
 
 test -s "$work_dir/FlovaSDK.tar.gz"
 printf 'SDK package validated: %s\n' "$work_dir/FlovaSDK.tar.gz"
