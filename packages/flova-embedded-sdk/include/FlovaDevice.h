@@ -337,8 +337,8 @@ class Device {
     applyRestoredHardware();
     flushDuePersistence();
     if (!started_ || bindingPending_ || bindingFailed_ || !link_.connected()) return;
-    flushResults();
     if (retryNotBefore_ && clock_.milliseconds() < retryNotBefore_) return;
+    flushResults();
     syncTime();
     // Start after the last selected stream so a busy producer cannot starve peers.
     if (link_.batchesState()) {
@@ -878,7 +878,8 @@ class Device {
     if (prior >= 0) {
       ++diagnostics_.duplicateCommands;
       // Replay the original outcome, never convert a rejection to success.
-      link_.send(resultWorkspace_.message);
+      if (!retryNotBefore_ || clock_.milliseconds() >= retryNotBefore_)
+        link_.send(resultWorkspace_.message);
       return;
     }
     if (prior == -2 || !reserveCommand(message)) {
@@ -1177,10 +1178,31 @@ class Device {
 
   void publishBatch() {
     const uint64_t now = clock_.milliseconds();
+    // Retry the original group only while its complete payload is unchanged.
+    // Reusing an ID with newer values would violate Engine inbox deduplication.
+    for (const auto& due : deliveries_) {
+      if (!due.messageId || now - due.sentAt < 5000) continue;
+      const uint64_t messageId = due.messageId;
+      BatchContext retry = {this, {}};
+      size_t count = 0;
+      bool unchanged = true;
+      for (const auto& entry : deliveries_) {
+        if (entry.messageId != messageId) continue;
+        retry.slots[count++] = entry.slot;
+        if (states_[entry.slot].revision != entry.revision) unchanged = false;
+      }
+      if (unchanged) {
+        if (link_.sendStateBatch(readBatchState, &retry, count, messageId) == count)
+          for (auto& entry : deliveries_)
+            if (entry.messageId == messageId) entry.sentAt = now;
+        return;
+      }
+      for (auto& entry : deliveries_)
+        if (entry.messageId == messageId) entry = Delivery{};
+    }
     if (batchWaiting_ && now < batchDueAt_) return;
     size_t free = 0;
     for (auto& delivery : deliveries_) {
-      if (delivery.messageId && now - delivery.sentAt >= 5000) delivery = Delivery{};
       if (!delivery.messageId) ++free;
     }
     if (!free) return;
@@ -1281,6 +1303,7 @@ class Device {
   }
 
   void sendResult(size_t slot) {
+    if (retryNotBefore_ && clock_.milliseconds() < retryNotBefore_) return;
     ResultIndex& result = pendingResults_[slot];
     const uint64_t now = clock_.milliseconds();
     if (result.sentAt && now - result.sentAt < 5000) return;
@@ -1494,24 +1517,31 @@ class Device {
     uint64_t received = clock_.milliseconds(); uint64_t uncertainty = (received - timeRequestStarted_) / 2; clock_.setUtc(response.timestamp + uncertainty, uncertainty); timeRequestStarted_ = 0;
   }
 
-  void acknowledgeDelivery(uint64_t messageId) {
-    if (!messageId) return;
+  // Keep the original outcome for deduplication, but release its retry slot
+  // after either terminal Engine response. Persist before changing RAM state.
+  bool finishResult(uint64_t messageId, bool rejected) {
     for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {
       if (!pendingResults_[i].active || pendingResults_[i].messageId != messageId)
         continue;
       char key[16]; snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(i));
       if (!storage_.read(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
-          !validResult(resultWorkspace_)) { ++diagnostics_.storageFailures; return; }
+          !validResult(resultWorkspace_)) { ++diagnostics_.storageFailures; return true; }
       resultWorkspace_.active = false;
       if (!storage_.write(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
           !storage_.read(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
           !validResult(resultWorkspace_) || resultWorkspace_.active) {
         ++diagnostics_.storageFailures;
-        return;
+        return true;
       }
       pendingResults_[i].active = false;
-      return;
+      if (rejected) ++diagnostics_.rejectedDeliveries;
+      return true;
     }
+    return false;
+  }
+
+  void acknowledgeDelivery(uint64_t messageId) {
+    if (!messageId || finishResult(messageId, false)) return;
     if (finishDelivery(messageId, false)) return;
     if (historyCount_ && ensureHistoryHead() && historyHeadMessageId_ == messageId) {
       dropOldest(false, false);
@@ -1520,7 +1550,7 @@ class Device {
   }
 
   void rejectDelivery(uint64_t messageId) {
-    if (!messageId) return;
+    if (!messageId || finishResult(messageId, true)) return;
     if (finishDelivery(messageId, true)) return;
     if (historyCount_ && ensureHistoryHead() && historyHeadMessageId_ == messageId) {
       dropOldest(false, true);

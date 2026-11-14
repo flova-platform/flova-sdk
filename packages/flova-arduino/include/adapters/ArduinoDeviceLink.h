@@ -1010,7 +1010,8 @@ class ArduinoDeviceLink final {
   void handleCommand(const flova::link::FrameView& frame) {
     struct command value = {};
     if (!decode(frame, value, cbor_decode_command, cbor_encode_command) ||
-        value.command_id.len != sizeof(deviceId_)) return disconnect();
+        value.command_id.len != sizeof(deviceId_) ||
+        value.command_generation != configurationGeneration_) return disconnect();
     workspace_->inbound_ = FlovaLinkInboundMessage();
     workspace_->inbound_.type = FlovaLinkMessageType::Command;
     workspace_->inbound_.messageId = frame.messageId;

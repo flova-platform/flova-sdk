@@ -283,6 +283,41 @@ static void acceptBinding(const FlovaLinkInboundMessage& message) {
   ++bindingCallbacks;
 }
 
+static unsigned commandCallbacks;
+static void acceptCommand(const FlovaLinkInboundMessage& message) {
+  if (message.type == FlovaLinkMessageType::Command) ++commandCallbacks;
+}
+
+static void verifyCommandGeneration() {
+  for (uint32_t generation = 6; generation <= 8; ++generation) {
+    FakePlatform platform;
+    ArduinoDeviceLink link(platform, entropy);
+    assert(link.configure("wss://engine.example/api/device-link"));
+    link.setConfigurationGeneration(7);
+    link.setCallback(acceptCommand);
+    commandCallbacks = 0;
+    assert(link.connect("00112233-4455-6677-8899-aabbccddeeff", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+    advanceBootstrap(link);
+    struct auth_ok auth = {1700000000000ULL, 30000, 1};
+    feedLinkFrame(platform, 2, 0, auth, cbor_encode_auth_ok);
+    advanceBootstrap(link);
+    assert(link.connected());
+    const uint8_t id[16] = {1};
+    struct command value = {};
+    value.command_generation = generation;
+    value.command_id = {id, sizeof(id)};
+    value.command_compact_id = 1;
+    value.command_typed_value_fields_m.typed_value_fields_choice = typed_value_fields_r::typed_value_fields_value_bool_type_l_c;
+    value.command_typed_value_fields_m.typed_value_fields_value_bool_type_l_value_bool = true;
+    value.command_correlation_id.correlation_id_choice = correlation_id_r::correlation_id_empty_id_m_c;
+    value.command_correlation_id.correlation_id_empty_id_m = {id, 0};
+    feedLinkFrame(platform, 0x20, 42, value, cbor_encode_command);
+    advanceBootstrap(link);
+    assert(commandCallbacks == (generation == 7 ? 1U : 0U));
+    assert(link.connected() == (generation == 7));
+  }
+}
+
 static void verifyBindingBatches() {
   // Include rejection after a successful batch, when the next response must
   // still be correlated with the outstanding request and earlier IDs.
@@ -703,6 +738,7 @@ static void verifyCoalescedWrite() {
 }
 
 int main() {
+  verifyCommandGeneration();
   {
     FakePlatform platform;
     ArduinoFlovaLink link(platform, entropy);

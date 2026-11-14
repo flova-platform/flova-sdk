@@ -617,12 +617,96 @@ static void verifyHistoryRebinding() {
   restored.run(); assert(link.stateSends == 2 && restored.diagnostics().storageFailures == 0);
 }
 
+static void verifyTerminalResultRejection() {
+  TestStorage storage; TestLink link; TestClock clock; TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  device.datastream<bool>("relay").onWrite(writeRelay);
+  assert(device.begin());
+  flova::Message request;
+  request.kind = flova::MessageKind::WriteRequest;
+  request.datastreamId = 1;
+  request.value = flova::Value::from(true);
+  for (unsigned i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY + 2; ++i) {
+    snprintf(request.commandId, sizeof(request.commandId), "terminal-%u", i);
+    request.revision = i + 1;
+    link.inject(request);
+    assert(device.commandResultPending(request.commandId));
+    flova::Message rejected;
+    rejected.kind = flova::MessageKind::Rejection;
+    rejected.messageId = link.lastResult.messageId;
+    storage.failWrites = true;
+    link.inject(rejected);
+    assert(device.commandResultPending(request.commandId));
+    storage.failWrites = false;
+    link.inject(rejected);
+    assert(!device.commandResultPending(request.commandId));
+  }
+  const int before = writes;
+  link.inject(request);
+  assert(writes == before && !device.commandResultPending(request.commandId));
+  TestLink restoredLink;
+  flova::Device restored(restoredLink, storage, clock, logger);
+  restored.datastream<bool>("relay").onWrite(writeRelay);
+  assert(restored.begin() && !restored.commandResultPending(request.commandId));
+  restoredLink.inject(request);
+  assert(writes == before);
+}
+
+static void verifyResultFlowControl() {
+  TestStorage storage; TestLink link; TestClock clock; TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  device.datastream<bool>("relay").onWrite(writeRelay);
+  assert(device.begin());
+  flova::Message request;
+  request.kind = flova::MessageKind::WriteRequest;
+  request.datastreamId = 1; request.value = flova::Value::from(true);
+  flova::Value::copy(request.commandId, "backoff-result");
+  link.inject(request);
+  const uint64_t resultId = link.lastResult.messageId;
+  flova::Message control;
+  control.kind = flova::MessageKind::FlowControl;
+  control.messageId = resultId; control.retryAfterMs = 60000;
+  link.inject(control);
+  const int before = link.sends;
+  clock.now += 5001; device.run(); link.inject(request);
+  assert(link.sends == before);
+  clock.now += 55000; device.run();
+  assert(link.sends > before && link.lastResult.messageId == resultId);
+}
+
+static void verifyBatchRetryIdentity() {
+  TestStorage storage; BatchTestLink link; TestClock clock; TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  auto a = device.datastream<double>("a");
+  auto b = device.datastream<double>("b");
+  assert(device.begin()); a.report(1); b.report(2);
+  device.run(); clock.now += 100; device.run();
+  const uint64_t first = link.batchId;
+  assert(first && link.accepted == 2);
+  clock.now += 5001; device.run();
+  assert(link.batchId == first && link.accepted == 2);
+  assert(link.values[0].scalar.number == 1 && link.values[1].scalar.number == 2);
+  link.acknowledge(first);
+  assert(!a.snapshot().dirty && !b.snapshot().dirty);
+  a.report(3); b.report(4); device.run(); clock.now += 100; device.run();
+  const uint64_t second = link.batchId;
+  a.report(5); clock.now += 5001; device.run(); clock.now += 100; device.run();
+  assert(link.batchId != second);
+  link.acknowledge(second);
+  assert(a.snapshot().dirty && b.snapshot().dirty);
+  link.acknowledge(link.batchId);
+  assert(!a.snapshot().dirty && !b.snapshot().dirty);
+}
+
 int main() {
   verifyMixedNumericSafety();
   verifyCommandLedger();
   verifyInterruptedCommand();
   verifyFiniteSafetyAndRestore();
   verifyFlowControlBoundary();
+  verifyTerminalResultRejection();
+  verifyResultFlowControl();
+  verifyBatchRetryIdentity();
   verifyBatchedDelivery();
   verifyHistoryRebinding();
   writes = numericWrites = 0;
