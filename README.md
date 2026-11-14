@@ -155,6 +155,21 @@ remote storage policy. Existing provisioning, command-ledger and configuration
 recovery still retain their durability contracts; this change does not turn
 storage-backed board startup into a RAM-only profile.
 
+### Configuration bank compatibility
+
+Configuration transfers select the physical bank opposite the active bank,
+independently of generation parity. This preserves the last active configuration
+when an offline device skips cloud generations. Version-2 bank pointers record
+this physical association; legacy version-1 pointers and record bodies remain
+readable and are migrated during a transfer. Missing generations cannot resolve
+to another generation's manifest.
+
+Before installing firmware with version-2 pointers, retain a full-flash backup.
+Downgrading to firmware that only understands version-1 pointers requires
+restoring that backup or explicitly reprovisioning the device. Firmware rollback
+without restoring compatible storage is not supported after pointer migration.
+No automatic formatting or erasure is performed by this migration.
+
 ## Datastream storage policies
 
 For Flova Link on **ESP32, ESP8266, and Linux**, current values stay in RAM.

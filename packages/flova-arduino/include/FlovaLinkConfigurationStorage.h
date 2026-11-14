@@ -48,6 +48,7 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
 
   bool discardGeneration(uint32_t generation) {
     if (!generation) return false;
+    (void)bankForGeneration(generation);
     bool success = true;
     Pointer pointer = {};
     if (loadPointer("flova_l_a", pointer) && pointer.generation == generation) {
@@ -59,7 +60,9 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
     StoredManifest pending = {};
     if (load("flova_l_p", pending) && pending.generation == generation)
       success = storage_.remove("flova_l_p") && success;
-    success = storage_.remove(manifestKey(generation)) && success;
+    const char* key = manifestKey(generation);
+    if (key) success = storage_.remove(key) && success;
+    cachedGeneration_ = 0;
     return success;
   }
 
@@ -67,7 +70,8 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
                           flova::config::GenerationManifest& manifest) const override {
     if (!generation) return false;
     StoredManifest stored = {};
-    return load(manifestKey(generation), stored) && unpack(stored, manifest);
+    return load(manifestKey(generation), stored) &&
+           stored.generation == generation && unpack(stored, manifest);
   }
 
   bool pendingManifest(flova::config::GenerationManifest& manifest) const override {
@@ -80,13 +84,38 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
         manifest.recordCount > kMaximumRecordSlots ||
         manifest.maximumRecordBytes > flova::config::kMaximumRecordBytes)
       return false;
+    uint32_t active = 0;
+    if (!activeGeneration(active) || (active && manifest.generation <= active)) return false;
+    // A device may skip cloud generations. Parity is not an inactive bank:
+    // generation 1 -> 3 must leave generation 1 recoverable until promotion.
+    const uint8_t activeBank = active ? bankForGeneration(active) : 0;
+    if (activeBank > 1) return false;
+    // Older firmware could put its very first pointer in the other slot.
+    // Normalize that pointer before reusing the inactive bank; promotion must
+    // retain an independent pointer to the last active generation.
+    if (active) {
+      Pointer pointer = {};
+      const char* key = activeBank ? "flova_l_b" : "flova_l_a";
+      if (!loadPointer(key, pointer) || pointer.generation != active ||
+          pointer.magic != kBankPointerMagic) {
+        pointer.magic = kBankPointerMagic;
+        pointer.generation = active;
+        pointer.checksum = checksum(reinterpret_cast<const uint8_t*>(&pointer), offsetof(Pointer, checksum));
+        if (!save(key, pointer)) return false;
+      }
+    }
+    const uint8_t bank = active ? (activeBank ^ 1U) : (manifest.generation & 1U);
     StoredManifest stored = {};
     pack(manifest, stored);
-    return save("flova_l_p", stored) && save(manifestKey(manifest.generation), stored);
+    if (!save("flova_l_p", stored) || !save(bank ? "flova_l_1_m" : "flova_l_0_m", stored))
+      return false;
+    cachedGeneration_ = manifest.generation;
+    cachedBank_ = bank;
+    return true;
   }
 
   bool writeRecord(uint32_t generation, const flova::config::Record& record) override {
-    if (!generation || record.sequence >= maximumRecords_ ||
+    if (!generation || record.generation != generation || record.sequence >= maximumRecords_ ||
         record.sequence >= kMaximumRecordSlots ||
         record.length > flova::config::kMaximumRecordBytes)
       return false;
@@ -135,11 +164,13 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
     uint32_t active = 0;
     if (!activeGeneration(active) || generation < active) return false;
     Pointer pointer = {};
-    pointer.magic = kPointerMagic;
+    pointer.magic = kBankPointerMagic;
     pointer.generation = generation;
     pointer.checksum = checksum(reinterpret_cast<const uint8_t*>(&pointer),
                                 offsetof(Pointer, checksum));
-    const char* key = active & 1U ? "flova_l_a" : "flova_l_b";
+    const uint8_t bank = bankForGeneration(generation);
+    if (bank > 1) return false;
+    const char* key = bank ? "flova_l_b" : "flova_l_a";
     return save(key, pointer);
   }
 
@@ -147,6 +178,7 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
   static const uint32_t kManifestMagic = 0x46434D31UL;
   static const uint32_t kRecordMagic = 0x46435231UL;
   static const uint32_t kPointerMagic = 0x46435031UL;
+  static const uint32_t kBankPointerMagic = 0x46435032UL;
   static const uint32_t kMaximumRecordSlots = 1000UL;
 
   struct StoredManifest {
@@ -216,7 +248,37 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
     return true;
   }
 
+  uint8_t bankForGeneration(uint32_t generation) const {
+    // A verification pass rereads many records in one generation. Resolve its
+    // physical bank once rather than adding manifest I/O to every record read.
+    if (generation && cachedGeneration_ == generation) return cachedBank_;
+    StoredManifest stored = {};
+    flova::config::GenerationManifest manifest;
+    for (uint8_t bank = 0; bank < 2; ++bank) {
+      if (load(bank ? "flova_l_1_m" : "flova_l_0_m", stored) &&
+          stored.generation == generation && unpack(stored, manifest)) {
+        cachedGeneration_ = generation;
+        cachedBank_ = bank;
+        return bank;
+      }
+    }
+    // V2 pointers retain the physical bank even if its manifest is damaged.
+    // V1 records used generation parity regardless of their pointer slot.
+    Pointer pointer = {};
+    for (uint8_t bank = 0; bank < 2; ++bank) {
+      if (loadPointer(bank ? "flova_l_b" : "flova_l_a", pointer) &&
+          pointer.generation == generation) {
+        cachedGeneration_ = generation;
+        cachedBank_ = pointer.magic == kBankPointerMagic ? bank : (generation & 1U);
+        return cachedBank_;
+      }
+    }
+    return 2;
+  }
+
   const char* manifestKey(uint32_t generation) const {
+    const uint8_t bank = bankForGeneration(generation);
+    if (bank > 1) return nullptr;
     manifestKey_[0] = 'f';
     manifestKey_[1] = 'l';
     manifestKey_[2] = 'o';
@@ -225,7 +287,7 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
     manifestKey_[5] = '_';
     manifestKey_[6] = 'l';
     manifestKey_[7] = '_';
-    manifestKey_[8] = (generation & 1U) ? '1' : '0';
+    manifestKey_[8] = bank ? '1' : '0';
     manifestKey_[9] = '_';
     manifestKey_[10] = 'm';
     manifestKey_[11] = 0;
@@ -233,8 +295,10 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
   }
 
   const char* recordKey(uint32_t generation, uint32_t sequence) const {
+    const uint8_t bank = bankForGeneration(generation);
+    if (bank > 1) return nullptr;
     memcpy(recordKey_, "flova_l_0_r_000", sizeof(recordKey_));
-    recordKey_[8] = (generation & 1U) ? '1' : '0';
+    recordKey_[8] = bank ? '1' : '0';
     recordKey_[12] = static_cast<char>('0' + sequence / 100U);
     recordKey_[13] = static_cast<char>('0' + (sequence / 10U) % 10U);
     recordKey_[14] = static_cast<char>('0' + sequence % 10U);
@@ -243,22 +307,25 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
 
   template <typename T>
   bool load(const char* key, T& output) const {
-    return storage_.read(key, &output, sizeof(output));
+    return key && storage_.read(key, &output, sizeof(output));
   }
 
   template <typename T>
   bool save(const char* key, const T& value) {
-    return storage_.write(key, &value, sizeof(value));
+    return key && storage_.write(key, &value, sizeof(value));
   }
 
   bool loadPointer(const char* key, Pointer& pointer) const {
-    return load(key, pointer) && pointer.magic == kPointerMagic &&
+    return load(key, pointer) &&
+           (pointer.magic == kPointerMagic || pointer.magic == kBankPointerMagic) &&
            pointer.checksum == checksum(reinterpret_cast<const uint8_t*>(&pointer),
                                         offsetof(Pointer, checksum));
   }
 
   flova::Storage& storage_;
   uint32_t maximumRecords_;
+  mutable uint32_t cachedGeneration_ = 0;
+  mutable uint8_t cachedBank_ = 0;
   mutable StoredRecord storedWorkspace_ = {};
   mutable char manifestKey_[12] = {};
   mutable char recordKey_[16] = {};

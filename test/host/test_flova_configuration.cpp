@@ -5,16 +5,26 @@
 
 #include <assert.h>
 #include <string.h>
+#include <map>
+#include <string>
+#include <vector>
 
 class NvsMappedStorage final : public flova::Storage {
  public:
-  bool read(const char*, void*, size_t) override { return false; }
-  bool write(const char* key, const void*, size_t) override {
+  bool read(const char* key, void* out, size_t size) override {
+    const auto it = records.find(key);
+    if (it == records.end() || it->second.size() != size) return false;
+    memcpy(out, it->second.data(), size);
+    return true;
+  }
+  bool write(const char* key, const void* value, size_t size) override {
     assert(writeCount < sizeof(writes) / sizeof(writes[0]));
     if (!flova::makeNvsStorageKey(key, writes[writeCount],
                                   sizeof(writes[writeCount])))
       return false;
     ++writeCount;
+    const auto* bytes = static_cast<const uint8_t*>(value);
+    records[key] = std::vector<uint8_t>(bytes, bytes + size);
     return true;
   }
   bool remove(const char* key) override {
@@ -22,11 +32,113 @@ class NvsMappedStorage final : public flova::Storage {
     return flova::makeNvsStorageKey(key, physical, sizeof(physical));
   }
 
+  std::map<std::string, std::vector<uint8_t>> records;
   char writes[8][16] = {};
   size_t writeCount = 0;
 };
 
+class RecordStorage final : public flova::Storage {
+ public:
+  bool read(const char* key, void* out, size_t size) override {
+    const auto it = records.find(key);
+    if (it == records.end() || it->second.size() != size) return false;
+    memcpy(out, it->second.data(), size);
+    return true;
+  }
+  bool write(const char* key, const void* data, size_t size) override {
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    records[key] = std::vector<uint8_t>(bytes, bytes + size);
+    return true;
+  }
+  bool remove(const char* key) override { records.erase(key); return true; }
+  std::map<std::string, std::vector<uint8_t>> records;
+};
+
+static void skippedGenerationPreservesActiveBank() {
+  RecordStorage backend;
+  FlovaLinkConfigurationStorage storage(backend, 4);
+  flova::config::GenerationManifest manifest;
+  manifest.schemaVersion = 1;
+  manifest.maximumRecordBytes = flova::config::kMaximumRecordBytes;
+  manifest.recordCount = 1;
+  flova::config::Record record;
+  record.length = 1;
+  record.body[0] = 0x42;
+  for (uint32_t generation : {1U, 3U, 4U, 6U}) {
+    manifest.generation = generation;
+    manifest.finalized = false;
+    uint32_t active = 0;
+    assert(storage.activeGeneration(active));
+    assert(storage.beginInactive(manifest));
+    if (active) {
+      // Reconstruct the adapter as after a reset during transfer.
+      FlovaLinkConfigurationStorage restored(backend, 4);
+      flova::config::GenerationManifest previous;
+      flova::config::Record saved;
+      assert(restored.generationManifest(active, previous));
+      assert(previous.generation == active && previous.finalized);
+      assert(restored.readRecord(active, 0, saved));
+      assert(saved.generation == active && saved.body[0] == 0x42);
+    }
+    record.generation = generation;
+    assert(storage.writeRecord(generation, record));
+    assert(storage.finalizeInactive(manifest));
+    assert(storage.promoteGeneration(generation));
+    uint32_t newest = 0, previous = 0;
+    storage.generations(newest, previous);
+    assert(newest == generation && previous == active);
+  }
+  flova::config::GenerationManifest missing;
+  assert(!storage.generationManifest(2, missing));
+  backend.records["flova_l_0_m"][0] ^= 1;
+  FlovaLinkConfigurationStorage recovered(backend, 4);
+  assert(!recovered.generationManifest(6, missing));
+  assert(recovered.discardGeneration(6));
+  assert(recovered.generationManifest(4, missing));
+  assert(missing.generation == 4 && missing.finalized);
+  assert(recovered.discardGeneration(999));
+  assert(recovered.generationManifest(4, missing));
+}
+
+static void legacyFirstEvenGenerationRemainsRecoverable() {
+  RecordStorage backend;
+  FlovaLinkConfigurationStorage storage(backend, 4);
+  flova::config::GenerationManifest manifest;
+  manifest.generation = 2;
+  manifest.maximumRecordBytes = flova::config::kMaximumRecordBytes;
+  manifest.recordCount = 1;
+  flova::config::Record record;
+  record.generation = 2;
+  record.length = 1;
+  record.body[0] = 0x42;
+  assert(storage.beginInactive(manifest));
+  assert(storage.writeRecord(2, record));
+  assert(storage.finalizeInactive(manifest));
+  assert(storage.promoteGeneration(2));
+  // Exact V1 pointer representation: first promotion always chose slot B.
+  uint32_t pointer[3] = {0x46435031UL, 2, 2166136261UL};
+  const auto* bytes = reinterpret_cast<const uint8_t*>(pointer);
+  for (size_t i = 0; i < 8; ++i) pointer[2] = (pointer[2] ^ bytes[i]) * 16777619UL;
+  assert(backend.write("flova_l_b", pointer, sizeof(pointer)));
+  backend.remove("flova_l_a");
+  FlovaLinkConfigurationStorage migrated(backend, 4);
+  manifest.generation = 4;
+  assert(migrated.beginInactive(manifest));
+  flova::config::Record previous;
+  assert(migrated.readRecord(2, 0, previous));
+  assert(previous.body[0] == 0x42);
+  record.generation = 4;
+  assert(migrated.writeRecord(4, record));
+  assert(migrated.finalizeInactive(manifest));
+  assert(migrated.promoteGeneration(4));
+  uint32_t newest = 0, old = 0;
+  migrated.generations(newest, old);
+  assert(newest == 4 && old == 2);
+}
+
 int main() {
+  skippedGenerationPreservesActiveBank();
+  legacyFirstEvenGenerationRemainsRecoverable();
   const uint8_t uuid[16] = {
       0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
       0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
