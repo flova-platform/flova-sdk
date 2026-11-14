@@ -32,12 +32,58 @@ Do not put secrets in command-line arguments or tracked configuration.
 
 `development: true` and an RFC1918 LAN IPv4 address are mandatory. The runner
 creates a short-lived private CA and a temporary TLS ingress on
-`lan_address:tls_port`, forwarding to `127.0.0.1:engine_port`. CA, hostname and
+`lan_address:tls_port`, forwarding MQTT TCP to `127.0.0.1:mqtt_port`. CA, hostname and
 certificate-date verification stay enabled. It does not modify Caddy or the
 Engine configuration. The test firmware seeds UTC from the host; **SNTP is
 not tested**. The host clock must be correct.
 
 ## Run
+
+### Fast MQTT regression loop
+
+Run the SDK/runner tests, focused Engine tests, Console typecheck and PWA
+typecheck/provisioning tests concurrently from the SDK checkout:
+
+```sh
+python3 scripts/check_mqtt.py
+```
+
+Each group has a 120-second deadline and reports elapsed time. This uses existing
+sibling checkouts and installed dependencies; it does not onboard users, change
+services, flash boards, or run database/browser acceptance tests.
+
+For a short physical MQTT check, reuse a dedicated development fixture; its
+provisioning token is refreshed automatically:
+
+```sh
+python scripts/test_board.py --config .local/esp8266-e2e-config.json \
+  --identity /path/to/private-development-identity.json \
+  --board esp8266 --flash --port /dev/serial/by-id/YOUR_BOARD --smoke
+```
+
+The existing local broker must use the development Engine's native MQTT hooks.
+Set `mqtt_port` in the private config to its loopback plaintext port (default
+1883). Engine/broker reachability is checked before building or flashing.
+Temporary verified TLS ingress forwards TCP to the broker, not HTTP/WebSocket
+traffic to Engine. Dashboard clients still use the Engine API, never this broker.
+
+Hardware `--smoke` requires `--identity` (the existing development identity with
+`development: true` and `userId`). It refreshes only the configured device's
+provisioning token automatically, without onboarding an account. The dedicated
+fixture must include a writable boolean state datastream named `power`; the
+harness accepts it in RAM and never drives a GPIO. After telemetry delivery it
+issues a command through the running Engine API and requires a fresh desired
+version, matching reported value and matching acknowledged version within 15
+seconds. Engine helper stages have a 30-second deadline. Their private logs are
+kept with the report. Set `mqtt_port` to the actual local broker port, not
+necessarily 1883, and update `lan_address` when changing Wi-Fi.
+
+`--smoke` skips embedded Unity compilation/upload, reconnect loops, benchmark and
+persistence/reboot acceptance. Provisioning has a 45-second deadline, followed
+by a **new** telemetry report and matching delivery ACK within 15 seconds. An
+open socket alone never passes. Backup, erase, resource floors, failure handling
+and verified original-flash restoration remain mandatory; build and flash time
+is additional. Reports mark skipped checks false. Use full acceptance for releases.
 
 Build only (default; no serial access, listeners, erase or upload):
 

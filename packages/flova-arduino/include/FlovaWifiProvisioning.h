@@ -119,7 +119,7 @@ inline bool parseWifiProvisioningHandoff(const char* json, size_t length,
   const uint8_t required = wifiOutput ? 13 : 12;
   if ((seen & required) != required || !output.linkUrl[0] ||
       !output.token[0] || (wifiOutput && !wifi.ssid[0])) return false;
-  if (strncmp(output.linkUrl, "wss://", 6) != 0) return false;
+  if (strncmp(output.linkUrl, "mqtts://", 8) != 0) return false;
   if (wifiOutput) *wifiOutput = wifi;
   return true;
 }

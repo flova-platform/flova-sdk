@@ -51,6 +51,31 @@ class ConfigurationTests(unittest.TestCase):
 
 
 class MonitorTests(unittest.TestCase):
+    def test_smoke_requires_new_report_and_clean_delivery_ack(self):
+        monitor = Monitor(MagicMock(), io.StringIO())
+        monitor.command = MagicMock()
+        monitor.wait = MagicMock(side_effect=[
+            {"temp_present": 0, "humidity_present": 0}, sample(reports=4), sample(reports=5),
+        ])
+        result = monitor.smoke()
+        predicate = monitor.wait.call_args_list[2].args[1]
+        self.assertFalse(predicate(sample(reports=4)))
+        self.assertFalse(predicate(sample(reports=5, dirty=1)))
+        self.assertFalse(predicate(sample(reports=5, connected=0)))
+        self.assertTrue(predicate(sample(reports=5)))
+        self.assertTrue(result["telemetry_and_link_acks"])
+        self.assertFalse(result["persistent_reboot_restore"])
+        self.assertEqual(monitor.command.call_args_list, [(("s", "started"),), (("p", "paused"),)])
+
+    def test_smoke_timeout_is_not_success(self):
+        monitor = Monitor(MagicMock(), io.StringIO())
+        monitor.command = MagicMock()
+        monitor.wait = MagicMock(side_effect=[
+            {"temp_present": 0, "humidity_present": 0}, sample(), TimeoutError("missing ACK"),
+        ])
+        with self.assertRaisesRegex(TimeoutError, "telemetry delivery ACK"):
+            monitor.smoke()
+
     def test_short_benchmark_counts_only_the_observed_sample_interval(self):
         for reports, passes in [([4, 9, 13], True), ([4, 4, 4], False)]:
             monitor = Monitor(MagicMock(), io.StringIO(), report_interval_ms=200)
@@ -144,6 +169,31 @@ class MonitorTests(unittest.TestCase):
 
 
 class RunnerSafetyTests(unittest.TestCase):
+    def test_hardware_smoke_requires_identity_but_build_only_does_not(self):
+        args = ["--config", "private.json", "--smoke"]
+        self.assertIsNone(runner.arguments(args).identity)
+        with patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            runner.arguments(args + ["--flash", "--port", "/dev/test"])
+        parsed = runner.arguments(args + ["--flash", "--port", "/dev/test", "--identity", "identity.json"])
+        self.assertEqual(parsed.identity, Path("identity.json"))
+
+    def test_smoke_rejects_long_running_modes(self):
+        for flag in ("--benchmark", "--keep-running"):
+            with self.subTest(flag=flag), patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+                runner.arguments(["--config", "private.json", "--smoke", "--flash", "--port", "/dev/test", flag])
+
+    def test_generated_endpoint_is_mqtt_not_websocket(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "ca.crt").write_text("test CA")
+            runner.prepare_project(output, {**configuration(), "tls_port": 9443}, BOARDS["esp8266"])
+            header = (output / "private_config.h").read_text()
+            self.assertIn('"mqtts://192.168.1.109:9443"', header)
+            self.assertNotIn("wss://", header)
+            self.assertIn("#define TEST_COMMAND_CHECK_ENABLED 0", header)
+            runner.prepare_project(output, {**configuration(), "tls_port": 9443, "command_check": True}, BOARDS["esp8266"])
+            self.assertIn("#define TEST_COMMAND_CHECK_ENABLED 1", (output / "private_config.h").read_text())
+
     def test_keep_running_requires_hardware(self):
         with patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
             runner.arguments(["--config", "private.json", "--keep-running"])

@@ -69,8 +69,9 @@ def prepare_project(output, config, board):
         "TEST_WIFI_SSID": config["wifi_ssid"],
         "TEST_WIFI_PASSWORD": config["wifi_password"],
         "TEST_PROVISION_TOKEN": config["provision_token"],
-        "TEST_LINK_URL": f'wss://{config["lan_address"]}:{config["tls_port"]}/api/device-link',
+        "TEST_LINK_URL": f'mqtts://{config["lan_address"]}:{config["tls_port"]}',
         "FLOVA_TLS_ROOT_CERTS": (output / "ca.crt").read_text(),
+        "TEST_COMMAND_CHECK_ENABLED": int(config.get("command_check", False)),
     }
     header = "#pragma once\n" + "".join(
         f"#define {key} {json.dumps(value)}\n" for key, value in definitions.items())
@@ -135,6 +136,9 @@ def arguments(argv):
                         help="authorize backup, test uploads, full erase, and original-flash restoration")
     parser.add_argument("--port", help="explicit serial port; required with --flash")
     parser.add_argument("--benchmark", action="store_true", help="explicitly enable 200 ms stress telemetry during acceptance")
+    parser.add_argument("--smoke", action="store_true",
+                        help="provision, verify telemetry and server command ACKs; skip stress/persistence")
+    parser.add_argument("--identity", type=Path, help="private dedicated development identity; refresh fixture and check command ACK")
     parser.add_argument("--keep-running", action="store_true",
                         help="after acceptance keep telemetry/TLS ingress alive until interrupted, then restore flash")
     parser.add_argument("--seconds", type=int, default=20, help="steady telemetry benchmark duration (5–1800)")
@@ -145,6 +149,10 @@ def arguments(argv):
         parser.error("--flash requires an explicit --port")
     if args.keep_running and not args.flash:
         parser.error("--keep-running requires --flash")
+    if args.smoke and (args.benchmark or args.keep_running):
+        parser.error("--smoke cannot be combined with --benchmark or --keep-running")
+    if args.smoke and args.flash and not args.identity:
+        parser.error("hardware --smoke requires --identity for fresh command/ACK verification")
     if not 5 <= args.seconds <= 1800 or not 0 <= args.reconnects <= 100 or args.minimum_heap < (8192 if args.board == "esp8266" else 4096):
         parser.error("invalid duration/reconnect count or heap floor (ESP8266 minimum 8192, ESP32 minimum 4096)")
     return args
@@ -156,8 +164,10 @@ def main(argv=None):
     config = {}
     output = None
     report = {"board": args.board, "mode": "hardware" if args.flash else "build-only",
+              "profile": "smoke" if args.smoke else "acceptance",
               "status": "failed", "stages": [], "restoration": "not-needed",
-              "workload": {"steady_seconds": args.seconds, "reconnects": args.reconnects,
+               "workload": {"steady_seconds": 0 if args.smoke else args.seconds,
+                            "reconnects": 0 if args.smoke else args.reconnects,
                            "report_interval_ms": 200 if args.benchmark else 60000, "deferred_flush_ms": 5000,
                            "minimum_heap_bytes": args.minimum_heap}}
     modified = False
@@ -185,13 +195,18 @@ def main(argv=None):
     try:
         config = load_config(args.config)
         config["benchmark"] = args.benchmark
+        config["command_check"] = args.identity is not None
         for executable in ("pio", "openssl"):
             if not shutil.which(executable):
                 raise RuntimeError(f"required executable not found: {executable}")
         if args.flash:
             import serial  # PlatformIO's Python environment already includes pyserial.
-            with socket.create_connection(("127.0.0.1", config["engine_port"]), timeout=5):
-                pass
+            for name in ("engine_port", "mqtt_port"):
+                try:
+                    with socket.create_connection(("127.0.0.1", config[name]), timeout=2):
+                        pass
+                except OSError:
+                    raise RuntimeError(f"local {name} is not reachable; start the development service first") from None
             def interrupted(*_):
                 raise KeyboardInterrupt()
             previous_term = signal.signal(signal.SIGTERM, interrupted)
@@ -199,6 +214,20 @@ def main(argv=None):
         candidate = (args.output or ROOT / ".local/board-e2e" / time.strftime("%Y%m%d-%H%M%S")).resolve()
         candidate.mkdir(mode=0o700, parents=True, exist_ok=False)
         output = candidate
+        def engine_check(action):
+            environment = dict(os.environ, MIX_ENV="dev", FLOVA_LOCAL_DEV="true", FLOVA_MQTT_ENABLED="false")
+            result = subprocess.run(["mix", "run", "--no-start", str(Path(__file__).with_name("engine_check.exs")),
+                                     action, str(args.config.resolve()), str(args.identity.resolve())],
+                                    cwd=ROOT.parent / "flova-engine", env=environment,
+                                    capture_output=True, text=True, timeout=30)
+            (output / f"engine-{action}.log").write_text(redact(result.stdout + result.stderr, config))
+            if result.returncode:
+                raise RuntimeError(f"Engine {action} failed; see private engine-{action}.log")
+        if args.flash and args.identity:
+            engine_check("refresh")
+            config = load_config(args.config)
+            config["benchmark"] = args.benchmark
+            config["command_check"] = True
         make_certificates(output, config["lan_address"], run)
         prepare_project(output, config, board)
         report["revision"] = subprocess.check_output(
@@ -209,8 +238,9 @@ def main(argv=None):
                                          else "ESP32 lifetime heap low-water counter")
         report["certificate_validity"] = run("certificate-validity", ["openssl", "x509", "-in",
                                                    output / "server.crt", "-noout", "-dates"]).strip()
-        run("compile-unit-tests", ["pio", "test", "-d", output, "-e", "board-unit",
-                                    "--without-uploading", "--without-testing"])
+        if not args.smoke:
+            run("compile-unit-tests", ["pio", "test", "-d", output, "-e", "board-unit",
+                                        "--without-uploading", "--without-testing"])
         build = run("compile-harness", ["pio", "run", "-d", output, "-e", "board-e2e"])
         report["build_resources"] = [line.strip() for line in build.splitlines()
                                      if any(label in line for label in ("RAM:", "Flash:", "IRAM:"))]
@@ -234,9 +264,10 @@ def main(argv=None):
             report["original_flash_sha256"] = hashlib.sha256(backup.read_bytes()).hexdigest()
             with LocalIngress(output, config):
                 modified = True  # Restore even when an upload/erase is interrupted.
-                run("upload-unit-tests", ["pio", "test", "-d", output, "-e", "board-unit",
-                                          "--upload-port", args.port, "--without-testing"])
-                report["on_board_tests_passed"] = read_unity(serial, args.port)
+                if not args.smoke:
+                    run("upload-unit-tests", ["pio", "test", "-d", output, "-e", "board-unit",
+                                              "--upload-port", args.port, "--without-testing"])
+                    report["on_board_tests_passed"] = read_unity(serial, args.port)
                 run("erase-test-state", tool + ["erase_flash"])
                 run("upload-harness", ["pio", "run", "-d", output, "-e", "board-e2e",
                                          "-t", "upload", "--upload-port", args.port])
@@ -253,7 +284,10 @@ def main(argv=None):
                     start = time.monotonic()
                     monitor_ok = False
                     try:
-                        report["checks"] = monitor.exercise(args.seconds, args.reconnects)
+                        report["checks"] = monitor.smoke() if args.smoke else monitor.exercise(args.seconds, args.reconnects)
+                        if args.identity:
+                            engine_check("command")
+                            report["checks"]["server_command_and_ack"] = True
                         report["benchmark"] = summarize(monitor.samples)
                         monitor_ok = True
                     finally:

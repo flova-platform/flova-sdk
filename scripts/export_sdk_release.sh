@@ -34,6 +34,12 @@ cp "$release_dir/extras/platformio/esp8266/src/main.cpp" "$output_dir/extras/pla
 cp "$repo_dir/LICENSE" "$output_dir/"
 cp "$repo_dir/third_party/zcbor/LICENSE" "$output_dir/extras/zcbor-LICENSE"
 cp "$repo_dir/third_party/zcbor/UPSTREAM.md" "$output_dir/extras/zcbor-UPSTREAM.md"
+cp "$repo_dir/third_party/coremqtt/LICENSE" "$output_dir/extras/coreMQTT-LICENSE"
+cp "$repo_dir/third_party/coremqtt/README.flova.md" "$output_dir/extras/coreMQTT-UPSTREAM.md"
+cp "$repo_dir/third_party/coremqtt/source/"*.c "$output_dir/src/"
+cp "$repo_dir/third_party/coremqtt/source/include/"*.h "$output_dir/src/"
+cp "$repo_dir/third_party/coremqtt/source/interface/"*.h "$output_dir/src/"
+cp "$repo_dir/third_party/coremqtt/config/core_mqtt_config.h" "$output_dir/src/"
 
 cp "$repo_dir/packages/flova-embedded-sdk/include/"*.h "$output_dir/src/"
 cp "$repo_dir/packages/flova-arduino/include/"*.h "$output_dir/src/"

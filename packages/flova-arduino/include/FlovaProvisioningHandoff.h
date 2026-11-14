@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include <FlovaConfiguration.h>
-#include <FlovaWs.h>
+#include <FlovaEntropy.h>
 
 namespace flova {
 

@@ -20,7 +20,7 @@
     "Flova Embedded SDK": "^0.3.12",
     "flova-link": "^1.0.0",
     "ArduinoJson": "^6.21.5",
-    "PubSubClient": "^2.8.0"
+    "flova-coremqtt": "5.0.2"
   },
   "build": {
     "includeDir": "include"

@@ -152,6 +152,14 @@ class Digest {
  public:
   Digest() { reset(); }
 
+  static Checksum hash(const uint8_t* bytes, size_t length) {
+    Digest digest;
+    digest.update(bytes, length);
+    Checksum output;
+    digest.finish(output);
+    return output;
+  }
+
   void reset() {
     state_[0] = 0x6a09e667U;
     state_[1] = 0xbb67ae85U;

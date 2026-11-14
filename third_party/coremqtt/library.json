@@ -1,0 +1,11 @@
+{
+  "name": "flova-coremqtt",
+  "version": "5.0.2",
+  "license": "MIT",
+  "description": "Pinned upstream coreMQTT client, without a platform or TLS dependency",
+  "build": {
+    "srcDir": "source",
+    "includeDir": "source/include",
+    "flags": ["-Isource/interface", "-Iconfig"]
+  }
+}

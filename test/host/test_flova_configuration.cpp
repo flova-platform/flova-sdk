@@ -148,7 +148,7 @@ int main() {
   assert(strcmp(text, "00112233-4455-6677-8899-aabbccddeeff") == 0);
   assert(!flova::formatUuidText(uuid, text, sizeof(text) - 1));
 
-  flova::ProvisioningHandoff handoff("wss://engine.example/api/device-link",
+  flova::ProvisioningHandoff handoff("mqtts://mqtt.example:8883",
                                      "short-lived-token");
   assert(strcmp(handoff.token, "short-lived-token") == 0);
 

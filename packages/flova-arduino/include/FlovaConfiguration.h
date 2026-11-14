@@ -112,7 +112,7 @@ inline ProvisioningBootMode provisioningBootMode(bool hasCredentials,
 
 inline bool configurationValid(const DeviceConfiguration& config) {
   return config.deviceId[0] &&
-         strncmp(config.linkUrl, "wss://", 6) == 0 && config.linkSecret[0];
+          strncmp(config.linkUrl, "mqtts://", 8) == 0 && config.linkSecret[0];
 }
 
 inline uint32_t provisioningChecksum(const ProvisioningState& handoff) {
@@ -127,7 +127,7 @@ inline uint32_t provisioningChecksum(const ProvisioningState& handoff) {
 
 inline bool provisioningValid(const ProvisioningState& handoff) {
   return handoff.token[0] && handoff.linkSecret[0] &&
-         strncmp(handoff.linkUrl, "wss://", 6) == 0;
+          strncmp(handoff.linkUrl, "mqtts://", 8) == 0;
 }
 
 inline void makeProvisioningImage(const ProvisioningState& handoff,

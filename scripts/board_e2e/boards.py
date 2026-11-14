@@ -42,12 +42,12 @@ def load_config(path):
     if address.version != 4 or not any(address in ipaddress.ip_network(n) for n in private_lans):
         raise ValueError("lan_address must be the laptop's private IPv4 LAN address")
     value["lan_address"] = str(address)
-    for key, default in (("engine_port", 4000), ("tls_port", 9443)):
+    for key, default in (("engine_port", 4000), ("mqtt_port", 1883), ("tls_port", 9443)):
         port = value.setdefault(key, default)
         if type(port) is not int or not 1024 <= port <= 65535:
             raise ValueError(f"invalid {key}: use an unprivileged TCP port")
-    if value["engine_port"] == value["tls_port"]:
-        raise ValueError("Engine and TLS ingress ports must differ")
+    if len({value[key] for key in ("engine_port", "mqtt_port", "tls_port")}) != 3:
+        raise ValueError("Engine, MQTT broker and TLS ingress ports must differ")
     return value
 
 

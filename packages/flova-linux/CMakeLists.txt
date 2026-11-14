@@ -11,6 +11,7 @@ target_include_directories(flova-linux
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/packages/flova-embedded-sdk/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(flova-linux PUBLIC flova-core)
+target_link_libraries(flova-linux PRIVATE flova-coremqtt)
 target_link_libraries(flova-linux PRIVATE OpenSSL::Crypto)
 target_link_libraries(flova-linux PRIVATE OpenSSL::SSL)
 target_link_libraries(flova-linux PRIVATE Threads::Threads)

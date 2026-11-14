@@ -5,6 +5,7 @@ set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+add_subdirectory(third_party/coremqtt)
 
 add_library(flova-link-cbor STATIC
   third_party/zcbor/flova/zcbor_common.c
@@ -34,7 +35,7 @@ target_compile_definitions(flova-core INTERFACE
   FLOVA_HARDWARE_OUTPUT_CAPACITY=16
 )
 
-install(TARGETS flova-link-cbor flova-core EXPORT FlovaCoreTargets
+install(TARGETS flova-link-cbor flova-core flova-coremqtt EXPORT FlovaCoreTargets
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY packages/flova-embedded-sdk/include/
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
@@ -56,11 +57,11 @@ add_executable(flova-link-cbor-test test/host/test_flova_link_cbor.cpp)
 target_link_libraries(flova-link-cbor-test PRIVATE flova-core)
 add_executable(flova-link-fuzz-test test/host/test_flova_link_fuzz.cpp)
 target_link_libraries(flova-link-fuzz-test PRIVATE flova-core)
-add_executable(flova-ws-test test/host/test_flova_ws.cpp)
-target_include_directories(flova-ws-test PRIVATE
+add_executable(flova-device-mqtt-test test/host/test_flova_device_mqtt.cpp)
+target_include_directories(flova-device-mqtt-test PRIVATE
   test/host/arduino-shim
   packages/flova-arduino/include)
-target_link_libraries(flova-ws-test PRIVATE flova-core)
+target_link_libraries(flova-device-mqtt-test PRIVATE flova-core flova-coremqtt)
 add_executable(flova-custom-board examples/custom-board-basic/src/main.cpp)
 target_link_libraries(flova-custom-board PRIVATE flova-core)
 add_executable(flova-configuration-test test/host/test_flova_configuration.cpp)
@@ -76,6 +77,11 @@ target_include_directories(flova-lifecycle-test PRIVATE
   test/host/arduino-shim packages/flova-arduino/include)
 target_link_libraries(flova-lifecycle-test PRIVATE flova-core)
 enable_testing()
+add_executable(flova-mqtt-test test/host/test_flova_mqtt.cpp)
+target_include_directories(flova-mqtt-test PRIVATE
+  test/host/arduino-shim packages/flova-arduino/include)
+target_link_libraries(flova-mqtt-test PRIVATE flova-core flova-coremqtt)
+add_test(NAME flova-mqtt-test COMMAND flova-mqtt-test)
 add_executable(flova-esp8266-ota-writer-test test/host/test_flova_esp8266_ota_writer.cpp)
 target_include_directories(flova-esp8266-ota-writer-test PRIVATE packages/flova-esp8266/include)
 add_test(NAME flova-esp8266-ota-writer-test COMMAND flova-esp8266-ota-writer-test)
@@ -98,7 +104,7 @@ add_test(NAME flova-core-test COMMAND flova-core-test)
 add_test(NAME flova-configuration-installer-test COMMAND flova-configuration-installer-test)
 add_test(NAME flova-link-cbor-test COMMAND flova-link-cbor-test)
 add_test(NAME flova-link-fuzz-test COMMAND flova-link-fuzz-test)
-add_test(NAME flova-ws-test COMMAND flova-ws-test)
+add_test(NAME flova-device-mqtt-test COMMAND flova-device-mqtt-test)
 add_test(NAME flova-configuration-test COMMAND flova-configuration-test)
 add_test(NAME flova-runtime-services-test COMMAND flova-runtime-services-test)
 add_test(NAME flova-lifecycle-test COMMAND flova-lifecycle-test)

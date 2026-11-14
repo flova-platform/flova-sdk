@@ -10,7 +10,8 @@
 #include <FlovaConfigurationInstaller.h>
 #include <FlovaHardware.h>
 #include <FlovaArduinoPlatform.h>
-#include <FlovaWs.h>
+#include <FlovaMqtt.h>
+#include <FlovaEntropy.h>
 #include <FlovaLinkMessages.h>
 #include <FlovaScheduling.h>
 
@@ -31,7 +32,6 @@ class ArduinoDeviceLink final {
     CborSchema,
     CborCanonical,
     FrameHeader,
-    WebSocketFrame,
     TransportSubmit,
     TransportWrite,
     BootstrapFields,
@@ -41,7 +41,7 @@ class ArduinoDeviceLink final {
   static const size_t kFrameBytes = flova::link::kMaximumFrameBytes;
   static const size_t kPayloadBytes = flova::link::kMaximumPayloadBytes;
   static const size_t kTransmitWorkspaceBytes =
-      kFrameBytes + FlovaWs::kMaximumOutgoingHeaderBytes;
+      kFrameBytes;
   // Authentication and CONFIG_BEGIN can arrive in the same network turn.
   // Two slots cover that burst without taking another transport-sized buffer.
   static const uint8_t kPendingFrameSlots = 2;
@@ -53,13 +53,12 @@ class ArduinoDeviceLink final {
                 "generated CONFIG_RECORD decode workspace exceeded its budget");
 
   ArduinoDeviceLink(FlovaArduinoPlatform& platform, FlovaEntropySource& entropy)
-      : platform_(platform), websocket_(platform, entropy) {}
+      : platform_(platform), entropy_(entropy) {}
   ~ArduinoDeviceLink() { disconnect(false); }
   void beginDrain() {
     drainFailed_ = false;
     draining_ = true;
     drainStartedAt_ = millis();
-    websocket_.close();
   }
   bool drainComplete() const { return !draining_ && platform_.linkClosed(); }
   bool drainFailed() const { return drainFailed_; }
@@ -190,7 +189,7 @@ class ArduinoDeviceLink final {
   }
 
   bool connected() {
-    return active_ && websocket_.connected() &&
+    return active_ && mqtt_ && mqtt_->ready() &&
            (bootstrap_ || (authenticated_ && !bindingPending_));
   }
 
@@ -213,8 +212,7 @@ class ArduinoDeviceLink final {
     connectionAttemptFailed_ = false;
     resourceUnavailable_ = false;
     if (!openConnection(false)) return false;
-    // WebSocket authentication completes from loop(); do not stop the
-    // application's loop for up to ten seconds during startup/reconnect.
+    // TLS and broker/application authentication advance from the board loop.
     return true;
   }
 
@@ -421,9 +419,9 @@ class ArduinoDeviceLink final {
   }
   void loop() {
     if (draining_) {
-      const bool ok = platform_.serviceLinkWrite() && websocket_.serviceControl();
+      const bool ok = platform_.serviceLinkWrite() && (!mqtt_ || mqtt_->poll());
       if (!ok || millis() - drainStartedAt_ >= 5000UL ||
-          (!platform_.linkWriteBusy() && !websocket_.controlPending())) {
+          (!platform_.linkWriteBusy() && (!mqtt_ || !mqtt_->busy()))) {
         drainFailed_ = !ok || millis() - drainStartedAt_ >= 5000UL;
         draining_ = false;
         disconnect(false);
@@ -431,7 +429,6 @@ class ArduinoDeviceLink final {
       return;
     }
     if (!active_ && !connecting_) return;
-    if (!websocket_.serviceControl()) { disconnect(false); return; }
     if (!platform_.serviceLinkWrite()) {
       if (bootstrap_) setBootstrapError("link_transport_write_failed");
       connectionAttemptFailed_ = true;
@@ -443,11 +440,11 @@ class ArduinoDeviceLink final {
         const FlovaLinkOpenStatus status = platform_.pollLink();
         if (status == FlovaLinkOpenStatus::InProgress) return;
         if (status == FlovaLinkOpenStatus::Failed ||
-            !startWebSocketHandshake()) {
+             !startMqttSession()) {
           if (bootstrap_)
             setBootstrapError(status == FlovaLinkOpenStatus::Failed
                                   ? platform_.linkError()
-                                  : "link_ws_start_failed");
+                                   : "mqtt_session_failed");
           connectionAttemptFailed_ = true;
           disconnect();
           return;
@@ -455,18 +452,13 @@ class ArduinoDeviceLink final {
         transportOpening_ = false;
       }
       if (platform_.linkWriteBusy()) return;
-      const FlovaWs::HandshakeProgress progress = websocket_.pollHandshake();
-      if (progress == FlovaWs::HandshakeProgress::InProgress) return;
-      if (progress == FlovaWs::HandshakeProgress::Failed) {
-        FLOVA_SERIAL_PRINTF_WARN("[flova] Link websocket handshake failed code=%u reason=%s status=%u\n",
-                      static_cast<unsigned>(websocket_.error()),
-                      FlovaWs::handshakeFailureName(websocket_.handshakeFailure()),
-                      static_cast<unsigned>(websocket_.handshakeStatus()));
-        if (bootstrap_) setBootstrapError("link_ws_handshake_failed");
+      if (!mqtt_ || !mqtt_->poll()) {
+        if (bootstrap_) setBootstrapError("mqtt_handshake_failed");
         connectionAttemptFailed_ = true;
         disconnect();
         return;
       }
+      if (!mqtt_->ready()) return;
       connecting_ = false;
       active_ = true;
       SendFailure failure = SendFailure::None;
@@ -480,11 +472,21 @@ class ArduinoDeviceLink final {
       }
       return;
     }
-    if (active_ && authenticated_ && !bindingPending_ && lifecycleProbePending_ && !platform_.linkWriteBusy() && !websocket_.controlPending()) {
+    // Drain application work before accepting another MQTT receive batch. In
+    // particular, a slow PUBACK write must not make already-ACKed downlinks
+    // overflow this queue and disappear during a disconnect.
+    for (uint8_t i = 0; i < kPendingFrameSlots && pendingFrameCount_ && active_; ++i) {
+      if (platform_.linkWriteBusy()) return;
+      dispatchPendingFrame();
+      if (!platform_.serviceLinkWrite()) { disconnect(false); return; }
+    }
+    if (!active_ || pendingFrameCount_ || platform_.linkWriteBusy()) return;
+    if (!mqtt_ || !mqtt_->poll()) { disconnect(false); return; }
+    if (active_ && authenticated_ && !bindingPending_ && lifecycleProbePending_ && !mqtt_->busy()) {
       const uint8_t empty = 0;
       if (sendEncoded(0x04, UINT64_MAX, empty, encodeLifecycleProbe)) lifecycleProbePending_ = false;
     }
-    if (active_ && authenticated_ && !bindingPending_ && !platform_.linkWriteBusy() && !websocket_.controlPending()) {
+    if (active_ && authenticated_ && !bindingPending_ && !mqtt_->busy()) {
       const uint8_t empty = 0;
       if (schedulingProbePending_) {
         if (sendEncoded(0x04, UINT64_MAX - 1, empty, encodeLifecycleProbe)) schedulingProbePending_ = false;
@@ -499,12 +501,11 @@ class ArduinoDeviceLink final {
     if (active_ && bindingPending_) {
       if (bindingBatchCount_) {
         if (millis() - bindingSentAt_ >= 15000UL) { disconnect(); return; }
-      } else if (!platform_.linkWriteBusy() && !websocket_.controlPending()) {
+      } else if (!mqtt_->busy()) {
         if (!sendDatastreamBinding()) { disconnect(); return; }
       }
     }
     for (uint8_t i = 0; i < kPendingFrameSlots && active_; ++i) {
-      pumpWebSocket();
       if (!platform_.linkWriteBusy()) dispatchPendingFrame();
       if (!platform_.serviceLinkWrite()) {
         connectionAttemptFailed_ = true;
@@ -569,7 +570,7 @@ class ArduinoDeviceLink final {
     disconnecting_ = true;
     draining_ = false;
     const bool hadConnection = active_ || connecting_ || authenticated_ || bootstrap_ ||
-                               pendingFrameCount_ != 0 || websocket_.connected();
+                               pendingFrameCount_ != 0 || (mqtt_ && mqtt_->connected());
     active_ = false;
     connecting_ = false;
     transportOpening_ = false;
@@ -582,8 +583,7 @@ class ArduinoDeviceLink final {
     pendingFrameTail_ = 0;
     pendingFrameLength_ = 0;
     pendingCallback_ = false;
-    if (notifyPeer) websocket_.close();
-    else websocket_.abort();
+    (void)notifyPeer;
     if (hadConnection || !platform_.linkClosed()) platform_.closeLink();
     disconnecting_ = false;
     releaseIdleWorkspace();
@@ -594,6 +594,7 @@ class ArduinoDeviceLink final {
   void releaseIdleWorkspace() {
     if (!active_ && !connecting_ && !dispatching_) {
       workspace_.reset();
+      mqtt_.reset();
     }
   }
 
@@ -643,46 +644,65 @@ class ArduinoDeviceLink final {
     return true;
   }
 
-  bool startWebSocketHandshake() {
-    if (!ensureWorkspace()) return false;
-    size_t requestLength = 0;
-    if (!websocket_.startHandshake(host_, port_, path_, workspace_->tx_, sizeof(workspace_->tx_),
-                                   requestLength) ||
-        !platform_.submitLinkWrite(workspace_->tx_, requestLength) ||
-        !platform_.serviceLinkWrite()) {
-      platform_.closeLink();
+  bool startMqttSession() {
+    if (!ensureWorkspace() || !mqtt_.create(platform_)) {
+      resourceUnavailable_ = true;
       return false;
     }
-    return true;
+    static const char hex[] = "0123456789abcdef";
+    char epoch[17] = {};
+    for (size_t i = 0; i < 8; ++i) {
+      const uint8_t value = entropy_.byte();
+      epoch[i * 2] = hex[value >> 4];
+      epoch[i * 2 + 1] = hex[value & 15];
+    }
+    char principal[67] = {};
+    char password[65] = {};
+    if (bootstrap_) {
+      const flova::config::Checksum digest = flova::config::Digest::hash(bootstrapToken_, bootstrapTokenLength_);
+      principal[0] = 'b'; principal[1] = '-';
+      for (size_t i = 0; i < sizeof(digest.bytes); ++i) {
+        principal[2 + i * 2] = hex[digest.bytes[i] >> 4];
+        principal[3 + i * 2] = hex[digest.bytes[i] & 15];
+      }
+      memcpy(password, bootstrapToken_, bootstrapTokenLength_);
+    } else {
+      char id[37] = {};
+      const struct zcbor_string bytes = {deviceId_, sizeof(deviceId_)};
+      if (!copyUuidText(id, bytes)) return false;
+      snprintf(principal, sizeof(principal), "d-%s", id);
+      static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+      uint32_t bits = 0;
+      uint8_t available = 0;
+      size_t cursor = 0;
+      for (size_t i = 0; i < sizeof(secret_); ++i) {
+        bits = (bits << 8) | secret_[i];
+        available = static_cast<uint8_t>(available + 8);
+        while (available >= 6) {
+          available = static_cast<uint8_t>(available - 6);
+          password[cursor++] = alphabet[(bits >> available) & 63];
+        }
+      }
+      if (available) password[cursor] = alphabet[(bits << (6 - available)) & 63];
+    }
+    const bool ok = mqtt_->connect(principal, password, epoch, receiveMqttFrame, this);
+    memset(password, 0, sizeof(password));
+    return ok;
   }
 
-  void pumpWebSocket() {
-    if (pendingFrameCount_ >= kPendingFrameSlots) return;
-    const uint8_t slot = pendingFrameTail_;
-    const size_t capacity = kFrameBytes - pendingFrameLength_;
-    const int length = websocket_.read(workspace_->pendingFrames_[slot] + pendingFrameLength_, capacity);
-    if (length < 0) {
-      connectionAttemptFailed_ = true;
-      FLOVA_SERIAL_PRINTF_WARN("[flova] Link websocket error code=%u\n",
-                    static_cast<unsigned>(websocket_.error()));
-      disconnect(false);
-      return;
-    }
-    pendingFrameLength_ += static_cast<size_t>(length);
-    if (websocket_.messageComplete()) {
-      if (!pendingFrameLength_ || pendingFrameLength_ > kFrameBytes) {
-        connectionAttemptFailed_ = true;
-        disconnect();
-        return;
-      }
-      pendingFrameLengths_[slot] = pendingFrameLength_;
+  static bool receiveMqttFrame(void* context, const uint8_t* bytes, size_t length) {
+    ArduinoDeviceLink& self = *static_cast<ArduinoDeviceLink*>(context);
+    if (!self.workspace_ || !length || length > kFrameBytes || self.pendingFrameCount_ >= kPendingFrameSlots)
+      return false;
+    const uint8_t slot = self.pendingFrameTail_;
+    memcpy(self.workspace_->pendingFrames_[slot], bytes, length);
+    self.pendingFrameLengths_[slot] = length;
 #if FLOVA_LINK_PERFORMANCE_LOGGING && FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_TRACE
-      pendingFrameQueuedAtMs_[slot] = millis();
+    self.pendingFrameQueuedAtMs_[slot] = millis();
 #endif
-      pendingFrameTail_ = static_cast<uint8_t>((pendingFrameTail_ + 1) % kPendingFrameSlots);
-      ++pendingFrameCount_;
-      pendingFrameLength_ = 0;
-    }
+    self.pendingFrameTail_ = static_cast<uint8_t>((self.pendingFrameTail_ + 1) % kPendingFrameSlots);
+    ++self.pendingFrameCount_;
+    return true;
   }
 
   template <typename T>
@@ -694,8 +714,8 @@ class ArduinoDeviceLink final {
     const uint32_t startedAt = millis();
 #endif
     size_t payloadLength = 0;
-    uint8_t* frame = workspace_->tx_ + FlovaWs::kMaximumOutgoingHeaderBytes;
-    if (platform_.linkWriteBusy() || websocket_.controlPending())
+    uint8_t* frame = workspace_->tx_;
+    if (!mqtt_ || mqtt_->busy())
       return setSendFailure(failure, SendFailure::WriteBusy);
     if (encoder(frame + flova::link::kHeaderBytes, kPayloadBytes, &value,
                 &payloadLength) != 0 ||
@@ -710,23 +730,17 @@ class ArduinoDeviceLink final {
 #if FLOVA_LINK_PERFORMANCE_LOGGING && FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_TRACE
     const uint32_t encodedAt = millis();
 #endif
-    size_t wireLength = 0;
-    if (!websocket_.prepareBinary(frame, flova::link::kHeaderBytes + payloadLength,
-                                  workspace_->tx_, sizeof(workspace_->tx_), wireLength))
-      return setSendFailure(failure, SendFailure::WebSocketFrame);
-    if (!platform_.submitLinkWrite(workspace_->tx_, wireLength))
+    if (!mqtt_->publish(frame, flova::link::kHeaderBytes + payloadLength))
       return setSendFailure(failure, SendFailure::TransportSubmit);
     const bool sent = platform_.serviceLinkWrite();
     if (!sent) return setSendFailure(failure, SendFailure::TransportWrite);
 #if FLOVA_LINK_PERFORMANCE_LOGGING && FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_TRACE
-    FLOVA_SERIAL_PRINTF_TRACE("[flova] Link send type=0x%02x id=%llu bytes=%u encode_ms=%lu send_ms=%lu writes=%u wire_bytes=%u accepted=%u\n",
+    FLOVA_SERIAL_PRINTF_TRACE("[flova] MQTT send type=0x%02x id=%llu bytes=%u encode_ms=%lu send_ms=%lu accepted=%u\n",
                   static_cast<unsigned>(type),
                   static_cast<unsigned long long>(messageId),
                   static_cast<unsigned>(flova::link::kHeaderBytes + payloadLength),
                   static_cast<unsigned long>(encodedAt - startedAt),
-                  static_cast<unsigned long>(websocket_.lastSendDurationMs()),
-                  static_cast<unsigned>(websocket_.lastSendWriteCalls()),
-                  static_cast<unsigned>(websocket_.lastSendWireBytes()), sent ? 1U : 0U);
+                  static_cast<unsigned long>(millis() - encodedAt), sent ? 1U : 0U);
 #endif
     return sent;
   }
@@ -861,7 +875,6 @@ class ArduinoDeviceLink final {
       case SendFailure::CborSchema: error = "bootstrap_auth_cbor_schema"; break;
       case SendFailure::CborCanonical: error = "bootstrap_auth_cbor_canonical"; break;
       case SendFailure::FrameHeader: error = "bootstrap_auth_frame_failed"; break;
-      case SendFailure::WebSocketFrame: error = "bootstrap_auth_ws_failed"; break;
       case SendFailure::TransportSubmit: error = "bootstrap_auth_submit_failed"; break;
       case SendFailure::TransportWrite: error = "bootstrap_auth_write_failed"; break;
       case SendFailure::BootstrapFields: error = "bootstrap_auth_fields_failed"; break;
@@ -1490,9 +1503,10 @@ class ArduinoDeviceLink final {
   }
 
   bool parseUrl() {
-    if (strncmp(url_, "wss://", 6) != 0) return false;
-    const char* authority = url_ + 6;
+    if (strncmp(url_, "mqtts://", 8) != 0) return false;
+    const char* authority = url_ + 8;
     const char* slash = strchr(authority, '/');
+    if (slash && strcmp(slash, "/")) return false;
     const size_t authorityLength = slash ? static_cast<size_t>(slash - authority) : strlen(authority);
     if (!authorityLength || authorityLength >= sizeof(host_)) return false;
     const char* colon = static_cast<const char*>(memchr(authority, ':', authorityLength));
@@ -1518,23 +1532,22 @@ class ArduinoDeviceLink final {
       if (!parsedPort) return false;
       port_ = static_cast<uint16_t>(parsedPort);
     } else {
-      port_ = 443;
+      port_ = 8883;
     }
-    path_ = slash ? slash : "/";
     return true;
   }
 
   char url_[kUrlBytes] = {};
   char host_[kUrlBytes] = {};
-  const char* path_ = "/";
-  uint16_t port_ = 443;
+  uint16_t port_ = 8883;
   bool active_ = false;
   bool connecting_ = false;
   bool transportOpening_ = false;
   bool authenticated_ = false;
   bool bootstrap_ = false;
   FlovaArduinoPlatform& platform_;
-  FlovaWs websocket_;
+  FlovaEntropySource& entropy_;
+  FlovaPhaseStorage<FlovaMqtt> mqtt_;
   bool identityValid_ = false;
   uint8_t deviceId_[16] = {};
   uint8_t secret_[32] = {};

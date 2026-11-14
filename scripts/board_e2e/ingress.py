@@ -1,4 +1,4 @@
-"""Temporary, verified TLS ingress to an existing loopback development Engine."""
+"""Temporary, verified TLS ingress to an existing loopback development MQTT broker."""
 
 import os
 import socket
@@ -38,16 +38,16 @@ class LocalIngress:
         (self.output / "haproxy.cfg").write_text(f"""global
   tune.ssl.maxrecord 2048
 defaults
-  mode http
+  mode tcp
   timeout connect 5s
   timeout client 120s
   timeout server 120s
   timeout tunnel 1h
 frontend device_tls
   bind {self.config['lan_address']}:{self.config['tls_port']} ssl crt /test/server.pem ssl-min-ver TLSv1.2
-  default_backend engine
-backend engine
-  server engine 127.0.0.1:{self.config['engine_port']}
+  default_backend mqtt
+backend mqtt
+  server mqtt 127.0.0.1:{self.config['mqtt_port']}
 """)
         self.log = (self.output / "ingress.log").open("w")
         try:

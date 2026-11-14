@@ -141,6 +141,23 @@ class Monitor:
                 "explicit_flush": True, "persistent_reboot_restore": True,
                 "nonpersistent_not_restored": True}
 
+    def smoke(self):
+        """One provision/report/ACK, without stress, reconnect or persistence tests."""
+        initial = self.wait("ready", timeout=45, allow_boot=True)
+        if initial["temp_present"] or initial["humidity_present"]:
+            raise RuntimeError("test must start with erased SDK state")
+        baseline = self.wait("sample", lambda e: e["ready"] and e["connected"], timeout=5)
+        self.command("s", "started")
+        try:
+            self.wait("sample", lambda e: e["ready"] and e["connected"] and
+                      e["reports"] > baseline["reports"] and not e["dirty"], timeout=15)
+        except TimeoutError as error:
+            raise TimeoutError("fresh telemetry delivery ACK not received within 15 seconds") from error
+        self.command("p", "paused")
+        return {"telemetry_and_link_acks": True, "reconnect_cycles": 0,
+                "explicit_flush": False, "persistent_reboot_restore": False,
+                "nonpersistent_not_restored": False}
+
 
 def summarize(samples):
     connected = [s for s in samples if s["ready"] and s["connected"] and s["run_count"]]

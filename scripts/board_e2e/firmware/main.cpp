@@ -10,6 +10,10 @@ namespace {
 TestClient client;
 auto temperature = FLOVA_DATASTREAM(client, double, "temperature");
 auto humidity = FLOVA_DATASTREAM(client, double, "humidity");
+#if TEST_COMMAND_CHECK_ENABLED
+auto power = FLOVA_DATASTREAM(client, bool, "power");
+static flova::WriteResult acceptPower(bool) { return flova::accept(); }
+#endif
 bool reporting = false;
 bool firstReport = false;
 uint32_t reportIntervalMs = TEST_REPORT_INTERVAL_MS;
@@ -50,6 +54,10 @@ void setup() {
   board_test::begin();
   temperature.persist(flova::PersistencePolicy::Deferred, 5000);
   humidity.persist(flova::PersistencePolicy::None);
+  // Dedicated test state only; never drive a physical actuator.
+#if TEST_COMMAND_CHECK_ENABLED
+  power.onWrite(acceptPower).scheduling(flova::Scheduling::CloudOnly);
+#endif
   if (!client.begin()) event("failed");
 }
 

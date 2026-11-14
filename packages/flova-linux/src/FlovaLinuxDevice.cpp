@@ -3,7 +3,7 @@
 #include <FlovaLinuxArduinoCompat.h>
 
 #include <FlovaArduinoPlatform.h>
-#include <FlovaWs.h>
+#include <FlovaEntropy.h>
 #include <adapters/ArduinoFlovaLink.h>
 
 #include <errno.h>

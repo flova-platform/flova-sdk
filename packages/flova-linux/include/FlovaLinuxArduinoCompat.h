@@ -15,6 +15,11 @@ inline unsigned long millis() {
 }
 
 inline void yield() {}
+inline void delay(unsigned long milliseconds) {
+  struct timespec duration = {static_cast<time_t>(milliseconds / 1000UL),
+                             static_cast<long>((milliseconds % 1000UL) * 1000000UL)};
+  nanosleep(&duration, nullptr);
+}
 #define F(value) value
 
 class FlovaLinuxSerial {

@@ -27,7 +27,7 @@ class FlovaEsp32Ethernet final {
 
   bool begin() {
     if (!FLOVA_DEVICE_TEMPLATE_ID[0] || !FLOVA_DEVICE_PROVISION_TOKEN[0] ||
-        strncmp(FLOVA_DEVICE_LINK_URL, "wss://", 6) != 0 ||
+        strncmp(FLOVA_DEVICE_LINK_URL, "mqtts://", 8) != 0 ||
         !ETH.begin(phyAddress_, power_, mdc_, mdio_, ETH_PHY_LAN8720,
                    clockMode_))
       return false;

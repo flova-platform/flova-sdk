@@ -230,7 +230,7 @@ void observe(void* context, const FlovaStatusEvent& event) {
 void seedRuntimeConfiguration(TestStorage& storage) {
   flova::DeviceConfiguration configuration = {};
   assert(flova::copyBounded("device-1", configuration.deviceId, true));
-  assert(flova::copyBounded("wss://engine.example/api/device-link",
+  assert(flova::copyBounded("mqtts://mqtt.example:8883",
                             configuration.linkUrl, true));
   assert(flova::copyBounded("secret", configuration.linkSecret, true));
   configuration.generation = 1;
@@ -470,7 +470,7 @@ int main() {
   // Exercise transfer -> typed workspace reuse through the real lifecycle.
   client.setStatusListener(nullptr);
   assert(client.provision(flova::ProvisioningHandoff(
-      "wss://engine.example/api/device-link",
+      "mqtts://mqtt.example:8883",
       "ttttttttttttttttttttttttttttttttttttttttttt")) == FlovaProvisioningResponse::Accepted);
   network.online = tlsClock.clockReady = link.online = true;
   for (unsigned i = 0; i < 4; ++i) client.run();
