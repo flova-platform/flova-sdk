@@ -127,7 +127,7 @@ Track:
 
 Large reusable buffers must use explicitly owned bounded storage.
 
-Read `references/memory.md` before modifying memory ownership, buffers, queues, TLS resources, persistent state, or ESP8266 runtime layout.
+Follow the repository memory rules and executable resource limits before modifying memory ownership, buffers, queues, TLS resources, persistent state, or ESP8266 runtime layout.
 
 ## Testing
 

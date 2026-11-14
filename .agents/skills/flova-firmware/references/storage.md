@@ -127,7 +127,7 @@ Current ESP8266 storage-backed descriptors have a single-entry cache. Alternatin
 streams can force reads during safety validation. Preserve fail-closed safety,
 registration, handle, and ACK semantics until a separate redesign is verified;
 do not claim zero-I/O acceptance or copy this design into new hot paths merely
-because it already exists. See `memory.md` and `packages/MEMORY.md` for context.
+because it already exists. Follow the repository memory rules and executable resource checks.
 Existing storage-dependent boot/configuration paths also do not establish a
 working RAM-only default. These rules define the desired contract, not an
 implemented feature flag or permission to disable durability checks in place.
@@ -136,7 +136,7 @@ Any exception to the default contract must name the target/feature profile,
 affected paths, reason, measured RAM/image/I/O/latency tradeoff, acceptance
 status, and revalidation triggers. Missing evidence means unverified, not
 accepted. Revalidate affected assumptions after core, storage backend, compiler,
-TLS, partition, capacity, or persistence-policy changes. Keep current numbers
-and evidence in `packages/MEMORY.md` or the relevant feature evidence; keep
+TLS, partition, capacity, or persistence-policy changes. Keep run-specific measurements
+and experimental evidence in private notes outside the repository; keep
 executable ceilings in existing budget checks. Do not duplicate moving numeric
 budgets throughout the skills or raise them merely to pass a gate.

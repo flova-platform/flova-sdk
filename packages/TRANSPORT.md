@@ -70,7 +70,8 @@ No optional IRAM heap or custom MMU is supported. The build rejects
 constructing the secure client; actual allocation can still fail. The client is
 released on Link closure or OTA completion, including failure paths, releasing
 BearSSL's shared 6,200-byte secondary stack when its last owner exits. Trust
-anchors are parsed once from flash-resident PEM data. See [memory acceptance](MEMORY.md).
+anchors are parsed once from flash-resident PEM data. Executable [footprint checks](../scripts/check_flova_memory.py) enforce build
+limits; they do not establish physical runtime acceptance.
 
 ## Build and diagnostics
 

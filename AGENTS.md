@@ -37,8 +37,8 @@ For C++ implementation and review, also follow:
 - `.agents/skills/cpp-code-quality/SKILL.md`: contracts, scope, and verification.
 - `.agents/skills/cpp-antipatterns/SKILL.md`: language and embedded hazards.
 
-Read the firmware references for the area being changed: `memory.md`,
-`storage.md`, `protocol.md`, `datastreams.md`, and `testing.md` under
+Read the firmware references for the area being changed: `storage.md`,
+`protocol.md`, `datastreams.md`, and `testing.md` under
 `.agents/skills/flova-firmware/references/`. Keep detailed rules there rather
 than duplicating them. The `flova-sdk` skill is an alias, not a second authority.
 
@@ -121,8 +121,8 @@ editing these instructions implements a RAM-only profile.
 - Measure storage latency, loop gaps, memory low-water marks, and largest free
   blocks where relevant. Chunking, `yield()`, and one write per loop do not prove
   deadlines are met. Account for TLS, filesystem, and maintenance peaks.
-- Never raise ceilings merely to pass a gate. Keep current numbers/evidence in
-  `packages/MEMORY.md` and executable limits in existing checks. Revalidate
+- Never raise ceilings merely to pass a gate. Keep run-specific measurements in
+  private notes outside the repository and executable limits in existing checks. Revalidate
   affected assumptions on core, compiler, backend, TLS, partition, or capacity
   changes; keep missing hardware evidence explicitly unverified.
 

@@ -131,7 +131,7 @@ Run the TLS-budget host boundary tests, 64-key multi-frame binding tests, and
 all-text capacity/int64 safety tests alongside the usual suite. Build the
 the universal ESP8266 default-MMU profile. Run the image budget checker both
 normally and with `--stock-dram`; distinguish a reviewed image-size ceiling from
-physical product acceptance. Maintain failure evidence in `packages/MEMORY.md`
+physical product acceptance. Keep failure evidence in private notes outside the repository
 rather than weakening limits to make the gate green.
 
 Do not flash or manipulate connected devices when the requested validation is
