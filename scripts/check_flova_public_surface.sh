@@ -52,9 +52,9 @@ if rg -n 'beginRuntime|runtimeConnected|clockReady|defaultHardwareId|defaultFirm
 fi
 
 portal="packages/flova-arduino/include/FlovaSoftApPortal.h"
-for needle in 'lang="fa" dir="rtl"' '#BFFF32' 'Tahoma' 'راه‌اندازی دستگاه فلووا'; do
+for needle in 'lang="en" dir="ltr"' '#BFFF32' 'Set up your Flova device' 'Return to Flova'; do
   if ! grep -F -q "$needle" "$portal"; then
-    echo "error: setup portal is missing required localized design marker: $needle" >&2
+    echo "error: setup portal is missing required English LTR design marker: $needle" >&2
     failed=1
   fi
 done
