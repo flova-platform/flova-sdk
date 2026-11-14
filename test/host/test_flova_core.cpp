@@ -356,6 +356,63 @@ static void verifyFullCapacityAndIntegerSafety() {
   assert(humidityLimit.value() == 72.5f);
 }
 
+static void verifyMixedNumericSafety() {
+  TestLink link; TestStorage storage; TestClock clock; TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  auto number = device.datastream<double>("mixed-number");
+  auto integer = device.datastream<int64_t>("mixed-integer");
+  number.onWrite(+[](double) { return flova::accept(); });
+  integer.onWrite(+[](int64_t) { return flova::accept(); });
+  assert(device.begin());
+  using flova::config::SafetyPolicy;
+  struct Case { int64_t integer; double number; SafetyPolicy policy; bool accepted; };
+  const Case numberCases[] = {
+    {INT64_MAX, 9223372036854775808.0, SafetyPolicy::Maximum, false},
+    {INT64_MAX, 9223372036854774784.0, SafetyPolicy::Maximum, true},
+    {INT64_MAX, 9223372036854774784.0, SafetyPolicy::Minimum, false},
+    {INT64_MAX, 9223372036854775808.0, SafetyPolicy::Minimum, true},
+    {9007199254740993LL, 9007199254740992.0, SafetyPolicy::Minimum, false},
+    {9007199254740993LL, 9007199254740994.0, SafetyPolicy::Maximum, false},
+    {INT64_MIN, -9223372036854775808.0, SafetyPolicy::Minimum, true},
+    {INT64_MIN, -9223372036854777856.0, SafetyPolicy::Minimum, false},
+  };
+  const Case integerCases[] = {
+    {INT64_MAX, 9223372036854775808.0, SafetyPolicy::Minimum, false},
+    {INT64_MAX, 9223372036854775808.0, SafetyPolicy::Maximum, true},
+    {INT64_MIN, -9223372036854775808.0, SafetyPolicy::Minimum, true},
+    {INT64_MIN, -9223372036854777856.0, SafetyPolicy::Maximum, false},
+    {1, 1.5, SafetyPolicy::Minimum, false},
+    {2, 1.5, SafetyPolicy::Minimum, true},
+    {-1, -1.5, SafetyPolicy::Maximum, false},
+    {-2, -1.5, SafetyPolicy::Maximum, true},
+    {9007199254740993LL, 9007199254740992.0, SafetyPolicy::Maximum, false},
+  };
+  for (const auto& test : numberCases) {
+    flova::config::Unit unit = {}; unit.kind = flova::config::UnitKind::Safety;
+    unit.data.safety.datastreamId = 1; unit.data.safety.policy = test.policy;
+    unit.data.safety.hasMinimum = test.policy == SafetyPolicy::Minimum;
+    unit.data.safety.hasMaximum = test.policy == SafetyPolicy::Maximum;
+    auto& bound = unit.data.safety.hasMinimum ? unit.data.safety.minimum : unit.data.safety.maximum;
+    bound.kind = flova::config::ValueKind::Int64; bound.data.integer = test.integer;
+    assert(device.applyConfigurationUnit(unit));
+    const auto before = number.snapshot();
+    assert(number.write(test.number).accepted() == test.accepted);
+    if (!test.accepted) assert(number.snapshot().revision == before.revision);
+  }
+  for (const auto& test : integerCases) {
+    flova::config::Unit unit = {}; unit.kind = flova::config::UnitKind::Safety;
+    unit.data.safety.datastreamId = 2; unit.data.safety.policy = test.policy;
+    unit.data.safety.hasMinimum = test.policy == SafetyPolicy::Minimum;
+    unit.data.safety.hasMaximum = test.policy == SafetyPolicy::Maximum;
+    auto& bound = unit.data.safety.hasMinimum ? unit.data.safety.minimum : unit.data.safety.maximum;
+    bound.kind = flova::config::ValueKind::Float64; bound.data.float64 = test.number;
+    assert(device.applyConfigurationUnit(unit));
+    const auto before = integer.snapshot();
+    assert(integer.write(test.integer).accepted() == test.accepted);
+    if (!test.accepted) assert(integer.snapshot().revision == before.revision);
+  }
+}
+
 static void verifyCustomCodeHelpers() {
   TestLink link;
   TestStorage storage;
@@ -561,6 +618,7 @@ static void verifyHistoryRebinding() {
 }
 
 int main() {
+  verifyMixedNumericSafety();
   verifyCommandLedger();
   verifyInterruptedCommand();
   verifyFiniteSafetyAndRestore();

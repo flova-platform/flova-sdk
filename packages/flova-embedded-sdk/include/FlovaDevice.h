@@ -612,10 +612,22 @@ class Device {
     int compare(const Value& input) const {
       if (type == ValueType::Int64 && input.type == ValueType::Int64)
         return (input.scalar.integer > value.integer) - (input.scalar.integer < value.integer);
-      const double actual = input.type == ValueType::Int64 ? static_cast<double>(input.scalar.integer) :
-          input.type == ValueType::Float ? input.scalar.floating : input.scalar.number;
-      const double bound = type == ValueType::Int64 ? static_cast<double>(value.integer) : value.number;
-      return (actual > bound) - (actual < bound);
+      if (input.type == ValueType::Int64)
+        return compareIntegerToNumber(input.scalar.integer, value.number);
+      const double actual = input.type == ValueType::Float ? input.scalar.floating : input.scalar.number;
+      if (type == ValueType::Int64)
+        return -compareIntegerToNumber(value.integer, actual);
+      return (actual > value.number) - (actual < value.number);
+    }
+    static int compareIntegerToNumber(int64_t integer, double number) {
+      // Check the exclusive upper limit before conversion: INT64_MAX rounds
+      // up to 2^63 as a double, and converting that double to int64_t is invalid.
+      if (number >= 9223372036854775808.0) return -1;
+      if (number < -9223372036854775808.0) return 1;
+      const int64_t truncated = static_cast<int64_t>(number);
+      if (integer != truncated) return (integer > truncated) - (integer < truncated);
+      const double whole = static_cast<double>(truncated);
+      return (whole > number) - (whole < number);
     }
   };
 
