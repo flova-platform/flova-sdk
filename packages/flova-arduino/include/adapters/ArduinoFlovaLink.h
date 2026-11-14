@@ -81,14 +81,7 @@ class ArduinoFlovaLink : public FlovaClientLink {
   }
 
   bool queueConfigurationRecord(const FlovaLinkConfigurationRecord& input) {
-    if (!pendingRecords_.create() ||
-        configurationPendingCount_ >= kConfigurationPendingSlots)
-      return false;
-    pendingRecords_->configuration_[configurationPendingTail_] = input;
-    configurationPendingTail_ = static_cast<uint8_t>(
-        (configurationPendingTail_ + 1) % kConfigurationPendingSlots);
-    ++configurationPendingCount_;
-    return true;
+    return pendingRecords_.create() && enqueueConfigurationRecord(input);
   }
 
   bool decodeConfigurationPayload(const char* phase, const uint8_t* payload,
@@ -515,6 +508,16 @@ class ArduinoFlovaLink : public FlovaClientLink {
     static_cast<ArduinoFlovaLink*>(context)->accept(inbound);
   }
 
+  bool enqueueConfigurationRecord(const FlovaLinkConfigurationRecord& input) {
+    if (!pendingRecords_ || configurationPendingCount_ >= kConfigurationPendingSlots)
+      return false;
+    pendingRecords_->configuration_[configurationPendingTail_] = input;
+    configurationPendingTail_ = static_cast<uint8_t>(
+        (configurationPendingTail_ + 1) % kConfigurationPendingSlots);
+    ++configurationPendingCount_;
+    return true;
+  }
+
   void accept(const FlovaLinkInboundMessage& inbound) {
     if (inbound.type == FlovaLinkMessageType::BootstrapCommitted) {
       pendingRecords_->bootstrapCommitted_ = inbound.body.bootstrapCommitted;
@@ -530,12 +533,8 @@ class ArduinoFlovaLink : public FlovaClientLink {
     if (inbound.type == FlovaLinkMessageType::ConfigurationBegin ||
         inbound.type == FlovaLinkMessageType::ConfigurationRecord ||
         inbound.type == FlovaLinkMessageType::ConfigurationEnd) {
-      if (configurationPendingCount_ >= kConfigurationPendingSlots) return;
-      pendingRecords_->configuration_[configurationPendingTail_] =
-          inbound.body.configuration;
-      configurationPendingTail_ = static_cast<uint8_t>(
-          (configurationPendingTail_ + 1) % kConfigurationPendingSlots);
-      ++configurationPendingCount_;
+      // Transport callbacks only use storage allocated at phase entry.
+      (void)enqueueConfigurationRecord(inbound.body.configuration);
       return;
     }
     if (inbound.type == FlovaLinkMessageType::DatastreamBound) {

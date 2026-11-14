@@ -4,6 +4,7 @@
 
 #include <FlovaWs.h>
 #include <adapters/ArduinoDeviceLink.h>
+#include <adapters/ArduinoFlovaLink.h>
 #include <FlovaRetryBackoff.h>
 
 static_assert(sizeof(FlovaWs) <= 640, "FlovaWs fixed storage exceeded its budget");
@@ -702,6 +703,25 @@ static void verifyCoalescedWrite() {
 }
 
 int main() {
+  {
+    FakePlatform platform;
+    ArduinoFlovaLink link(platform, entropy);
+    FlovaLinkConfigurationRecord record = {}, output = {};
+    assert(!link.configurationRecordPending());
+    assert(!link.takeConfigurationRecord(output));
+    record.generation = 1;
+    assert(link.queueConfigurationRecord(record));
+    record.generation = 2;
+    assert(link.queueConfigurationRecord(record));
+    record.generation = 3;
+    assert(!link.queueConfigurationRecord(record));
+    assert(link.takeConfigurationRecord(output) && output.generation == 1);
+    assert(link.queueConfigurationRecord(record));
+    assert(link.takeConfigurationRecord(output) && output.generation == 2);
+    assert(link.takeConfigurationRecord(output) && output.generation == 3);
+    assert(!link.configurationRecordPending());
+    assert(!link.takeConfigurationRecord(output));
+  }
   {
     flova::RetryBackoff retry;
     for (unsigned i = 0; i < 10000; ++i) {
