@@ -1,3 +1,13 @@
+FlovaSDK 0.4.0 updates the transport and runtime contracts.
+
+Breaking changes:
+
+- Device transport moves from WebSockets to bounded MQTT while keeping the
+  Flova datastream API.
+- Downloaded schedule manifests are removed. Cloud schedules use the existing
+  device connection and require explicit datastream permission.
+- Configuration and runtime state follow the new bounded, RAM-first defaults.
+
 FlovaSDK 0.3.12 delivers bounded MQTT configuration transfer and keeps the
 desktop Linux compatibility surface isolated from embedded Arduino builds.
 
