@@ -1,3 +1,19 @@
+FlovaSDK 0.5.0 makes the standard ESP board classes manage connectivity.
+
+Breaking changes:
+
+- `FlovaEsp32` and `FlovaEsp8266` now start SoftAP setup when unconfigured,
+  restore saved Wi-Fi credentials, reconnect, and handle managed restarts.
+- Applications that own Wi-Fi, HTTP servers, or restart policy must explicitly
+  compose `FlovaClient` with board services. See `custom-arduino-provisioning`.
+- `attachProvisioning()` is removed from the board facade; advanced examples
+  register their own handoff routes. Universal firmware still owns mappings.
+- Wi-Fi-only recovery preserves device identity and configuration, with verified
+  promotion and rollback. Stored layouts and the Link wire protocol are unchanged.
+
+Existing firmware can be retained for rollback: no storage migration or erasure
+is introduced. Explicit external compositions continue to call `begin(false)`.
+
 FlovaSDK 0.4.0 updates the transport and runtime contracts.
 
 Breaking changes:

@@ -76,7 +76,11 @@ add_executable(flova-lifecycle-test test/host/test_flova_lifecycle.cpp)
 target_include_directories(flova-lifecycle-test PRIVATE
   test/host/arduino-shim packages/flova-arduino/include)
 target_link_libraries(flova-lifecycle-test PRIVATE flova-core)
+add_executable(flova-wifi-recovery-test test/host/test_flova_wifi_recovery.cpp)
+target_include_directories(flova-wifi-recovery-test PRIVATE packages/flova-arduino/include)
+target_link_libraries(flova-wifi-recovery-test PRIVATE flova-core)
 enable_testing()
+add_test(NAME flova-wifi-recovery-test COMMAND flova-wifi-recovery-test)
 add_executable(flova-mqtt-test test/host/test_flova_mqtt.cpp)
 target_include_directories(flova-mqtt-test PRIVATE
   test/host/arduino-shim packages/flova-arduino/include)
@@ -137,3 +141,6 @@ add_flova_logging_test(flova-logging-all-test)
 target_compile_definitions(flova-logging-all-test PRIVATE FLOVA_LOG_LEVEL=FLOVA_LOG_LEVEL_TRACE)
 add_flova_logging_test(flova-logging-disabled-test)
 target_compile_definitions(flova-logging-disabled-test PRIVATE FLOVA_LOGGING_ENABLED=0)
+
+file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/../tmp")
+set_tests_properties(flova-linux-test PROPERTIES ENVIRONMENT "TMPDIR=${CMAKE_SOURCE_DIR}/../tmp")

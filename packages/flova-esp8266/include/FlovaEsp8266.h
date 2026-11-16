@@ -1,6 +1,5 @@
 #pragma once
 
-#include <ESP8266WebServer.h>
 #include <user_interface.h>
 
 #include <FlovaEsp8266BuildProfile.h>
@@ -10,6 +9,7 @@
 #include <FlovaEsp8266Platform.h>
 #include <FlovaEsp8266Services.h>
 #include <FlovaWifiProvisioning.h>
+#include <FlovaEsp8266Provisioning.h>
 #include <adapters/ArduinoFlovaLink.h>
 #include <adapters/ArduinoFlovaManualHardware.h>
 
@@ -18,25 +18,66 @@ class FlovaEsp8266Entropy : public FlovaEntropySource {
   uint8_t byte() override { return static_cast<uint8_t>(os_random()); }
 };
 
-// Plug-in facade for existing applications. It owns only Flova-private state
-// and observes the application's connectivity without changing it.
+// Managed custom firmware: application-owned pins, SDK-owned connectivity.
 class FlovaEsp8266 final {
  public:
-  FlovaEsp8266()
+  explicit FlovaEsp8266(const char* setupPassword = FLOVA_SETUP_PASSWORD)
       : linkPlatform_(), defaultLink_(linkPlatform_, entropy_), link_(defaultLink_),
+        provisioning_(storage_, setupPassword), network_(storage_),
         identity_("custom_arduino_esp8266"),
         client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
-                clock_, logger_, entropy_, hardware_) {}
+                clock_, logger_, entropy_, hardware_), recovery_(storage_, network_) {
+    client_.setRestartHandler(scheduleManagedRestart, this);
+  }
 
   // Inject a board transport; the default uses CBOR over MQTT/TLS.
   explicit FlovaEsp8266(FlovaClientLink& transport)
       : linkPlatform_(), defaultLink_(linkPlatform_, entropy_), link_(transport),
+        provisioning_(storage_, FLOVA_SETUP_PASSWORD), network_(storage_),
         identity_("custom_arduino_esp8266"),
         client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
-                clock_, logger_, entropy_, hardware_) {}
+                clock_, logger_, entropy_, hardware_), recovery_(storage_, network_) {
+    client_.setRestartHandler(scheduleManagedRestart, this);
+  }
 
-  bool begin() { return client_.begin(false); }
-  void run() { client_.run(); }
+  bool begin() { return client_.begin(true); }
+  void run() {
+    client_.run();
+    recovery_.restartIfDue(millis());
+    if (!client_.networkSetupActive()) return;
+    if (!client_.networkSetupReady()) return;
+    if (recovery_.state() == FlovaWifiRecovery::State::Idle) {
+      const bool recoveryReady = recovery_.begin();
+      if (!recoveryReady || !provisioning_.startWifiSetup(recovery_)) {
+        recovery_.reset(recoveryReady ? "wifi_setup_start_failed" : recovery_.error());
+        if (!network_.begin()) recovery_.reset("wifi_restore_failed");
+        client_.endNetworkSetup();
+        return;
+      }
+    }
+    provisioning_.loop();
+    recovery_.run(millis());
+    if (recovery_.state() == FlovaWifiRecovery::State::Committed ||
+        recovery_.state() == FlovaWifiRecovery::State::Cancelled ||
+        recovery_.state() == FlovaWifiRecovery::State::Finished) {
+      if (recovery_.finish() && provisioning_.stopProvisioning()) {
+        recovery_.reset();
+        client_.endNetworkSetup();
+      }
+    }
+  }
+  bool startWifiSetup() { return client_.beginNetworkSetup(); }
+  bool cancelWifiSetup() {
+    if (!client_.networkSetupActive()) return false;
+    if (recovery_.state() == FlovaWifiRecovery::State::Idle) {
+      client_.endNetworkSetup(); return true;
+    }
+    return recovery_.cancel();
+  }
+  bool wifiSetupActive() const { return client_.networkSetupActive(); }
+  const char* wifiSetupError() const {
+    return recovery_.error()[0] ? recovery_.error() : client_.lastError();
+  }
   bool connected() const { return client_.connected(); }
   template <typename T>
   bool report(const char* key, const T& value) { return client_.datastream<T>(key).report(value).accepted(); }
@@ -113,39 +154,6 @@ class FlovaEsp8266 final {
     return client_.provision(input);
   }
 
-  bool attachProvisioning(ESP8266WebServer& server) {
-    if (routesAttached_) return false;
-    provisioningServer_ = &server;
-    server.on("/status", HTTP_GET, [this]() {
-      const char* error = lastError();
-      snprintf(response_, sizeof(response_),
-               error && error[0]
-                   ? "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"can_retry\":true,\"last_error_code\":\"%s\"}"
-                   : "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"can_retry\":true}",
-               error ? error : "");
-      provisioningServer_->send(200, "application/json", response_);
-    });
-    server.on("/provision", HTTP_POST, [this]() {
-      const String& body = provisioningServer_->arg("plain");
-      if (body.length() >= 768 ||
-          !flova::parseWifiProvisioningHandoff(body.c_str(), body.length(),
-                                               provisioningInput_)) {
-        provisioningServer_->send(400, "application/json",
-                    "{\"ok\":false,\"error\":\"invalid_handoff\"}");
-        return;
-      }
-      const FlovaProvisioningResponse result = provision(provisioningInput_);
-      if (result == FlovaProvisioningResponse::Accepted)
-        provisioningServer_->send(202, "application/json", "{\"ok\":true,\"status\":\"accepted\"}");
-      else if (result == FlovaProvisioningResponse::StorageFailed)
-        provisioningServer_->send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
-      else
-        provisioningServer_->send(409, "application/json", "{\"ok\":false,\"error\":\"invalid_state\"}");
-    });
-    routesAttached_ = true;
-    return true;
-  }
-
   bool startProvisioning() { return client_.startProvisioning(); }
   bool provisioning() const { return client_.provisioning(); }
   FlovaLifecycle lifecycle() const { return client_.lifecycle(); }
@@ -187,6 +195,9 @@ class FlovaEsp8266 final {
   }
 
  private:
+  static void scheduleManagedRestart(void* context, FlovaRestartReason) {
+    static_cast<FlovaEsp8266*>(context)->recovery_.requestRestart(millis());
+  }
   FlovaEsp8266Entropy entropy_;
   FlovaEsp8266Platform linkPlatform_;
   ArduinoFlovaLink defaultLink_;
@@ -195,13 +206,10 @@ class FlovaEsp8266 final {
   ArduinoFlovaClock clock_;
   ArduinoFlovaLogger logger_;
   ArduinoFlovaManualHardware hardware_;
-  FlovaProvisioningAdapter provisioning_;
-  FlovaEsp8266ObservedNetwork network_;
+  FlovaEsp8266ProvisioningWithWifiRecovery provisioning_;
+  FlovaEsp8266StoredNetwork network_;
   ArduinoFlovaUtcBootstrap<WiFiUDP> tlsClock_;
   FlovaEsp8266Identity identity_;
   FlovaClient client_;
-  ESP8266WebServer* provisioningServer_ = nullptr;
-  flova::ProvisioningHandoff provisioningInput_;
-  char response_[192] = {};
-  bool routesAttached_ = false;
+  FlovaEsp8266WifiRecovery recovery_;
 };

@@ -8,7 +8,7 @@ paths="packages/flova-esp32/include/FlovaEsp32.h packages/flova-esp8266/include/
 pattern='WiFi\.(begin|mode|disconnect|softAP)|server\.(begin|stop)|ESP\.(restart|reboot)|\b(configTime|pinMode|digitalWrite|analogWrite)[[:space:]]*\('
 
 if rg -n -e "$pattern" $paths; then
-  echo "error: passive ESP SDK facade must not own network, server, GPIO, clock policy, or restart" >&2
+  echo "error: board facades must delegate network, server, GPIO, clock, and restart work to their services" >&2
   exit 1
 fi
 
@@ -28,4 +28,4 @@ if rg -n -e 'storage_\.begin\(\)|beginStorage\(' $storage_wrappers; then
   exit 1
 fi
 
-echo "Passive ESP ownership checks passed"
+echo "ESP service-ownership checks passed"

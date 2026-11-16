@@ -1,0 +1,282 @@
+[
+  {
+    "id": "custom-arduino-client-esp32",
+    "name": "LED starter · ESP32",
+    "profile": "custom-arduino-client-esp32",
+    "chip": "ESP32",
+    "source": "examples/custom-arduino-client/src/main.cpp",
+    "requiredStreams": [
+      {
+        "key": "led",
+        "type": "bool",
+        "direction": "writable"
+      }
+    ],
+    "managedSetup": true,
+    "description": "Wi-Fi setup and reconnection are managed by Flova."
+  },
+  {
+    "id": "custom-arduino-client-esp8266",
+    "name": "LED starter · ESP8266",
+    "profile": "custom-arduino-client-esp8266",
+    "chip": "ESP8266",
+    "source": "examples/custom-arduino-client/src/main-esp8266.cpp",
+    "requiredStreams": [
+      {
+        "key": "led",
+        "type": "bool",
+        "direction": "writable"
+      }
+    ],
+    "managedSetup": true,
+    "description": "Wi-Fi setup and reconnection are managed by Flova."
+  },
+  {
+    "id": "custom-arduino-provisioning-esp32",
+    "name": "Advanced handoff server · ESP32",
+    "profile": "custom-arduino-provisioning-esp32",
+    "chip": "ESP32",
+    "source": "examples/custom-arduino-provisioning/src/main.cpp",
+    "requiredStreams": [
+      {
+        "key": "LED",
+        "type": "bool",
+        "direction": "writable"
+      }
+    ],
+    "managedSetup": false,
+    "description": "Advanced: your application owns Wi-Fi and its handoff server."
+  },
+  {
+    "id": "custom-arduino-provisioning-esp8266",
+    "name": "Advanced handoff server · ESP8266",
+    "profile": "custom-arduino-provisioning-esp8266",
+    "chip": "ESP8266",
+    "source": "examples/custom-arduino-provisioning/src/main-esp8266.cpp",
+    "requiredStreams": [
+      {
+        "key": "LED",
+        "type": "bool",
+        "direction": "writable"
+      }
+    ],
+    "managedSetup": false,
+    "description": "Advanced: your application owns Wi-Fi and its handoff server."
+  },
+  {
+    "id": "datastream-api-esp32",
+    "name": "Datastream API · ESP32",
+    "profile": "datastream-api-esp32",
+    "chip": "ESP32",
+    "source": "examples/datastream-api-esp32/src/main.cpp",
+    "requiredStreams": [
+      {
+        "key": "temperature",
+        "type": "float",
+        "direction": "telemetry",
+        "unit": "°C"
+      },
+      {
+        "key": "relay",
+        "type": "bool",
+        "direction": "writable"
+      },
+      {
+        "key": "cook_mode",
+        "type": "flova::Text",
+        "direction": "writable"
+      },
+      {
+        "key": "lamp_color",
+        "type": "flova::Text",
+        "direction": "writable"
+      }
+    ],
+    "managedSetup": true,
+    "description": "Wi-Fi setup and reconnection are managed by Flova."
+  },
+  {
+    "id": "datastream-api-esp8266",
+    "name": "Datastream API · ESP8266",
+    "profile": "datastream-api-esp8266",
+    "chip": "ESP8266",
+    "source": "examples/datastream-api-esp8266/src/main.cpp",
+    "requiredStreams": [
+      {
+        "key": "temperature",
+        "type": "float",
+        "direction": "telemetry",
+        "unit": "°C"
+      },
+      {
+        "key": "relay",
+        "type": "bool",
+        "direction": "writable"
+      },
+      {
+        "key": "cook_mode",
+        "type": "flova::Text",
+        "direction": "writable"
+      },
+      {
+        "key": "lamp_color",
+        "type": "flova::Text",
+        "direction": "writable"
+      }
+    ],
+    "managedSetup": true,
+    "description": "Wi-Fi setup and reconnection are managed by Flova."
+  },
+  {
+    "id": "universal-esp32",
+    "name": "Universal · ESP32",
+    "profile": "universal-esp32",
+    "chip": "ESP32",
+    "source": "examples/universal-esp32/src/main.cpp",
+    "requiredStreams": [],
+    "managedSetup": true,
+    "description": "Wi-Fi setup and reconnection are managed by Flova."
+  },
+  {
+    "id": "universal-esp8266",
+    "name": "Universal · ESP8266",
+    "profile": "universal-esp8266",
+    "chip": "ESP8266",
+    "source": "examples/universal-esp8266/src/main.cpp",
+    "requiredStreams": [],
+    "managedSetup": true,
+    "description": "Wi-Fi setup and reconnection are managed by Flova."
+  },
+  {
+    "id": "wifi-recovery-button-esp32",
+    "name": "Wi-Fi recovery (button) · ESP32",
+    "profile": "custom-arduino-client-esp32",
+    "chip": "ESP32",
+    "source": "examples/wifi-recovery-button-esp32/src/main.cpp",
+    "requiredStreams": [
+      {
+        "key": "led",
+        "type": "bool",
+        "direction": "writable"
+      }
+    ],
+    "managedSetup": true,
+    "description": "Change Wi-Fi with a button trigger, preserving Flova identity."
+  },
+  {
+    "id": "wifi-recovery-button-esp8266",
+    "name": "Wi-Fi recovery (button) · ESP8266",
+    "profile": "custom-arduino-client-esp8266",
+    "chip": "ESP8266",
+    "source": "examples/wifi-recovery-button-esp8266/src/main.cpp",
+    "requiredStreams": [
+      {
+        "key": "led",
+        "type": "bool",
+        "direction": "writable"
+      }
+    ],
+    "managedSetup": true,
+    "description": "Change Wi-Fi with a button trigger, preserving Flova identity."
+  },
+  {
+    "id": "wifi-recovery-serial-esp32",
+    "name": "Wi-Fi recovery (serial) · ESP32",
+    "profile": "custom-arduino-client-esp32",
+    "chip": "ESP32",
+    "source": "examples/wifi-recovery-serial-esp32/src/main.cpp",
+    "requiredStreams": [
+      {
+        "key": "led",
+        "type": "bool",
+        "direction": "writable"
+      }
+    ],
+    "managedSetup": true,
+    "description": "Change Wi-Fi with a serial trigger, preserving Flova identity."
+  },
+  {
+    "id": "wifi-recovery-serial-esp8266",
+    "name": "Wi-Fi recovery (serial) · ESP8266",
+    "profile": "custom-arduino-client-esp8266",
+    "chip": "ESP8266",
+    "source": "examples/wifi-recovery-serial-esp8266/src/main.cpp",
+    "requiredStreams": [
+      {
+        "key": "led",
+        "type": "bool",
+        "direction": "writable"
+      }
+    ],
+    "managedSetup": true,
+    "description": "Change Wi-Fi with a serial trigger, preserving Flova identity."
+  },
+  {
+    "id": "simulated-sensor-esp32",
+    "name": "Simulated temperature · ESP32",
+    "profile": "custom-arduino-client-esp32",
+    "chip": "ESP32",
+    "source": "examples/simulated-sensor-esp32/src/main.cpp",
+    "requiredStreams": [
+      {
+        "key": "temperature",
+        "type": "float",
+        "direction": "telemetry",
+        "unit": "°C"
+      }
+    ],
+    "managedSetup": true,
+    "description": "Simulated sensor data with automatic setup."
+  },
+  {
+    "id": "sensor-history-esp32",
+    "name": "Sensor persistence and history · ESP32",
+    "profile": "custom-arduino-client-esp32",
+    "chip": "ESP32",
+    "source": "examples/sensor-history-esp32/src/main.cpp",
+    "requiredStreams": [
+      {
+        "key": "temperature",
+        "type": "float",
+        "direction": "telemetry",
+        "unit": "°C"
+      }
+    ],
+    "managedSetup": true,
+    "description": "Explicit value persistence and bounded offline history."
+  },
+  {
+    "id": "simulated-sensor-esp8266",
+    "name": "Simulated temperature · ESP8266",
+    "profile": "custom-arduino-client-esp8266",
+    "chip": "ESP8266",
+    "source": "examples/simulated-sensor-esp8266/src/main.cpp",
+    "requiredStreams": [
+      {
+        "key": "temperature",
+        "type": "float",
+        "direction": "telemetry",
+        "unit": "°C"
+      }
+    ],
+    "managedSetup": true,
+    "description": "Simulated sensor data with automatic setup."
+  },
+  {
+    "id": "sensor-history-esp8266",
+    "name": "Sensor persistence and history · ESP8266",
+    "profile": "custom-arduino-client-esp8266",
+    "chip": "ESP8266",
+    "source": "examples/sensor-history-esp8266/src/main.cpp",
+    "requiredStreams": [
+      {
+        "key": "temperature",
+        "type": "float",
+        "direction": "telemetry",
+        "unit": "°C"
+      }
+    ],
+    "managedSetup": true,
+    "description": "Explicit value persistence and bounded offline history."
+  }
+]

@@ -6,9 +6,25 @@
 #include <sys/time.h>
 #include <FlovaSDK.h>
 
-using TestClient = FlovaEsp32;
 
 namespace board_test {
+// Private fixture: keep controlled Wi-Fi and clock ownership outside the SDK.
+inline FlovaClient& client() {
+  static FlovaEsp32Entropy entropy;
+  static FlovaEsp32Platform platform;
+  static ArduinoFlovaLink link(platform, entropy);
+  static FlovaEsp32Storage storage;
+  static ArduinoFlovaClock clock;
+  static ArduinoFlovaLogger logger;
+  static ArduinoFlovaManualHardware hardware;
+  static FlovaProvisioningAdapter provisioning;
+  static FlovaEsp32ObservedNetwork network;
+  static ArduinoFlovaUtcBootstrap<WiFiUDP> tlsClock;
+  static FlovaEsp32Identity identity("custom_arduino_esp32");
+  static FlovaClient runtime(link, provisioning, network, tlsClock, identity,
+                             storage, clock, logger, entropy, hardware);
+  return runtime;
+}
 inline void sampleMemory() {}
 inline void printMemoryFields() {}
 inline void connect() { WiFi.begin(TEST_WIFI_SSID, TEST_WIFI_PASSWORD); }

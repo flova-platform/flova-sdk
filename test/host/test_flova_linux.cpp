@@ -1,6 +1,7 @@
 #include <FlovaLinux.h>
 
 #include <assert.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +10,12 @@
 #include <unistd.h>
 
 int main() {
-  char directory[] = "/tmp/flova-linux-test-XXXXXX";
+  const char* temporaryRoot = getenv("TMPDIR");
+  if (!temporaryRoot || !temporaryRoot[0]) temporaryRoot = "./tmp";
+  assert(mkdir(temporaryRoot, 0700) == 0 || errno == EEXIST);
+  char directory[512] = {};
+  const int written = snprintf(directory, sizeof(directory), "%s/flova-linux-test-XXXXXX", temporaryRoot);
+  assert(written > 0 && static_cast<size_t>(written) < sizeof(directory));
   assert(mkdtemp(directory));
   flova_linux::FileStorage storage(directory);
   assert(storage.begin());

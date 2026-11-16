@@ -1,69 +1,32 @@
-# Custom Arduino client
+# Custom Arduino LED starter
 
-This is the recommended starting point for an existing ESP32 or ESP8266
-Arduino application. It keeps Wi-Fi, GPIO, and application logic in the sketch
-and uses the board package for Flova-private storage, TLS, UTC bootstrap, and
-the bounded Device Link/datastream contract.
+Start here for custom ESP32 or ESP8266 firmware. `FlovaEsp32` and
+`FlovaEsp8266` manage setup and reconnection; the sketch owns its pins
+and write handlers. Declare streams before `begin()` and keep calling `run()`.
 
-The mental model is intentionally simple:
+`FLOVA_ON_WRITE` applies commands, `FLOVA_WRITE` submits a local command,
+`FLOVA_REPORT` supplies an observed value, and `FLOVA_READ` reads the local cache.
+Use `FLOVA_HAS_VALUE` before reading a stream that may have no value yet.
 
-```text
-datastream("relay")
-  ├─ onWrite(...)  <- user/cloud/automation/schedule commands
-  ├─ write(...)    <- local application commands
-  ├─ report(...)   <- sensor or externally changed hardware observations
-  └─ value()      <- local cache; never a network request
-```
-
-The public API is one board-specific header:
-
-```cpp
-#include <FlovaSDK.h>
-```
-
-The board header also provides short readable helpers for custom sketches:
-
-```cpp
-auto relay = FLOVA_DATASTREAM(client, bool, "relay");
-FLOVA_ON_WRITE(relay, setRelay);
-FLOVA_WRITE(relay, true);
-bool enabled = FLOVA_READ(relay);
-```
-
-The string remains the Console datastream key. `FLOVA_READ` reads the local
-cached value; it does not make a blocking network request.
-
-The same `FLOVA_DATASTREAM`, `FLOVA_REPORT`, and `FLOVA_ON_WRITE` calls also
-work when the board is constructed with an application-owned `PubSubClient`
-for MQTT. MQTT reports use structured JSON with a `value` field, and command
-subscriptions and acknowledgements are handled by the SDK. `FLOVA_WRITE`,
-`FLOVA_READ`, and `FLOVA_HAS_VALUE` remain local Flova Link cache operations.
-
-Declare a datastream before `begin()`, attach a typed handler with a context
-pointer, and call `client.run()` from the normal Arduino loop. Remote commands
-are applied from that loop, so the handler can safely update the application's
-own hardware state. There is no device UUID or secret in source: the same
-binary can be flashed to every unit. A new unit waits until the selected setup
-channel supplies its short-lived Engine Link URL/token handoff, then generates
-its secret locally.
-
-Use `setStatusListener()` for edge-triggered lifecycle changes. The callback
-runs from `client.run()` and distinguishes application network readiness from
-Flova Link connectivity and full datastream readiness. Keep it short and
-non-blocking; use `event.current.errorCode` for bounded diagnostic codes.
-
-Replace the application's Wi-Fi credentials in `src/main.cpp`. Build from the
-repository root with:
+Build from the repository root:
 
 ```sh
 pio run -e custom-arduino-client-esp32
 pio run -e custom-arduino-client-esp8266
 ```
 
-For a non-Arduino board, use `examples/custom-board-basic` and implement the
-four portable `flova::` services directly.
+## Managed setup (current SDK)
 
-`FlovaEsp32` and `FlovaEsp8266` are passive SDK facades. They do not start a
-SoftAP, replace an existing web server, control GPIO, or reboot the board. Use
-`FlovaUniversalEsp32` or `FlovaUniversalEsp8266` when Flova should own the
-complete no-code device.
+This example uses managed SoftAP setup; no Wi-Fi or device secrets go in source.
+
+Required template data: `led` — writable Boolean.
+
+Start the device provisioning flow in Flova after uploading, join `Flova-Setup-*`
+when prompted, and use the provided handoff link. Return to the internet and
+check the device is online. Toggle the writable LED stream, or observe sensor
+reports for sensor-only examples. Reboot and verify automatic reconnection.
+Open the serial monitor at 115200 baud for startup and connection errors.
+
+ESP32 starter/recovery examples use an external LED with a resistor on GPIO2;
+ESP8266 starters use the active-low built-in LED. Other examples specify their
+pins at the top of the source. Verify the board pinout before wiring.

@@ -59,14 +59,14 @@ jobs:
 
       - name: Run repository validation
         run: |
-          cmake -S . -B /tmp/flova-core-build
-          cmake --build /tmp/flova-core-build
-          ctest --test-dir /tmp/flova-core-build --output-on-failure
+          mkdir -p ./tmp
+          cmake -S . -B ./tmp/flova-core-build
+          cmake --build ./tmp/flova-core-build
+          ctest --test-dir ./tmp/flova-core-build --output-on-failure
           sh scripts/check_flova_version.sh
           scripts/check_flova_link_contract.sh
           scripts/check_flova_public_surface.sh
-          pio run -e universal-esp32 -e universal-esp8266
-          pio run -e datastream-api-esp32 -e datastream-api-esp8266
+          python3 scripts/check_public_examples.py
           pio test -e test-esp32 -e test-esp8266 --without-uploading --without-testing
           pio test -e test-bootstrap-esp8266 --without-uploading --without-testing
           python3 scripts/check_flova_memory.py universal-esp32 universal-esp8266
@@ -75,13 +75,13 @@ jobs:
 
       - name: Validate exported SDK package
         run: |
-          scripts/check_sdk_release.sh "$RUNNER_TEMP/flova-sdk-check"
+          scripts/check_sdk_release.sh "$GITHUB_WORKSPACE/tmp/flova-sdk-check"
 
       - name: Store SDK package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: flova-sdk-${{ steps.version.outputs.version }}
-          path: ${{ runner.temp }}/flova-sdk-check/FlovaSDK.tar.gz
+          path: ${{ github.workspace }}/tmp/flova-sdk-check/FlovaSDK.tar.gz
           if-no-files-found: error
           retention-days: 14
 
@@ -98,11 +98,16 @@ jobs:
             version: 2.0.17
             url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
             sketch: packages/flova-sdk-release/examples/Basic
-          - fqbn: esp8266:esp8266:generic:mmu=4816H
+          - fqbn: esp8266:esp8266:generic
             platform: esp8266:esp8266
             version: 3.1.2
             url: https://arduino.esp8266.com/stable/package_esp8266com_index.json
             sketch: packages/flova-sdk-release/examples/UniversalESP8266
+          - fqbn: esp8266:esp8266:generic
+            platform: esp8266:esp8266
+            version: 3.1.2
+            url: https://arduino.esp8266.com/stable/package_esp8266com_index.json
+            sketch: packages/flova-sdk-release/examples/Basic
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 

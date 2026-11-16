@@ -1,9 +1,9 @@
 #include <Arduino.h>
 #include <FlovaSDK.h>
 
-// Universal firmware is the no-code/full-device composition. Unlike the
-// passive FlovaEsp32 facade, it owns setup SoftAP, Wi-Fi credential storage,
-// universal GPIO mappings, OTA policy, and automatic restart policy.
+// Universal firmware owns cloud-configured GPIO mappings and OTA policy.
+// FlovaEsp32 also manages setup and reconnection, but custom sketches keep
+// ownership of their pins and write handlers.
 // FLOVA_SETUP_PASSWORD is optional; omitting it leaves the setup AP open.
 // For production, pass a device-unique 8-63 character WPA label password.
 FlovaUniversalEsp32 device;

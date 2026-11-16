@@ -1,7 +1,7 @@
 # ESP32 touch/LED offline test
 
 This is the ESP32 custom touch/LED example. The sketch owns its fixed GPIOs,
-Wi-Fi connection, and HTTP provisioning routes.
+GPIO behavior; the managed SDK owns Wi-Fi setup and reconnection.
 
 Wiring:
 
@@ -29,11 +29,6 @@ pio run -e esp32-touch-test-ble -t upload
 pio device monitor -b 115200
 ```
 
-Set `WIFI_SSID` and `WIFI_PASSWORD` in `src/main.cpp`. On a fresh device, use
-the app's custom provisioning request against the device HTTP server to send
-the short-lived Link handoff. The universal SoftAP and BLE no-code variants
-are separate examples.
-
 Touching the sensor reports `TOUCH_SENSOR` and toggles `LED` through
 `led.write(...)`. With Wi-Fi disconnected after provisioning, local toggles
 continue because `LED` uses `OfflinePolicy::KeepLatest`; after reconnect, the
@@ -54,3 +49,22 @@ the NVS partition remains at the same offset, so this migration does not erase
 Flova configuration. It also uses the bounded BLE profile, so its runtime
 datastream capacity is smaller than the SoftAP target. BLE provisioning
 currently uses Security 1 with a null proof of possession for MVP testing.
+
+
+## Managed setup (current SDK)
+
+This example uses managed SoftAP setup; no Wi-Fi or device secrets go in source.
+Build the matching named environment in the root `platformio.ini`. Moisture
+projects instead use their own directory's `platformio.ini`.
+
+Required template data: `LED` — writable Boolean; `TOUCH_SENSOR` — Boolean telemetry. Match the GPIO constants to your wiring.
+
+Start the device provisioning flow in Flova after uploading, join `Flova-Setup-*`
+when prompted, and use the provided handoff link. Return to the internet and
+check the device is online. Toggle the writable LED stream, or observe sensor
+reports for sensor-only examples. Reboot and verify automatic reconnection.
+Open the serial monitor at 115200 baud for startup and connection errors.
+
+ESP32 starter/recovery examples use an external LED with a resistor on GPIO2;
+ESP8266 starters use the active-low built-in LED. Other examples specify their
+pins at the top of the source. Verify the board pinout before wiring.

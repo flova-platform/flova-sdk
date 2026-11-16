@@ -5,9 +5,25 @@
 #include <sys/time.h>
 #include <FlovaEsp8266TlsProfile.h>
 
-using TestClient = FlovaEsp8266;
 
 namespace board_test {
+// Private fixture: keep controlled Wi-Fi and clock ownership outside the SDK.
+inline FlovaClient& client() {
+  static FlovaEsp8266Entropy entropy;
+  static FlovaEsp8266Platform platform;
+  static ArduinoFlovaLink link(platform, entropy);
+  static FlovaEsp8266Storage storage;
+  static ArduinoFlovaClock clock;
+  static ArduinoFlovaLogger logger;
+  static ArduinoFlovaManualHardware hardware;
+  static FlovaProvisioningAdapter provisioning;
+  static FlovaEsp8266ObservedNetwork network;
+  static ArduinoFlovaUtcBootstrap<WiFiUDP> tlsClock;
+  static FlovaEsp8266Identity identity("custom_arduino_esp8266");
+  static FlovaClient runtime(link, provisioning, network, tlsClock, identity,
+                             storage, clock, logger, entropy, hardware);
+  return runtime;
+}
 // ESP8266 has no lifetime heap low-water API. Sample DRAM at application
 // boundaries; allocations inside a blocking TLS call can be lower than this.
 static uint32_t minimumDram = UINT32_MAX;

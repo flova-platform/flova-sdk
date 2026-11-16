@@ -54,3 +54,6 @@ htmlcov/
 !.env.sample
 private_config.h
 *.key
+
+# Local verification and scratch artifacts
+tmp/

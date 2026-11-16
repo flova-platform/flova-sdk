@@ -7,7 +7,7 @@
 #include TEST_BOARD_HEADER
 
 namespace {
-TestClient client;
+FlovaClient& client = board_test::client();
 auto temperature = FLOVA_DATASTREAM(client, double, "temperature");
 auto humidity = FLOVA_DATASTREAM(client, double, "humidity");
 #if TEST_COMMAND_CHECK_ENABLED

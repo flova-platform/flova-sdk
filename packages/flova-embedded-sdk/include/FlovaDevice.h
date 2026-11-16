@@ -386,6 +386,12 @@ class Device {
     factoryResetContext_ = context;
   }
 
+  bool commandResultsPending() const {
+    for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i)
+      if (pendingResults_[i].active) return true;
+    return false;
+  }
+
   bool commandResultPending(const char* commandId) const {
     if (!commandId || !commandId[0]) return false;
     for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {

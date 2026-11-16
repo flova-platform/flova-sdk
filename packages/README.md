@@ -13,9 +13,9 @@ These directories are reusable libraries, not application entry points.
 Arduino users who want to keep their own application code should install the
 matching board package and include `<FlovaEsp32.h>` or `<FlovaEsp8266.h>`.
 Both concrete classes expose the same typed application API; the application
-retains ownership of Wi-Fi, servers, GPIO, sensors, reboot policy, and
-long-running work. `begin()` restores Flova-private state or waits for a
-bounded `ProvisioningHandoff`; it does not start a setup AP.
+retains ownership of GPIO, sensors, and application work. `begin()` restores
+saved networking or starts SoftAP provisioning on a fresh device. These standard
+classes own Wi-Fi and managed restart policy starting with 0.5.0.
 `FlovaUniversalEsp32` and `FlovaUniversalEsp8266` are the full-device, no-code
 compositions. Advanced Arduino ports may include `<FlovaArduino.h>` and compose
 `FlovaClient` with their own Link, temporary provisioning, runtime network, TLS
@@ -28,16 +28,12 @@ ESP32 LAN8720 applications can use `<FlovaEsp32Ethernet.h>` for the complete
 direct-device composition and automatic factory-token bootstrap.
 For an ESP32 LAN8720 composition reusing the native TCP/IP and TLS stack, see
 [`examples/custom-ethernet-esp32`](../examples/custom-ethernet-esp32).
-`FlovaEsp32` and `FlovaEsp8266` use Flova Link by default. Applications that
-prefer MQTT may pass their `PubSubClient` directly to the board facade and call
-`begin(deviceId, deviceSecret)`. Wi-Fi, TLS, and the MQTT client remain
-application-owned; the SDK provides bounded JSON topic handling. See
-[`examples/custom-mqtt`](../examples/custom-mqtt).
-The `FLOVA_DATASTREAM`, `FLOVA_REPORT`, and `FLOVA_ON_WRITE` helpers are shared
-by both transports, so changing the constructor does not require rewriting
-datastream application logic. MQTT reports use `{ "value": ... }` JSON;
-local cache helpers remain Link-only.
-The public MQTT endpoint is `mqtt.flova.ir:8883`.
+Managed custom applications use `FlovaEsp32` or
+`FlovaEsp8266`: the existing SoftAP and stored-network adapters with
+manual application-owned hardware handlers. These opt into durable setup and
+support Wi-Fi-only replacement without deleting Flova identity. Applications
+that own networking use explicit `FlovaClient` composition. Link uses CBOR over
+MQTT/TLS internally; a PubSubClient is not a supported facade constructor.
 The public protocol package is named `flova-link`; generated zcbor headers
 remain an internal implementation detail of that package.
 

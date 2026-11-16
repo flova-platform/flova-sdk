@@ -1,16 +1,10 @@
 #include <Arduino.h>
 #include <FlovaSDK.h>
-#include <PubSubClient.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <time.h>
 
-#include "credentials.h"
 
 namespace {
 
-const char* const WIFI_SSID = FLOVA_WIFI_SSID;
-const char* const WIFI_PASSWORD = FLOVA_WIFI_PASSWORD;
 
 // GPIO32 is ADC1_CH4 on the classic ESP32 DevKit and remains usable while
 // Wi-Fi is active. Power the sensor from 3V3 so its analog output is safe.
@@ -26,9 +20,7 @@ const uint32_t MIN_REPORT_INTERVAL_MS = 1000;
 const uint32_t MAX_REPORT_INTERVAL_MS = 60000;
 const uint32_t NTP_VALID_EPOCH = 1700000000;
 
-WiFiClientSecure mqttSocket;
-PubSubClient mqtt(mqttSocket);
-FlovaEsp32 client(mqtt);
+FlovaEsp32 client;
 
 auto dryThreshold = FLOVA_SETTING(client, double, "dry_threshold", 35.0);
 auto dryCalibration = FLOVA_SETTING(client, int64_t, "dry_adc", 3000);
@@ -87,9 +79,6 @@ void sampleMoisture() {
   latestPercent = moisturePercent(latestRaw, dryAdc, wetAdc);
 }
 
-bool networkReady() {
-  return WiFi.status() == WL_CONNECTED && time(nullptr) > NTP_VALID_EPOCH;
-}
 
 void reportMoisture(uint32_t now) {
   if (!client.connected() || now - lastReportMs < boundedReportInterval())
@@ -98,7 +87,7 @@ void reportMoisture(uint32_t now) {
   const flova::WriteResult result =
       FLOVA_REPORT(moisture, static_cast<double>(latestPercent),
                    flova::Origin::PhysicalInput);
-  Serial.printf("[mqtt] report=%s reason=%s\n",
+  Serial.printf("[flova] report=%s reason=%s\n",
                 result.accepted() ? "accepted" : "rejected",
                 result.reason ? result.reason : "none");
 }
@@ -109,11 +98,6 @@ void setup() {
   Serial.begin(115200);
   delay(100);
 
-  WiFi.mode(WIFI_STA);
-  WiFi.persistent(false);
-  WiFi.setAutoReconnect(true);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  configTime(0, 0, "time.cloudflare.com", "time.google.com", "pool.ntp.org");
 
   analogReadResolution(12);
   analogSetPinAttenuation(MOISTURE_PIN, ADC_11db);
@@ -126,10 +110,8 @@ void setup() {
   led.persist(flova::PersistencePolicy::Persistent);
   led.offline(flova::OfflinePolicy::KeepLatest);
 
-  mqttSocket.setCACert(FLOVA_TLS_ROOT_CERTS);
-  mqttSocket.setTimeout(3000);
-  if (!client.begin(FLOVA_DEVICE_ID, FLOVA_DEVICE_SECRET))
-    Serial.println(F("[flova] MQTT setup failed"));
+  if (!client.begin())
+    Serial.println(F("[flova] startup failed"));
 }
 
 void loop() {
@@ -141,14 +123,14 @@ void loop() {
 
   if (now - lastLogMs >= LOG_INTERVAL_MS) {
     lastLogMs = now;
-    Serial.printf("[moisture] raw=%u percent=%.1f wifi=%s ntp=%s mqtt=%s state=%d\n",
+    Serial.printf("[moisture] raw=%u percent=%.1f wifi=%s ntp=%s link=%s state=%d\n",
                   latestRaw, latestPercent,
                   WiFi.status() == WL_CONNECTED ? "connected" : "offline",
-                  time(nullptr) > NTP_VALID_EPOCH ? "ready" : "waiting",
-                  client.connected() ? "connected" : "offline", mqtt.state());
+                  client.tlsReady() ? "ready" : "waiting",
+                  client.connected() ? "connected" : "offline", static_cast<int>(client.lifecycle()));
   }
 
-  client.run(networkReady());
+  client.run();
   reportMoisture(now);
   yield();
   delay(10);

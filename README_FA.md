@@ -18,8 +18,8 @@
 FlovaSDK کیت توسعه رسمی C++ برای اتصال دستگاه‌ها به پلتفرم فلووا است. این SDK
 برای ESP32 و ESP8266 یکپارچه‌سازی آماده دارد و برای سخت‌افزارهای سفارشی نیز یک
 هسته قابل‌حمل C++11 ارائه می‌کند. در برنامه‌های سفارشی، Flova Link به‌صورت
-پیش‌فرض فعال است و می‌توانید `PubSubClient` خودتان را به‌عنوان انتقال MQTT به
-همان facade وصل کنید.
+پیش‌فرض فعال است. کلاس‌های دارای راه‌اندازی مدیریت‌شده، اتصال وای‌فای و
+اتصال دوباره را خودکار انجام می‌دهند.
 
 > راهنمای کامل راه‌اندازی، دیتاستریم‌ها، پیکربندی دستگاه، OTA و API در
 > **[docs.flova.ir](https://docs.flova.ir)** در دسترس است.
@@ -31,20 +31,20 @@ FlovaSDK کیت توسعه رسمی C++ برای اتصال دستگاه‌ها 
 در پروژه ESP32 در PlatformIO، این خط را اضافه کنید:
 
 ```ini
-  lib_deps = flova-platform/FlovaSDK@^0.4.0
+  lib_deps = flova-platform/FlovaSDK@^0.5.0
 ```
 
 برای ESP8266 از فایل آماده‌ی `extras/platformio/esp8266/platformio.ini`
 استفاده کنید؛ این فایل چیدمان حافظه‌ی لازم برای heap در IRAM را فعال می‌کند:
 
 ```ini
-  lib_deps = flova-platform/FlovaSDK@^0.4.0
+  lib_deps = flova-platform/FlovaSDK@^0.5.0
 build_flags =
 ```
 
 ### Arduino IDE
 
-نسخه 0.4.0 از ESP32 و ESP8266 در Arduino IDE پشتیبانی می‌کند:
+نسخه 0.5.0 از ESP32 و ESP8266 در Arduino IDE پشتیبانی می‌کند:
 
 1. از منوی **Tools → Manage Libraries** وارد مدیریت کتابخانه‌ها شوید.
 2. عبارت **FlovaSDK** را جست‌وجو کنید.
@@ -65,24 +65,36 @@ build_flags =
 
 ```cpp
 #include <Arduino.h>
-#include <WiFi.h>
 #include <FlovaSDK.h>
 
+// Create a writable Boolean stream named "led" in your Flova template.
+// ESP32: connect an LED with a resistor to GPIO2. ESP8266: built-in active-low LED.
+constexpr uint8_t LED_PIN = 2;
 FlovaEsp32 device;
-auto relay = FLOVA_DATASTREAM(device, bool, "relay");
-
-void setRelay(bool enabled) {
-  digitalWrite(2, enabled ? HIGH : LOW);
-}
+auto led = FLOVA_DATASTREAM(device, bool, "led");
 
 void setup() {
-  WiFi.begin("your-wifi", "your-password");
-  pinMode(2, OUTPUT);
-  FLOVA_ON_WRITE(relay, setRelay);
-  device.begin();
+  Serial.begin(115200);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+  FLOVA_ON_WRITE(led, [](bool enabled) {
+    digitalWrite(LED_PIN, enabled ? HIGH : LOW);
+  });
+  if (!device.begin()) {
+    Serial.print("Startup failed: ");
+    Serial.println(device.lastError());
+  }
 }
 
-void loop() { device.run(); }
+void loop() {
+  device.run();
+  static bool wasReady = false;
+  if (device.ready() != wasReady) {
+    wasReady = device.ready();
+    Serial.println(wasReady ? "Flova ready" : "Flova offline; reconnecting");
+  }
+  yield();
+}
 ```
 
 همه helperهای `FLOVA_*` با هر دو انتقال Flova Link و MQTT کار می‌کنند. کلید
@@ -110,27 +122,12 @@ relay.scheduling(flova::Scheduling::CloudOnly);
 `setup()` ثبت شود. برای حفظ بررسی‌های ایمنی، callback باید از `write()` جریان
 داده استفاده کند. این تایمرها مستقل از زمان‌بندی‌های ساخته‌شده در اپ هستند.
 
-## انتقال MQTT
+## انتقال Flova Link
 
-برای MQTT فقط `PubSubClient` خودتان را به سازنده دستگاه بدهید:
-
-```cpp
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <PubSubClient.h>
-#include <FlovaSDK.h>
-
-WiFiClientSecure socket;
-PubSubClient mqtt(socket);
-FlovaEsp32 device(mqtt);
-```
-
-آدرس MQTT برابر `mqtt.flova.ir:8883` است. شناسه دستگاه username و secret
-دستگاه password است و همان datastreamهای Flova Link را پشتیبانی می‌کند. نمونه کامل را در
-[`examples/custom-mqtt`](examples/custom-mqtt) ببینید.
-
-برای راه‌اندازی و استفاده در محیط عملیاتی، [نمونه‌ها](examples) را ببینید یا
-[مستندات فلووا](https://docs.flova.ir) را دنبال کنید.
+Flova Link از CBOR روی MQTT/TLS استفاده می‌کند. نمونهٔ قدیمی مبتنی بر
+`PubSubClient` و سازندهٔ دریافت‌کنندهٔ آن دیگر پشتیبانی نمی‌شود. برای کدهای
+سفارشی از کلاس‌های `FlovaEsp32` و `FlovaEsp8266`
+استفاده کنید؛ اطلاعات اتصال از فرایند راه‌اندازی دریافت می‌شود.
 
 ## firmware یونیورسال از SDK
 
@@ -173,3 +170,28 @@ void loop() { device.run(); }
 ## مجوز
 
 FlovaSDK تحت [مجوز MIT](LICENSE) منتشر شده است.
+
+## راه‌اندازی خودکار و تغییر شبکه
+
+برای مثال‌های سفارشی از `FlovaEsp32` یا `FlovaEsp8266`
+استفاده کنید. نام و رمز وای‌فای را در کد ننویسید. پس از بارگذاری، فرایند
+راه‌اندازی دستگاه را در Flova آغاز کنید، هنگام درخواست به شبکهٔ
+`Flova-Setup-*` وصل شوید و پیوند راه‌اندازی ارائه‌شده را باز کنید. سپس به
+اینترنت برگردید و آنلاین‌شدن دستگاه را بررسی کنید. اطلاعات اتصال ذخیره
+می‌شود و دستگاه پس از روشن‌شدن دوباره، خودکار وصل خواهد شد.
+
+برای عوض‌کردن شبکه، `startWifiSetup()` را از حلقهٔ اصلی فراخوانی کنید و
+اجرای `run()` را ادامه دهید. به شبکهٔ راه‌اندازی وصل شوید و نشانی
+`http://192.168.4.1/setup` را باز کنید. این کار هویت و پیکربندی دستگاه را
+حفظ می‌کند. رمز اشتباه پس از ۳۰ ثانیه خطا نشان می‌دهد و قابل اصلاح است؛
+`cancelWifiSetup()` به شبکهٔ قبلی برمی‌گردد. مثال‌های جداگانه، فعال‌کردن
+این حالت با فرمان سریال یا نگه‌داشتن دکمه را نشان می‌دهند.
+
+## تغییر رفتار در نسخهٔ 0.5.0
+
+کلاس‌های `FlovaEsp32` و `FlovaEsp8266` اکنون راه‌اندازی وای‌فای، ذخیرهٔ
+اطلاعات اتصال و اتصال دوباره را خودکار انجام می‌دهند. اگر برنامهٔ شما شبکه،
+وب‌سرور یا راه‌اندازی دوبارهٔ برد را مدیریت می‌کند، اجزای موردنیاز را با
+`FlovaClient` ترکیب کنید؛ نمونهٔ پیشرفتهٔ `custom-arduino-provisioning`
+همین روش را نشان می‌دهد. ساختار اطلاعات ذخیره‌شده تغییر نکرده و برای
+ارتقا نیازی به پاک‌کردن اطلاعات یا راه‌اندازی دوبارهٔ هویت دستگاه نیست.

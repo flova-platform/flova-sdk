@@ -66,7 +66,8 @@ inline bool validWifiRuntimeData(const WifiRuntimeData& output) {
 
 inline bool parseWifiProvisioningHandoff(const char* json, size_t length,
                                          ProvisioningHandoff& output,
-                                         WifiRuntimeData* wifiOutput = nullptr) {
+                                         WifiRuntimeData* wifiOutput = nullptr,
+                                         bool credentialsOnly = false) {
   if (!json || !length || length >= 768 || memchr(json, 0, length))
     return false;
   const char* end = json + length;
@@ -106,7 +107,7 @@ inline bool parseWifiProvisioningHandoff(const char* json, size_t length,
     } else {
       return false;
     }
-    if ((seen & field) ||
+    if ((credentialsOnly && field > 2) || (seen & field) ||
         !readJsonString(cursor, last - 1, destination, capacity))
       return false;
     seen |= field;
@@ -116,10 +117,9 @@ inline bool parseWifiProvisioningHandoff(const char* json, size_t length,
     skipJsonWhitespace(cursor, last - 1);
     if (cursor == last - 1) return false;
   }
-  const uint8_t required = wifiOutput ? 13 : 12;
-  if ((seen & required) != required || !output.linkUrl[0] ||
-      !output.token[0] || (wifiOutput && !wifi.ssid[0])) return false;
-  if (strncmp(output.linkUrl, "mqtts://", 8) != 0) return false;
+  const uint8_t required = credentialsOnly ? 1 : (wifiOutput ? 13 : 12);
+  if ((seen & required) != required || (!credentialsOnly && (!output.linkUrl[0] || !output.token[0])) || (wifiOutput && !wifi.ssid[0])) return false;
+  if (!credentialsOnly && strncmp(output.linkUrl, "mqtts://", 8) != 0) return false;
   if (wifiOutput) *wifiOutput = wifi;
   return true;
 }

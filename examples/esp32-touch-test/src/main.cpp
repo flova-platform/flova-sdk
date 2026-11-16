@@ -1,17 +1,12 @@
 #include <Arduino.h>
-#include <WiFi.h>
-#include <WebServer.h>
 #include <FlovaSDK.h>
 
 const uint8_t TOUCH_PIN = 4;
 const uint8_t LED_PIN = 2;
 const uint32_t DEBOUNCE_MS = 60;
 
-const char* WIFI_SSID = "your-wifi";
-const char* WIFI_PASSWORD = "your-password";
 
 FlovaEsp32 device;
-WebServer server(80);
 auto led = FLOVA_DATASTREAM(device, bool, "LED");
 auto touch = FLOVA_DATASTREAM(device, bool, "TOUCH_SENSOR");
 
@@ -40,20 +35,16 @@ void pollTouch() {
 
 void setup() {
   Serial.begin(115200);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   pinMode(TOUCH_PIN, INPUT);
   pinMode(LED_PIN, OUTPUT);
   FLOVA_ON_WRITE(led, writeLed);
   led.persist(flova::PersistencePolicy::Persistent);
   led.offline(flova::OfflinePolicy::KeepLatest);
   touch.offline(flova::OfflinePolicy::KeepLatest);
-  device.attachProvisioning(server);
-  server.begin();
   if (!device.begin()) Serial.println("[flova] startup failed");
 }
 
 void loop() {
-  server.handleClient();
   device.run();
   pollTouch();
   yield();

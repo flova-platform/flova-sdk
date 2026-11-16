@@ -57,6 +57,10 @@ class FlovaEsp32Ethernet final {
     return client_.datastream<T>(key);
   }
   template <typename T>
+  flova::Datastream<T> stream(const char* key) {
+    return client_.datastream<T>(key);
+  }
+  template <typename T>
   flova::Setting<T> setting(const char* key, const T& defaultValue) {
     return client_.setting<T>(key, defaultValue);
   }

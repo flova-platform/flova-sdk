@@ -9,6 +9,7 @@
 #include <FlovaRuntimeServices.h>
 #include <FlovaEsp32StorageKey.h>
 #include <FlovaWifiProvisioning.h>
+#include <FlovaWifiRecovery.h>
 #include <adapters/ArduinoFlovaUtcBootstrap.h>
 
 class FlovaEsp32Storage : public flova::Storage {
@@ -60,16 +61,23 @@ class FlovaEsp32ObservedNetwork final : public FlovaNetworkRuntime {
   bool connected() const override { return WiFi.status() == WL_CONNECTED; }
 };
 
-class FlovaEsp32StoredNetwork final : public FlovaNetworkRuntime {
+class FlovaEsp32StoredNetwork final : public FlovaWifiNetworkRuntime {
  public:
   explicit FlovaEsp32StoredNetwork(FlovaEsp32Storage& storage)
       : storage_(storage) {}
 
   bool begin() override {
+    if (!flova::restoreWifiRecovery(storage_)) return false;
     flova::WifiRuntimeData wifi = {};
     if (!storage_.read("wifi", &wifi, sizeof(wifi)) ||
         !flova::validWifiRuntimeData(wifi))
       return false;
+    return connectWifi(wifi);
+  }
+
+  bool connectWifi(const flova::WifiRuntimeData& wifi) override {
+    if (!flova::validWifiRuntimeData(wifi)) return false;
+    WiFi.persistent(false);
     WiFi.mode((WiFi.getMode() & WIFI_MODE_AP) ? WIFI_AP_STA : WIFI_STA);
     WiFi.setAutoReconnect(true);
     WiFi.begin(wifi.ssid, wifi.password);
@@ -82,7 +90,7 @@ class FlovaEsp32StoredNetwork final : public FlovaNetworkRuntime {
   }
   bool clearCredentials() override {
     WiFi.disconnect(true, true);
-    return storage_.remove("wifi");
+    return storage_.remove("wifi") && storage_.remove("wifi_trial");
   }
 
   bool connected() const override { return WiFi.status() == WL_CONNECTED; }
@@ -133,4 +141,12 @@ class FlovaEsp32Identity final : public FlovaBoardIdentity {
 
  private:
   const char* firmwareTarget_;
+};
+
+// The managed composition owns restart policy; passive applications do not.
+class FlovaEsp32WifiRecovery final : public FlovaWifiRecovery {
+ public:
+  FlovaEsp32WifiRecovery(flova::Storage& storage, FlovaWifiNetworkRuntime& network)
+      : FlovaWifiRecovery(storage, network) {}
+  void restartIfDue(uint32_t now) { if (restartDue(now)) ESP.restart(); }
 };

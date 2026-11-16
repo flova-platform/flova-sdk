@@ -22,10 +22,7 @@ with a portable C++11 core for custom hardware.
 > For provisioning, datastreams, device configuration, OTA, and complete API
 > guides, visit **[docs.flova.ir](https://docs.flova.ir)**.
 
-`FlovaEsp32` and `FlovaEsp8266` use Flova Link by default. If you prefer MQTT,
-pass your `PubSubClient` to the same device constructor. Your datastream code
-stays the same. See [`examples/custom-mqtt`](examples/custom-mqtt) for the
-complete example.
+Managed custom firmware uses Flova Link with automatic Wi-Fi setup.
 
 ## Install
 
@@ -34,7 +31,7 @@ complete example.
 For an existing ESP32 PlatformIO project, add:
 
 ```ini
-  lib_deps = flova-platform/FlovaSDK@^0.4.0
+  lib_deps = flova-platform/FlovaSDK@^0.5.0
 ```
 
 For ESP8266, use the packaged `extras/platformio/esp8266/platformio.ini`.
@@ -42,7 +39,7 @@ It provides the tested ESP8266 board and TLS profile for the SDK.
 
 ### Arduino IDE
 
-FlovaSDK 0.4.0 supports ESP32 and ESP8266 in Arduino IDE:
+FlovaSDK 0.5.0 supports ESP32 and ESP8266 in Arduino IDE:
 
 1. Open **Tools → Manage Libraries**.
 2. Search for **FlovaSDK**.
@@ -79,28 +76,89 @@ application calls `run()` from its nonblocking loop.
 
 ```cpp
 #include <Arduino.h>
-#include <WiFi.h>
 #include <FlovaSDK.h>
 
+// Create a writable Boolean stream named "led" in your Flova template.
+// ESP32: connect an LED with a resistor to GPIO2. ESP8266: built-in active-low LED.
+constexpr uint8_t LED_PIN = 2;
 FlovaEsp32 device;
-auto relay = FLOVA_DATASTREAM(device, bool, "relay");
-
-void setRelay(bool enabled) {
-  digitalWrite(2, enabled ? HIGH : LOW);
-}
+auto led = FLOVA_DATASTREAM(device, bool, "led");
 
 void setup() {
-  WiFi.begin("your-wifi", "your-password");
-  pinMode(2, OUTPUT);
-  FLOVA_ON_WRITE(relay, setRelay);
-  device.begin();
+  Serial.begin(115200);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+  FLOVA_ON_WRITE(led, [](bool enabled) {
+    digitalWrite(LED_PIN, enabled ? HIGH : LOW);
+  });
+  if (!device.begin()) {
+    Serial.print("Startup failed: ");
+    Serial.println(device.lastError());
+  }
 }
 
-void loop() { device.run(); }
+void loop() {
+  device.run();
+  static bool wasReady = false;
+  if (device.ready() != wasReady) {
+    wasReady = device.ready();
+    Serial.println(wasReady ? "Flova ready" : "Flova offline; reconnecting");
+  }
+  yield();
+}
 ```
 
-The same `FLOVA_*` helpers work with both transports. Datastream keys must
-match the device's template.
+## Managed setup and Wi-Fi recovery
+
+`FlovaEsp32` and `FlovaEsp8266` own SoftAP setup and
+Wi-Fi reconnection while your code owns GPIO and datastream handlers. This is
+an explicit storage-backed composition: provisioning credentials, configuration,
+and command recovery records survive reset. Sensor-value persistence and offline
+history remain separately opt-in. In 0.5.0 these standard board classes manage
+connectivity by default. Applications that own Wi-Fi, HTTP servers, or reboot
+policy compose `FlovaClient` explicitly; see the advanced handoff example.
+The board facade no longer exposes `attachProvisioning()`. Existing credentials,
+identity, and configuration layouts are unchanged; no reset is needed to upgrade.
+
+1. Create a Flova device template with the example's exact stream keys and types.
+2. Build and upload for the board named by the example; open Serial at 115200.
+3. Start the existing Flova provisioning flow. When prompted, connect to
+   `Flova-Setup-*` and use the setup link supplied by Flova. Opening `/setup`
+   without that handoff does not perform first-time provisioning.
+4. Return to your normal internet connection. Wait for the device to be online
+   and write the example's LED stream. Reboot: it reconnects without recompiling.
+
+The setup password option follows universal firmware: pass a device-unique
+8–63-character WPA password to the managed constructor. The default is an open
+setup network. No credentials or claim tokens belong in example source or logs.
+
+For a router/password change, call `startWifiSetup()` from the board loop.
+It returns whether the request was accepted, not whether replacement succeeded.
+The device must already have a restored runtime; busy configuration, OTA,
+command results, and reset operations reject the request. Keep calling `run()`.
+After the Link drain completes, join its setup network and open
+`http://192.168.4.1/setup`. The local recovery form needs no claim token.
+`wifiSetupActive()` and `wifiSetupError()` expose progress/errors;
+`cancelWifiSetup()` returns to the old network. A normal outage never opens setup
+or erases credentials. Separate serial and button examples demonstrate recovery.
+
+Recovery tests association for 30 seconds. Failed candidates stay in RAM and
+can be corrected. The existing `wifi` record remains active until association
+succeeds; `wifi_trial` temporarily stores the original 98-byte board-local
+credential record during promotion. Both records use the existing layout and
+board storage recovery mechanisms. Promotion writes and reads back the rollback
+record, writes and reads back the candidate, then removes the rollback marker.
+Boot with a marker restores the original credentials before connecting. A crash
+before marker removal may therefore roll back a successfully associated network.
+Storage or restoration errors are explicit; no Flova identity/configuration is
+removed. Internet reachability does not determine Wi-Fi association success.
+
+There are no periodic recovery writes. A successful changed network uses two
+logical record writes and one removal; failed promotion can additionally write
+and remove the rollback record. Unchanged credentials skip promotion writes.
+Writes run only in the requested recovery phase on the board loop. Physical
+flash latency, compaction cost, peak heap, and power-loss acceptance require board
+measurements; host tests and successful compilation do not establish them.
 
 ## Cloud schedules and local timers
 
@@ -253,27 +311,12 @@ ESP8266 filesystem capacity is cached at mount; advanced integrations can
  request fresh accounting with `Device::storageInfo(true)` rather than
 paying for a filesystem traversal on every write/removal.
 
-## MQTT transport
+## Link transport
 
-MQTT is optional. Create your MQTT client, then pass it to the device:
-
-```cpp
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <PubSubClient.h>
-#include <FlovaSDK.h>
-
-WiFiClientSecure socket;
-PubSubClient mqtt(socket);
-FlovaEsp32 device(mqtt);
-```
-
-Use `mqtt.flova.ir:8883` with the device UUID and secret. The MQTT adapter
-uses the same JSON datastream format and helpers as Flova Link.
-
-See the [custom MQTT example](examples/custom-mqtt) for Wi-Fi, TLS, reporting,
-and ESP8266 setup. See the [documentation](https://docs.flova.ir) for
-provisioning and production setup.
+The supported Link facade uses bounded CBOR over MQTT/TLS internally. The former
+PubSubClient constructor and `begin(deviceId, deviceSecret)` examples were
+removed because those methods are no longer supported. Use the managed quick
+start; advanced applications can inject a `FlovaClientLink` implementation.
 
 ## Firmware logging
 

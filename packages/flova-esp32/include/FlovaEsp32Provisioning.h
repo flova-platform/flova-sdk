@@ -11,15 +11,16 @@
 #include <FlovaWifiProvisioning.h>
 #include <FlovaEsp32Services.h>
 
-class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
+template <bool WifiRecoveryEnabled>
+class FlovaEsp32ProvisioningBase : public FlovaProvisioningAdapter {
  public:
-  explicit FlovaEsp32Provisioning(FlovaEsp32Storage& storage,
+  explicit FlovaEsp32ProvisioningBase(FlovaEsp32Storage& storage,
                                   const char* setupPassword = FLOVA_SETUP_PASSWORD)
       : storage_(storage), setupPassword_(setupPassword) {}
 
-  ~FlovaEsp32Provisioning() override { delete setup_; }
-  FlovaEsp32Provisioning(const FlovaEsp32Provisioning&) = delete;
-  FlovaEsp32Provisioning& operator=(const FlovaEsp32Provisioning&) = delete;
+  ~FlovaEsp32ProvisioningBase() override { delete setup_; }
+  FlovaEsp32ProvisioningBase(const FlovaEsp32ProvisioningBase&) = delete;
+  FlovaEsp32ProvisioningBase& operator=(const FlovaEsp32ProvisioningBase&) = delete;
 
   bool begin(FlovaProvisioningHandler handler, void* context) override {
     handler_ = handler;
@@ -31,16 +32,44 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
     if (provisioning_) setup_->server.handleClient();
   }
 
+  bool startWifiSetup(FlovaWifiRecovery& recovery) {
+    recovery_ = &recovery;
+    if (startProvisioning()) return true;
+    stopProvisioning();
+    return false;
+  }
+
   bool startProvisioning() override {
     if (!flova::validSetupPassword(setupPassword_)) return false;
-    stopProvisioning();
-    if (!storage_.remove("wifi")) return false;
+    FlovaWifiRecovery* recovery = recovery_;
+    if (!stopProvisioning()) return false;
+    recovery_ = recovery;
+    if (!recovery_ && (!storage_.remove("wifi") || !storage_.remove("wifi_trial"))) return false;
     setup_ = new (std::nothrow) Setup;
     if (!setup_) return false;
     setup_->server.on("/setup", HTTP_GET, [this]() { handleSetup(); });
+    setup_->server.on("/", HTTP_GET, [this]() { handleSetup(); });
+    if (WifiRecoveryEnabled) {
+      setup_->server.on("/wifi", HTTP_POST, [this]() {
+        const String& body = setup_->server.arg("plain");
+        if (!recovery_ || !recovery_->canSubmit() || body.length() >= 256 ||
+            !flova::parseWifiProvisioningHandoff(body.c_str(), body.length(),
+                setup_->input, &setup_->wifi, true) ||
+            !recovery_->submit(setup_->wifi)) {
+          setup_->server.send(400, "application/json", "{\"error\":\"invalid_wifi_settings\"}");
+          return;
+        }
+        setup_->server.send(202, "application/json", "{\"status\":\"testing\"}");
+      });
+      setup_->server.on("/wifi/cancel", HTTP_POST, [this]() {
+        if (recovery_) recovery_->cancel();
+        setup_->server.send(202, "application/json", "{}");
+      });
+    }
     setup_->server.on("/status", HTTP_GET, [this]() { handleStatus(); });
     setup_->server.on("/provision", HTTP_POST, [this]() { handleProvision(); });
-    WiFi.disconnect(true, true);
+    WiFi.persistent(false);
+    WiFi.disconnect(false, false);
     WiFi.mode(WIFI_AP);
     char ssid[32] = {};
     snprintf(ssid, sizeof(ssid), "Flova-Setup-%08lx",
@@ -53,6 +82,7 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
 
   bool stopProvisioning() override {
     provisioning_ = false;
+    recovery_ = nullptr;
     if (setup_) { setup_->server.stop(); delete setup_; setup_ = nullptr; }
     WiFi.softAPdisconnect(true);
     return true;
@@ -64,10 +94,20 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
   void handleSetup() {
     setup_->server.sendHeader("Cache-Control", "no-store");
     setup_->server.sendHeader("X-Frame-Options", "DENY");
-    setup_->server.send_P(200, "text/html; charset=utf-8", flova::kSoftApSetupPage);
+    setup_->server.send_P(200, "text/html; charset=utf-8", WifiRecoveryEnabled && recovery_ ? flova::kWifiRecoveryPage : flova::kSoftApSetupPage);
   }
 
   void handleStatus() {
+    if (WifiRecoveryEnabled && recovery_) {
+      char response[160] = {};
+      snprintf(response, sizeof(response), "{\"status\":\"wifi_setup\",\"testing\":%s,\"error\":\"%s\"}",
+          recovery_->state() == FlovaWifiRecovery::State::Associating ||
+          recovery_->state() == FlovaWifiRecovery::State::Queued ? "true" : "false",
+          recovery_->error());
+      setup_->server.sendHeader("Cache-Control", "no-store");
+      setup_->server.send(200, "application/json", response);
+      return;
+    }
     char error[flova::kProvisioningErrorBytes] = {};
     char* body = reinterpret_cast<char*>(&setup_->input);
     const size_t bodyCapacity = sizeof(setup_->input);
@@ -82,6 +122,10 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
   }
 
   void handleProvision() {
+    if (WifiRecoveryEnabled && recovery_) {
+      setup_->server.send(409, "application/json", "{\"error\":\"wifi_only_setup\"}");
+      return;
+    }
     const String& body = setup_->server.arg("plain");
     if (!handler_ || body.length() >= 768 ||
         !flova::parseWifiProvisioningHandoff(body.c_str(), body.length(), setup_->input,
@@ -106,6 +150,7 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
 
   FlovaEsp32Storage& storage_;
   const char* setupPassword_;
+  FlovaWifiRecovery* recovery_ = nullptr;
   struct Setup {
     WebServer server{80};
     flova::ProvisioningHandoff input;
@@ -116,3 +161,6 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
   void* context_ = nullptr;
   bool provisioning_ = false;
 };
+
+using FlovaEsp32Provisioning = FlovaEsp32ProvisioningBase<false>;
+using FlovaEsp32ProvisioningWithWifiRecovery = FlovaEsp32ProvisioningBase<true>;

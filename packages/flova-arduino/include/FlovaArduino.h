@@ -277,7 +277,7 @@ class FlovaClient {
     if (setupLifecycle || provisioningDuringNetworkStart_)
       provisioning_.loop();
     network_.loop();
-    tlsClock_.loop(network_.connected() && !provisioningDuringNetworkStart_);
+    tlsClock_.loop(network_.connected() && !provisioningDuringNetworkStart_ && !networkSetup_);
     if ((setupLifecycle || provisioningDuringNetworkStart_) && handoffAccepted_) {
       handoffAccepted_ = false;
       if (!markBootstrapAttempt()) {
@@ -396,7 +396,20 @@ class FlovaClient {
         return;
       }
       if (otaDraining_) { finishOta(); return; }
-      link_.setConnectionAllowed(network_.connected() && tlsClock_.ready());
+      if (networkSetupDraining_) {
+        device_.run(); // Poll the bounded transport maintenance drain.
+        if (!link_.maintenanceReady()) return;
+        if (link_.maintenanceFailed()) {
+          link_.endMaintenance();
+          networkSetupDraining_ = networkSetup_ = false;
+          setLastError("network_setup_drain_failed");
+          return;
+        }
+        link_.setConnectionAllowed(false);
+        link_.endMaintenance();
+        networkSetupDraining_ = false;
+      }
+      link_.setConnectionAllowed(!networkSetup_ && network_.connected() && tlsClock_.ready());
       hardware_.setConnected(link_.connected());
       if (!link_.applicationPaused()) hardware_.run();
       if (lifecycle_ != FlovaLifecycle::Runtime) return;
@@ -411,6 +424,7 @@ class FlovaClient {
         stepConfigurationWork();
         return;
       }
+      if (networkSetup_) return;
       drainConfiguration(false);
       if (configurationActivation_.active()) return;
       processOta();
@@ -421,7 +435,28 @@ class FlovaClient {
   }
 
  public:
+  // Board-owned network replacement: never remove Flova configuration.
+  bool beginNetworkSetup() {
+    if (networkSetup_ || lifecycle_ != FlovaLifecycle::Runtime ||
+        configurationMemory_ || configurationTransferActive_ ||
+        configurationWork_.mode != ConfigurationWorkMode::None ||
+        configurationActivation_.active() || otaDraining_ || otaInstallPending_ ||
+        otaResultPending_ || factoryResetRequestedAt_ || powerDownDraining_ ||
+        powerDownReady_ || device_.commandResultsPending()) return false;
+    setLastError("");
+    networkSetup_ = networkSetupDraining_ = true;
+    link_.beginMaintenance();
+    return true;
+  }
+  bool networkSetupReady() const { return networkSetup_ && !networkSetupDraining_; }
+  bool networkSetupActive() const { return networkSetup_; }
+  void endNetworkSetup() {
+    if (networkSetupDraining_) link_.endMaintenance();
+    networkSetup_ = networkSetupDraining_ = false;
+  }
+
   bool startProvisioning() {
+    if (networkSetup_) return false;
     link_.disconnect();
     if (!storage_.remove("config") || !storage_.remove("prov_pending") ||
         !storage_.remove("prov_error") || !storage_.remove("ota_pending")) {
@@ -464,7 +499,7 @@ class FlovaClient {
   FlovaPowerDownStatus prepareForPowerDown() {
     if (powerDownReady_) return FlovaPowerDownStatus::Ready;
     if (!powerDownDraining_) {
-      if (!ready() || configurationMemory_ || configurationTransferActive_ ||
+      if (networkSetup_ || !ready() || configurationMemory_ || configurationTransferActive_ ||
           configurationWork_.mode != ConfigurationWorkMode::None ||
           configurationActivation_.active() || otaDraining_ ||
           otaResultPending_ || factoryResetRequestedAt_)
@@ -511,6 +546,7 @@ class FlovaClient {
   // Erases Flova runtime/provisioning state. Custom application storage and
   // application-owned network credentials remain outside this boundary.
   bool factoryReset() {
+    if (networkSetup_) return false;
     if (!network_.stop() || !network_.clearCredentials()) return false;
     link_.disconnect();
     hardware_.failSafe();
@@ -524,6 +560,8 @@ class FlovaClient {
   template <typename T>
   flova::Datastream<T> datastream(const char* key) { return device_.datastream<T>(key); }
 
+  template <typename T>
+  flova::Datastream<T> stream(const char* key) { return device_.datastream<T>(key); }
   template <typename T>
   flova::Setting<T> setting(const char* key, const T& defaultValue) {
     return device_.setting<T>(key, defaultValue);
@@ -1907,6 +1945,8 @@ class FlovaClient {
   FlovaLinkConfigurationReport configurationReportWorkspace_ = {};
   uint32_t lastHeartbeatAt_ = 0;
   bool runtimeReported_ = false;
+  bool networkSetup_ = false;
+  bool networkSetupDraining_ = false;
   bool managedProvisioning_ = false;
   bool handoffAccepted_ = false;
   bool provisioningDuringNetworkStart_ = false;

@@ -2,18 +2,12 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <FlovaSDK.h>
-#include <PubSubClient.h>
 #include <SPI.h>
-#include <WiFiClientSecureBearSSL.h>
-#include <time.h>
 
-#include "credentials.h"
 
 namespace {
 
 // Application-owned Wi-Fi for the temporary bench device.
-const char* const WIFI_SSID = "home_wifi";
-const char* const WIFI_PASSWORD = "home_wifi_123";
 
   // Seven-pin ST7789 wiring with CS handled internally by the panel:
 // TFT SCL=D5, SDA=D7, RES=D2, DC=D1, BLK=3V3. Leave D0 unconnected.
@@ -37,16 +31,9 @@ const uint32_t DISPLAY_INTERVAL_MS = 500;
 const uint32_t REPORT_INTERVAL_MS = 10000;
 const uint32_t MIN_REPORT_INTERVAL_MS = 1000;
 const uint32_t MAX_REPORT_INTERVAL_MS = 60000;
-const uint32_t MQTT_TLS_TIMEOUT_MS = 150;
-const uint16_t MQTT_PACKET_TIMEOUT_SECONDS = 1;
-const uint32_t MQTT_RECONNECT_INTERVAL_MS = 15000;
-const uint32_t NTP_VALID_EPOCH = 1700000000;
 
 Adafruit_ST7789 display(TFT_CS, TFT_DC, TFT_RST);
-BearSSL::WiFiClientSecure mqttSocket;
-BearSSL::X509List mqttRoots(FLOVA_TLS_ROOT_CERTS);
-PubSubClient mqtt(mqttSocket);
-FlovaEsp8266 client(mqtt);
+FlovaEsp8266 client;
 
 // These names match the template parameters. The calibration values come from
 // the current bench sensor: wet in water is about 270-280 and dry in air is
@@ -55,7 +42,7 @@ auto dryThreshold = FLOVA_SETTING(client, float, "dry_threshold", 35.0f);
 auto dryCalibration = FLOVA_SETTING(client, int64_t, "dry_adc", 608);
 auto wetCalibration = FLOVA_SETTING(client, int64_t, "wet_adc", 280);
 
-// Production test10 currently declares this exact key as a read-only double.
+// The template declares this exact key as double telemetry.
 auto moisture = FLOVA_DATASTREAM(client, double, "MOISTURE");
 
 struct MoistureReading {
@@ -72,7 +59,6 @@ uint32_t lastSensorMs = 0;
 uint32_t lastChartSampleMs = 0;
 uint32_t lastDisplayMs = 0;
 uint32_t lastReportMs = 0;
-uint32_t lastNetworkAttemptMs = 0;
 uint8_t moistureHistory[CHART_POINTS] = {};
 uint8_t moistureHistoryHead = 0;
 uint8_t moistureHistoryCount = 0;
@@ -259,28 +245,8 @@ void drawDisplay() {
   yield();
 }
 
-bool networkReady() {
-  return WiFi.status() == WL_CONNECTED && time(nullptr) > NTP_VALID_EPOCH;
-}
 
-void serviceNetwork(uint32_t now) {
-  if (!networkReady()) {
-    if (client.connected()) client.run(false);
-    return;
-  }
-
-  if (client.connected()) {
-    client.run(true);
-    return;
-  }
-
-  // PubSubClient uses a synchronous BearSSL handshake on ESP8266. Keep that
-  // expensive path out of every loop iteration and bound failed handshakes so
-  // local sensing and display refresh remain the primary loop workload.
-  if (now - lastNetworkAttemptMs < MQTT_RECONNECT_INTERVAL_MS) return;
-  lastNetworkAttemptMs = now;
-  client.run(true);
-}
+void serviceNetwork(uint32_t) { client.run(); }
 
 void reportMoisture(uint32_t now) {
   if (!client.connected() || now - lastReportMs < boundedReportInterval())
@@ -300,21 +266,8 @@ void setup() {
   pinMode(DRY_INDICATOR_PIN, OUTPUT);
   updateIndicator(false);
 
-  WiFi.mode(WIFI_STA);
-  WiFi.persistent(false);
-  WiFi.setAutoReconnect(true);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  configTime(0, 0, "time.cloudflare.com", "time.google.com", "pool.ntp.org");
-
-  mqttSocket.setTrustAnchors(&mqttRoots);
-  mqttSocket.setBufferSizes(16384, 2048);
-  mqttSocket.setTimeout(MQTT_TLS_TIMEOUT_MS);
-  if (!client.begin(FLOVA_DEVICE_ID, FLOVA_DEVICE_SECRET)) {
-    Serial.println(F("[flova] MQTT setup failed"));
-  } else {
-    // PubSubClient otherwise waits three seconds for a failed CONNACK, which
-    // would pause the local sensor/display loop during reconnect attempts.
-    mqtt.setSocketTimeout(MQTT_PACKET_TIMEOUT_SECONDS);
+  if (!client.begin()) {
+    Serial.println(F("[flova] startup failed"));
   }
 
   // Start networking before the panel workload so the ESP8266 handles the

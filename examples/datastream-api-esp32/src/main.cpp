@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <WiFi.h>
 #include <FlovaSDK.h>
 
 // This example focuses on the datastream API:
@@ -7,8 +6,6 @@
 //   FLOVA_ON_WRITE()  = user/cloud/automation/schedule commands;
 //   FLOVA_WRITE()     = local application commands;
 //   FLOVA_READ()      = local cached state, never a network request.
-const char* WIFI_SSID = "your-wifi";
-const char* WIFI_PASSWORD = "your-password";
 const uint8_t RELAY_PIN = 2;
 const uint8_t RGB_PINS[3] = {25, 26, 27}; // Match these to your LED wiring.
 
@@ -45,19 +42,15 @@ flova::WriteResult applyColor(flova::Text value) {
 void setup() {
   Serial.begin(115200);
 
-  // Wi-Fi is owned by this application. Flova observes it and keeps the rest
-  // of the application's services untouched.
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  // The managed facade owns Wi-Fi setup and reconnection.
   pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW);
   for (uint8_t pin : RGB_PINS) pinMode(pin, OUTPUT);
   // Register handlers before starting the SDK runtime. Remote commands are
   // applied from client.run(), never directly from a transport callback.
   FLOVA_ON_WRITE(relay, writeRelay);
   FLOVA_ON_WRITE(cookMode, writeCookMode, nullptr);
   FLOVA_ON_WRITE(lampColor, applyColor);
-  relay.persist(flova::PersistencePolicy::OnChange);
-  // Explicit opt-in: at most one coalesced sensor value per 30-second window.
-  temperature.persist(flova::PersistencePolicy::Deferred, 30000);
   if (!client.begin()) Serial.println("[flova] client startup failed");
 }
 

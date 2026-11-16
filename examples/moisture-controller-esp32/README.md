@@ -1,11 +1,8 @@
 # Temporary ESP32 moisture controller
 
-This scratch application targets a classic ESP32 DevKit (`esp32dev`). It has
-one hardware input: the moisture sensor's analog output, and controls the
-board's built-in LED through the `led` boolean datastream. It reports the
-`MOISTURE` datastream as a percentage through Flova MQTT. The LED datastream is
-read/write, so a PWA toggle command is applied to the hardware and the SDK
-reports the accepted state back to Engine.
+This custom sensor application uses managed SoftAP provisioning and Flova Link.
+Wi-Fi and device credentials arrive through setup; the same firmware can be
+used with multiple devices. Calibration and wiring remain application-owned.
 
 ## Wiring
 
@@ -47,4 +44,22 @@ pio run -e esp32dev --target upload
 pio device monitor -b 115200
 ```
 
-The temporary MQTT credentials belong in the ignored `src/credentials.h` file.
+
+
+## Managed setup (current SDK)
+
+This example uses managed SoftAP setup; no Wi-Fi or device secrets go in source.
+Build the matching named environment in the root `platformio.ini`. Moisture
+projects instead use their own directory's `platformio.ini`.
+
+Required template data: `MOISTURE` — double telemetry (%); calibration settings `dry_adc`, `wet_adc`, and `dry_threshold`. ESP32 also declares writable Boolean `led`. Use the pin constants and calibration values in the source; supply sensors with a safe 3.3 V signal.
+
+Start the device provisioning flow in Flova after uploading, join `Flova-Setup-*`
+when prompted, and use the provided handoff link. Return to the internet and
+check the device is online. Toggle the writable LED stream, or observe sensor
+reports for sensor-only examples. Reboot and verify automatic reconnection.
+Open the serial monitor at 115200 baud for startup and connection errors.
+
+ESP32 starter/recovery examples use an external LED with a resistor on GPIO2;
+ESP8266 starters use the active-low built-in LED. Other examples specify their
+pins at the top of the source. Verify the board pinout before wiring.

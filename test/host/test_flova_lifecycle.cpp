@@ -86,6 +86,8 @@ class TestTlsClock final : public FlovaTlsClockBootstrap {
 class TestProvisioning final : public FlovaProvisioningAdapter {
  public:
   bool begin(FlovaProvisioningHandler, void*) override { return true; }
+  bool startProvisioning() override { started = true; return true; }
+  bool started = false;
 };
 
 class TestHardware final : public flova::Hardware {
@@ -258,6 +260,63 @@ void seedRuntimeConfiguration(TestStorage& storage) {
   assert(installer.promote(begin.generation));
 }
 
+void verifyFreshSetup() {
+  TestStorage storage;
+  TestLink link; TestClock clock; TestLogger logger; TestEntropy entropy;
+  TestIdentity identity; TestNetwork network; TestTlsClock tlsClock;
+  TestProvisioning provisioning; TestHardware hardware;
+  FlovaClient passive(link, provisioning, network, tlsClock, identity, storage,
+                      clock, logger, entropy, hardware);
+  assert(passive.begin(false));
+  assert(passive.lifecycle() == FlovaLifecycle::AwaitingProvisioning);
+  assert(!provisioning.started);
+  TestStorage managedStorage;
+  FlovaClient managed(link, provisioning, network, tlsClock, identity, managedStorage,
+                      clock, logger, entropy, hardware);
+  assert(managed.begin(true));
+  assert(managed.lifecycle() == FlovaLifecycle::Setup);
+  assert(provisioning.started);
+  assert(!managed.beginNetworkSetup());
+}
+
+void verifyNetworkSetup() {
+  TestStorage storage;
+  seedRuntimeConfiguration(storage);
+  TestLink link;
+  TestClock clock; TestLogger logger; TestEntropy entropy; TestIdentity identity;
+  TestNetwork network; TestTlsClock tlsClock; TestProvisioning provisioning;
+  TestHardware hardware;
+  network.online = tlsClock.clockReady = link.online = true;
+  FlovaClient client(link, provisioning, network, tlsClock, identity, storage,
+                     clock, logger, entropy, hardware);
+  assert(!client.beginNetworkSetup());
+  assert(client.begin(true));
+  for (unsigned i = 0; i < 128 && !client.runtimeReady(); ++i) client.run();
+  assert(client.runtimeReady());
+  const auto original = storage.records;
+  assert(client.beginNetworkSetup());
+  assert(!client.beginNetworkSetup());
+  assert(!client.startProvisioning());
+  assert(client.prepareForPowerDown() == FlovaPowerDownStatus::Busy);
+  client.run();
+  assert(!client.networkSetupReady());
+  link.maintenanceReadyNow = true;
+  client.run();
+  assert(client.networkSetupReady());
+  assert(!link.maintenance);
+  assert(storage.records == original);
+  client.endNetworkSetup();
+  assert(!client.networkSetupActive());
+  // Offline devices can still enter local recovery; no cloud-ready prerequisite.
+  network.online = link.online = false;
+  assert(client.beginNetworkSetup());
+  link.maintenanceFailedNow = true;
+  client.run();
+  assert(!client.networkSetupActive());
+  assert(!strcmp(client.lastError(), "network_setup_drain_failed"));
+  assert(storage.records == original);
+}
+
 void verifyPowerDownPreparation() {
   TestStorage storage;
   seedRuntimeConfiguration(storage);
@@ -275,7 +334,7 @@ void verifyPowerDownPreparation() {
   link.online = true;
   FlovaClient client(link, provisioning, network, tlsClock, identity, storage,
                      clock, logger, entropy, hardware);
-  auto deferred = client.datastream<int64_t>("deferred");
+  auto deferred = client.stream<int64_t>("deferred");
   deferred.persist(flova::PersistencePolicy::Deferred, 1000);
   assert(client.begin(false));
   for (unsigned i = 0; i < 128 && !client.runtimeReady(); ++i) client.run();
@@ -504,5 +563,7 @@ int main() {
   assert(storage.records == saved);
   assert(client.prepareForPowerDown() == FlovaPowerDownStatus::Busy);
   verifyPowerDownPreparation();
+  verifyFreshSetup();
+  verifyNetworkSetup();
   return 0;
 }

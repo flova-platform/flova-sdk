@@ -1,11 +1,8 @@
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
 #include <FlovaSDK.h>
 
 // ESP8266 version of the helper-based datastream example. The SDK surface is the same;
 // only board-owned Arduino includes and active-low LED behavior differ.
-const char* WIFI_SSID = "your-wifi";
-const char* WIFI_PASSWORD = "your-password";
 const uint8_t RELAY_PIN = LED_BUILTIN;
 const uint8_t RGB_PINS[3] = {5, 4, 14}; // GPIO5/4/14 on a common ESP8266 board.
 
@@ -41,19 +38,15 @@ flova::WriteResult applyColor(flova::Text value) {
 void setup() {
   Serial.begin(115200);
 
-  // The application owns Wi-Fi. Flova observes connection state and performs
-  // its bounded private TLS/UTC work without taking over Wi-Fi mode.
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  // SoftAP setup supplies Wi-Fi and Flova credentials.
   pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, HIGH);
   for (uint8_t pin : RGB_PINS) pinMode(pin, OUTPUT);
   FLOVA_ON_WRITE(relay, writeRelay);
   // Custom handlers remain available for application-specific validation such
   // as the bounded cook-mode values.
   FLOVA_ON_WRITE(cookMode, writeCookMode, nullptr);
   FLOVA_ON_WRITE(lampColor, applyColor);
-  relay.persist(flova::PersistencePolicy::OnChange);
-  // Explicit opt-in: at most one coalesced sensor value per 30-second window.
-  temperature.persist(flova::PersistencePolicy::Deferred, 30000);
   if (!client.begin()) Serial.println("[flova] client startup failed");
 }
 

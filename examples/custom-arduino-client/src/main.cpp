@@ -1,77 +1,42 @@
 #include <Arduino.h>
-#include <WiFi.h>
 #include <FlovaSDK.h>
 
-namespace {
-// This is an existing application example. Flova does not own these Wi-Fi
-// credentials, the GPIO pin, the application's web server, or the main loop.
-// The same binary can be copied to multiple devices; the device identity and
-// secret arrive later through the selected provisioning channel.
-const char* WIFI_SSID = "your-wifi";
-const char* WIFI_PASSWORD = "your-password";
-const uint8_t RELAY_PIN = 2;
-struct RelayContext { uint8_t pin; } relayContext = {RELAY_PIN};
-
-flova::WriteResult writeRelay(void* context, bool value) {
-  // User dashboard actions, schedules, and Engine automations all arrive here
-  // when they write this datastream. The callback runs from client.run(), not
-  // from a socket callback, so it is safe to update application hardware.
-  RelayContext* relay = static_cast<RelayContext*>(context);
-  digitalWrite(relay->pin, value ? HIGH : LOW);
-  return flova::WriteResult::accept();
-}
-
-FlovaEsp32 client;
-
-void onFlovaStatus(void*, const FlovaStatusEvent& event) {
-  Serial.printf("[flova] status event=%u lifecycle=%u network=%u link=%u ready=%u error=%s\n",
-                static_cast<unsigned>(event.kind),
-                static_cast<unsigned>(event.current.lifecycle),
-                event.current.networkConnected ? 1U : 0U,
-                event.current.linkConnected ? 1U : 0U,
-                event.current.ready ? 1U : 0U,
-                event.current.errorCode);
-}
-// "LED" is the developer/API key. Engine resolves it to a compact numeric
-// runtime ID during binding; the string is not sent with every update.
-auto relay = FLOVA_DATASTREAM(client, bool, "LED");
-bool lastReady = false;
-}
+// Create a writable Boolean stream named "led" in your Flova template.
+// ESP32: connect an LED with a resistor to GPIO2. ESP8266: built-in active-low LED.
+constexpr uint8_t LED_PIN = 2;
+FlovaEsp32 device;
+auto led = FLOVA_DATASTREAM(device, bool, "led");
 
 void setup() {
   Serial.begin(115200);
-
-  // Wi-Fi remains application-owned. Flova observes connectivity and waits
-  // for it when it needs to open Device Link.
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  // The application chooses the safe hardware boot state.
-  pinMode(relayContext.pin, OUTPUT);
-  digitalWrite(relayContext.pin, LOW);
-
-  // FLOVA_ON_WRITE() handles remote writes. Local logic can use FLOVA_WRITE(),
-  // while sensors or externally changed hardware should use FLOVA_REPORT().
-  FLOVA_ON_WRITE(relay, writeRelay, &relayContext)
-      .persist(flova::PersistencePolicy::Persistent);
-
-  client.setStatusListener(onFlovaStatus);
-  // begin() restores Flova-private state and starts local runtime immediately.
-  // Cloud connection and binding continue later from run(). It does
-  // not start a SoftAP, replace a server, change Wi-Fi mode, or reboot.
-  if (!client.begin()) Serial.println("[flova] client startup failed");
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+  FLOVA_ON_WRITE(led, [](bool enabled) {
+    digitalWrite(LED_PIN, enabled ? HIGH : LOW);
+  });
+  device.setStatusListener([](void*, const FlovaStatusEvent& event) {
+    if (event.current.errorCode[0]) {
+      Serial.print("Flova error: "); Serial.println(event.current.errorCode);
+    } else if (event.current.lifecycle == FlovaLifecycle::Setup) {
+      Serial.println("Wi-Fi setup: continue provisioning in Flova.");
+    } else if (!event.current.networkConnected) {
+      Serial.println("Connecting to Wi-Fi...");
+    } else if (!event.current.ready) {
+      Serial.println("Wi-Fi connected; connecting to Flova...");
+    }
+  });
+  if (!device.begin()) {
+    Serial.print("Startup failed: ");
+    Serial.println(device.lastError());
+  }
 }
 
 void loop() {
-  // Keep this call frequent. It polls Link, applies queued remote commands,
-  // sends dirty state, and runs Flova callbacks on this loop.
-  client.run();
-  const bool ready = client.ready();
-  if (ready != lastReady) {
-    Serial.println(ready ? "[flova] link ready" : "[flova] link offline");
-    lastReady = ready;
+  device.run();
+  static bool wasReady = false;
+  if (device.ready() != wasReady) {
+    wasReady = device.ready();
+    Serial.println(wasReady ? "Flova ready" : "Flova offline; reconnecting");
   }
-
-  // Existing application work continues here. Avoid long blocking operations
-  // so remote commands remain responsive.
   yield();
 }

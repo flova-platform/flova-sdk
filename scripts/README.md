@@ -31,8 +31,8 @@ scripts/check_esp8266_stack_usage.py
 
 The Link guard rejects unbounded schema and allocating codec/configuration hot
 paths. The layer guard keeps platform APIs and legacy runtimes out of the
-portable SDK. The passive-ownership guard prevents the normal ESP facade from
-taking over networking, servers, GPIO, clock policy, or reboot. The stack guard consumes PlatformIO `-fstack-usage` output from
+portable SDK. The service-ownership guard checks that ESP facades delegate networking,
+servers, GPIO, clocks, and restarts to their owning services. The stack guard consumes PlatformIO `-fstack-usage` output from
 `universal-esp8266` and fails when critical continuation-stack frames grow.
 The public-surface guard prevents removed compatibility names and internal
 adapter headers from leaking into normal examples.
@@ -68,7 +68,7 @@ sh scripts/check_flova_version.sh
 Export and compile the self-contained SDK package in a temporary directory:
 
 ```sh
-scripts/check_sdk_release.sh /tmp/flova-sdk-check
+scripts/check_sdk_release.sh ./tmp/flova-sdk-check
 ```
 
 The check builds both exported PlatformIO examples against the local package.
@@ -90,3 +90,19 @@ package consumed by PlatformIO and Arduino Library Manager. The generated tree
 contains release metadata, examples, public headers, board sources, generated
 Link codecs, and zcbor with its upstream notices. Do not edit that generated
 tree directly.
+
+### Beginner examples and Console catalog
+
+`python3 scripts/check_public_examples.py` compiles public board examples,
+including managed LED, simulated sensor, history, recovery, BLE, Ethernet, and
+standalone moisture projects. Private smoke firmware is excluded. The normal
+release-package check also compiles exported PlatformIO starters for both boards;
+Arduino CI covers the managed starter on both architectures.
+
+`python3 scripts/sync_console_catalog.py ../flova-console --revision <SDK-HEAD>`
+regenerates Console examples from `examples/ide-examples.json`, refreshes headers,
+and creates a deterministic, checksum-pinned compiler SDK bundle. The revision
+must match the SDK checkout. Pass `--check` to detect drift without writing.
+Required-stream metadata is explicit; arbitrary user C++ is never parsed to infer
+a device template. SDK source and example content determine the compiler identity,
+so development edits cannot reuse a stale compilation-cache identity.

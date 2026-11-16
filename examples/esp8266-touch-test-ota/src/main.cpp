@@ -1,17 +1,12 @@
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
 #include <FlovaSDK.h>
 
 const uint8_t TOUCH_PIN = D1;
 const uint8_t LED_PIN = D2;
 const uint32_t DEBOUNCE_MS = 60;
 
-const char* WIFI_SSID = "your-wifi";
-const char* WIFI_PASSWORD = "your-password";
 
 FlovaEsp8266 device;
-ESP8266WebServer server(80);
 auto led = FLOVA_DATASTREAM(device, bool, "LED");
 auto touch = FLOVA_DATASTREAM(device, bool, "TOUCH_SENSOR");
 
@@ -46,7 +41,6 @@ void pollTouch() {
 
 void setup() {
   Serial.begin(115200);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   pinMode(TOUCH_PIN, INPUT);
   pinMode(LED_PIN, OUTPUT);
   FLOVA_ON_WRITE(led, writeLed);
@@ -58,13 +52,10 @@ void setup() {
   device.setOtaProfile(FlovaOtaStrategy::Ab, "esp8266-staged-copy", false);
   device.setRestartHandler(scheduleRestart);
 
-  device.attachProvisioning(server);
-  server.begin();
   if (!device.begin()) Serial.println("[flova] startup failed");
 }
 
 void loop() {
-  server.handleClient();
   device.run();
   if (restartRequestedAt && millis() - restartRequestedAt >= 1000UL) {
     restartRequestedAt = 0;
