@@ -49,6 +49,12 @@ install(EXPORT FlovaCoreTargets
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/FlovaCore)
 
 add_subdirectory(packages/flova-linux)
+add_executable(flova-linux-transport-test test/host/test_flova_linux_transport.cpp)
+target_include_directories(flova-linux-transport-test PRIVATE
+  packages/flova-arduino/include)
+target_link_libraries(flova-linux-transport-test PRIVATE flova-linux)
+set_property(TARGET flova-linux-transport-test APPEND_STRING PROPERTY LINK_FLAGS
+  " -Wl,--wrap=getaddrinfo,--wrap=connect,--wrap=SSL_connect,--wrap=SSL_shutdown,--wrap=SSL_get_error,--wrap=SSL_read")
 add_executable(flova-core-test test/host/test_flova_core.cpp)
 target_link_libraries(flova-core-test PRIVATE flova-core)
 add_executable(flova-configuration-installer-test test/host/test_flova_configuration_installer.cpp)
@@ -80,6 +86,9 @@ add_executable(flova-wifi-recovery-test test/host/test_flova_wifi_recovery.cpp)
 target_include_directories(flova-wifi-recovery-test PRIVATE packages/flova-arduino/include)
 target_link_libraries(flova-wifi-recovery-test PRIVATE flova-core)
 enable_testing()
+add_test(NAME flova-linux-rx-test COMMAND flova-linux-transport-test receive)
+add_test(NAME flova-linux-resolver-test COMMAND flova-linux-transport-test resolver)
+set_tests_properties(flova-linux-rx-test flova-linux-resolver-test PROPERTIES TIMEOUT 10)
 add_test(NAME flova-wifi-recovery-test COMMAND flova-wifi-recovery-test)
 add_executable(flova-mqtt-test test/host/test_flova_mqtt.cpp)
 target_include_directories(flova-mqtt-test PRIVATE

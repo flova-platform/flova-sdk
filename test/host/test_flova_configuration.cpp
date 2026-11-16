@@ -178,6 +178,11 @@ int main() {
   assert(flova::provisioningFailureNeedsSetup("invalid_provision_token"));
 
   char storageKey[16] = {};
+  assert(flova::makeNvsStorageKey("wifi_trial", storageKey,
+                                  sizeof(storageKey)));
+  assert(strcmp(storageKey, "wt") == 0);
+  assert(flova::makeNvsStorageKey("wifi", storageKey, sizeof(storageKey)));
+  assert(strcmp(storageKey, "wf") == 0);
   assert(flova::makeNvsStorageKey("history.meta", storageKey,
                                   sizeof(storageKey)));
   assert(strcmp(storageKey, "hm") == 0);
