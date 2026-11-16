@@ -52,6 +52,12 @@ bool FlovaLinux::Impl::begin() {
     state.error = "invalid_linux_device_config";
     return false;
   }
+  // The facade owns durable file storage. Create/validate its directory before
+  // Device::begin() attempts recovery or accepts commands requiring a ledger.
+  if (!state.storage.begin()) {
+    state.error = "storage_begin_failed";
+    return false;
+  }
   state.link.setConnectionAllowed(true);
   if (!state.device.begin()) {
     state.error = "device_begin_failed";
@@ -95,23 +101,7 @@ flova::WriteResult FlovaLinux::Impl::report(const char* key, const T& value,
 template <typename T>
 bool FlovaLinux::Impl::onWrite(const char* key, flova::ValueType,
                                FlovaDatastreamBinding<T>& binding) {
-  auto stream = state_->device.datastream<T>(key);
-  switch (binding.kind) {
-    case FlovaDatastreamHandlerKind::Result:
-      stream.onWrite(binding.handler.result);
-      return true;
-    case FlovaDatastreamHandlerKind::ResultWithContext:
-      stream.onWrite(binding.handler.resultContext, binding.context);
-      return true;
-    case FlovaDatastreamHandlerKind::Void:
-      stream.onWrite(binding.handler.voidHandler);
-      return true;
-    case FlovaDatastreamHandlerKind::VoidWithContext:
-      stream.onWrite(binding.handler.voidContext, binding.context);
-      return true;
-    default:
-      return false;
-  }
+  return binding.attach(state_->device.datastream<T>(key));
 }
 
 template flova::WriteResult FlovaLinux::Impl::write<bool>(const char*, const bool&);

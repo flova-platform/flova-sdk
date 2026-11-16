@@ -39,7 +39,61 @@ static flova::WifiRuntimeData credentials(const char* ssid) {
   flova::WifiRuntimeData data = {};
   strcpy(data.ssid, ssid); strcpy(data.password, "password"); return data;
 }
+static void verifySetupOwnership() {
+  struct Client {
+    bool ready = false;
+    unsigned ends = 0;
+    bool networkSetupReady() const { return ready; }
+    void endNetworkSetup() { ready = false; ++ends; }
+  } client;
+  struct Provisioning {
+    bool startOk = true, stopOk = true;
+    unsigned starts = 0, loops = 0, stops = 0;
+    bool startWifiSetup(FlovaWifiRecovery&) { ++starts; return startOk; }
+    void loop() { ++loops; }
+    bool stopProvisioning() { ++stops; return stopOk; }
+  } provisioning;
+  struct Clock : flova::Clock {
+    uint64_t milliseconds() const override { return 100; }
+  } clock;
+  Storage storage; Network network;
+  FlovaWifiRecovery recovery(storage, network);
+  recovery.serviceSetup(client, provisioning, clock);
+  assert(provisioning.starts == 0); // Wait for the client's Link drain.
+  client.ready = true;
+  recovery.serviceSetup(client, provisioning, clock);
+  assert(client.ends == 1 && network.restores == 1);
+  assert(!strcmp(recovery.error(), "wifi_storage_failed"));
+  const auto wifi = credentials("previous");
+  assert(flova::writeWifiVerified(storage, "wifi", wifi));
+  client.ready = true; provisioning.startOk = false;
+  recovery.serviceSetup(client, provisioning, clock);
+  assert(client.ends == 2 && network.restores == 2);
+  assert(!strcmp(recovery.error(), "wifi_setup_start_failed"));
+  client.ready = true; provisioning.startOk = true;
+  recovery.serviceSetup(client, provisioning, clock);
+  assert(recovery.state() == FlovaWifiRecovery::State::Awaiting);
+  assert(recovery.cancel());
+  provisioning.stopOk = false;
+  recovery.serviceSetup(client, provisioning, clock);
+  assert(recovery.state() == FlovaWifiRecovery::State::Finished);
+  assert(client.ends == 2 && network.restores == 3);
+  provisioning.stopOk = true;
+  recovery.serviceSetup(client, provisioning, clock);
+  assert(recovery.state() == FlovaWifiRecovery::State::Idle);
+  assert(client.ends == 3 && network.restores == 3);
+  client.ready = true;
+  recovery.serviceSetup(client, provisioning, clock);
+  assert(recovery.submit(credentials("next")));
+  recovery.serviceSetup(client, provisioning, clock);
+  network.online = true;
+  recovery.serviceSetup(client, provisioning, clock);
+  assert(client.ends == 4 && recovery.state() == FlovaWifiRecovery::State::Idle);
+  flova::WifiRuntimeData saved = {};
+  assert(storage.read("wifi", &saved, sizeof(saved)) && !strcmp(saved.ssid, "next"));
+}
 int main() {
+  verifySetupOwnership();
   // Credentials-only recovery rejects claim tokens, duplicates and oversize data.
   flova::ProvisioningHandoff handoff;
   flova::WifiRuntimeData parsed = {};

@@ -108,6 +108,34 @@ class TestEngine : public flova::LinkBootstrapClient { public: bool beginBootstr
 class TestWallClock : public flova::WallClock { public: bool valid = false; flova::LocalTime now = {2026, 7, 15, 3, 20, 0}; bool synchronized() const override { return valid; } bool localTime(const char*, flova::LocalTime& out) const override { out = now; return true; } };
 static int scheduledRuns;
 static void scheduledWrite() { scheduledRuns++; }
+static void verifyCallbackBinding() {
+  TestStorage storage; TestLink link; TestClock clock; TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  auto relay = device.datastream<bool>("relay");
+  int calls = 0;
+  for (unsigned kind = 1; kind <= 4; ++kind) {
+    {
+      FlovaDatastreamBinding<bool> binding;
+      binding.kind = static_cast<FlovaDatastreamHandlerKind>(kind);
+      binding.context = &calls;
+      if (kind == 1) binding.handler.result = +[](bool) { return flova::reject("blocked"); };
+      if (kind == 2) binding.handler.resultContext = +[](void* c, bool) { ++*static_cast<int*>(c); return flova::accept(); };
+      if (kind == 3) binding.handler.voidHandler = +[](bool) {};
+      if (kind == 4) binding.handler.voidContext = +[](void* c, bool) { ++*static_cast<int*>(c); };
+      assert(binding.attach(relay));
+    }
+    // Runtime callbacks outlive the temporary binding; only the caller's
+    // context is borrowed. Rejections must still leave state unchanged.
+    const auto result = relay.write(kind % 2 != 0);
+    assert(result.accepted() == (kind != 1));
+    if (kind == 1) assert(!relay.hasValue());
+  }
+  assert(calls == 2);
+  FlovaDatastreamBinding<bool> empty;
+  assert(!empty.attach(relay));
+  assert(relay.write(true).accepted() && calls == 3);
+}
+
 static void verifyPersistencePolicies() {
   TestStorage storage; TestLink link; TestClock clock; TestLogger logger;
   flova::Device device(link, storage, clock, logger);
@@ -223,6 +251,43 @@ static void verifyHistoryMaintenance() {
   assert(device.diagnostics().expiredHistory == 1);
   assert(link.stateSends == sent); // Never send the next expired record.
   assert(storage.records.count("history:2") == 0);
+}
+
+static void verifyHistorySendBackpressure() {
+  class BlockedLink : public TestLink {
+   public:
+    bool blocked = true;
+    unsigned attempts = 0;
+    bool send(const flova::Message& message) override {
+      if (message.kind != flova::MessageKind::StateUpdate)
+        return TestLink::send(message);
+      ++attempts;
+      return !blocked && TestLink::send(message);
+    }
+  } link;
+  TestStorage storage; TestClock clock; TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  auto sample = device.datastream<float>("history");
+  sample.offline(flova::OfflinePolicy::StoreHistory);
+  assert(device.begin());
+  link.online = false;
+  assert(sample.report(1).accepted());
+  link.online = true;
+  device.run();
+  assert(link.attempts == 1);
+  const unsigned reads = storage.reads["history:0"];
+  for (unsigned i = 0; i < 100; ++i) device.run();
+  assert(link.attempts == 1 && storage.reads["history:0"] == reads);
+  clock.now += 999; device.run();
+  assert(link.attempts == 1);
+  link.blocked = false;
+  ++clock.now; device.run();
+  assert(link.attempts == 2);
+  const uint64_t id = link.last.messageId;
+  clock.now += 5000; device.run();
+  assert(link.attempts == 3 && link.last.messageId == id);
+  link.acknowledge(id);
+  assert(storage.records.count("history:0") == 0);
 }
 
 static void verifyLocalTimers() {
@@ -712,6 +777,8 @@ int main() {
   writes = numericWrites = 0;
   verifyPersistencePolicies();
   verifyHistoryMaintenance();
+  verifyCallbackBinding();
+  verifyHistorySendBackpressure();
   verifySchedulingRules();
   verifyLocalTimers();
   flova::RgbColor rgb = {0, 0, 0};

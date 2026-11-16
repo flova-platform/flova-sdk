@@ -93,6 +93,31 @@ class FlovaWifiRecovery {
     state_ = State::Finished;
     return true;
   }
+  // Both managed ESP facades use this ordering: drain Link first, then own
+  // the setup channel until credential promotion/cancellation has finished.
+  template <typename Client, typename Provisioning>
+  void serviceSetup(Client& client, Provisioning& provisioning,
+                    const flova::Clock& clock) {
+    if (!client.networkSetupReady()) return;
+    if (state_ == State::Idle) {
+      const bool ready = begin();
+      if (!ready || !provisioning.startWifiSetup(*this)) {
+        reset(ready ? "wifi_setup_start_failed" : error());
+        if (!network_.begin()) reset("wifi_restore_failed");
+        client.endNetworkSetup();
+        return;
+      }
+    }
+    provisioning.loop();
+    run(static_cast<uint32_t>(clock.milliseconds()));
+    if (state_ == State::Committed || state_ == State::Cancelled ||
+        state_ == State::Finished) {
+      if (finish() && provisioning.stopProvisioning()) {
+        reset();
+        client.endNetworkSetup();
+      }
+    }
+  }
   void reset(const char* error = nullptr) {
     if (error) error_ = error;
     state_ = State::Idle;

@@ -44,27 +44,7 @@ class FlovaEsp8266 final {
   void run() {
     client_.run();
     recovery_.restartIfDue(millis());
-    if (!client_.networkSetupActive()) return;
-    if (!client_.networkSetupReady()) return;
-    if (recovery_.state() == FlovaWifiRecovery::State::Idle) {
-      const bool recoveryReady = recovery_.begin();
-      if (!recoveryReady || !provisioning_.startWifiSetup(recovery_)) {
-        recovery_.reset(recoveryReady ? "wifi_setup_start_failed" : recovery_.error());
-        if (!network_.begin()) recovery_.reset("wifi_restore_failed");
-        client_.endNetworkSetup();
-        return;
-      }
-    }
-    provisioning_.loop();
-    recovery_.run(millis());
-    if (recovery_.state() == FlovaWifiRecovery::State::Committed ||
-        recovery_.state() == FlovaWifiRecovery::State::Cancelled ||
-        recovery_.state() == FlovaWifiRecovery::State::Finished) {
-      if (recovery_.finish() && provisioning_.stopProvisioning()) {
-        recovery_.reset();
-        client_.endNetworkSetup();
-      }
-    }
+    recovery_.serviceSetup(client_, provisioning_, clock_);
   }
   bool startWifiSetup() { return client_.beginNetworkSetup(); }
   bool cancelWifiSetup() {
@@ -110,24 +90,7 @@ class FlovaEsp8266 final {
   bool flovaOnWrite(const char* key, flova::ValueType valueType,
                     FlovaDatastreamBinding<T>& binding) {
     (void)valueType;
-    auto stream = client_.datastream<T>(key);
-    switch (binding.kind) {
-      case FlovaDatastreamHandlerKind::Result:
-        stream.onWrite(binding.handler.result);
-        break;
-      case FlovaDatastreamHandlerKind::ResultWithContext:
-        stream.onWrite(binding.handler.resultContext, binding.context);
-        break;
-      case FlovaDatastreamHandlerKind::Void:
-        stream.onWrite(binding.handler.voidHandler);
-        break;
-      case FlovaDatastreamHandlerKind::VoidWithContext:
-        stream.onWrite(binding.handler.voidContext, binding.context);
-        break;
-      default:
-        return false;
-    }
-    return true;
+    return binding.attach(client_.datastream<T>(key));
   }
   template <typename T>
   bool flovaMode(const char* key, flova::Mode value) {

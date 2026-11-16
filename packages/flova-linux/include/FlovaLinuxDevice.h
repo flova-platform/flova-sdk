@@ -17,6 +17,8 @@ class FlovaLinux {
   FlovaLinux();
   explicit FlovaLinux(const Config& config);
   ~FlovaLinux();
+  FlovaLinux(const FlovaLinux&) = delete;
+  FlovaLinux& operator=(const FlovaLinux&) = delete;
 
   bool begin();
   void run();

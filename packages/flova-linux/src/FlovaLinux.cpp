@@ -19,13 +19,13 @@ uint64_t monotonicMs() {
          static_cast<uint64_t>(value.tv_nsec) / 1000000ULL;
 }
 
-bool safeComponent(const char* value) {
+bool safeComponent(const char* value, bool storageKey = false) {
   if (!value || !value[0]) return false;
   for (const char* cursor = value; *cursor; ++cursor) {
     if (!(('a' <= *cursor && *cursor <= 'z') ||
           ('A' <= *cursor && *cursor <= 'Z') ||
           ('0' <= *cursor && *cursor <= '9') || *cursor == '_' ||
-          *cursor == '-' || *cursor == '.'))
+          *cursor == '-' || *cursor == '.' || (storageKey && *cursor == ':')))
       return false;
   }
   return strcmp(value, ".") != 0 && strcmp(value, "..") != 0;
@@ -42,7 +42,9 @@ bool makeDirectory(const char* path) {
     if (::mkdir(buffer, 0750) != 0 && errno != EEXIST) return false;
     *cursor = '/';
   }
-  return ::mkdir(buffer, 0750) == 0 || errno == EEXIST;
+  if (::mkdir(buffer, 0750) != 0 && errno != EEXIST) return false;
+  struct stat info = {};
+  return stat(buffer, &info) == 0 && S_ISDIR(info.st_mode);
 }
 
 bool copyFile(const char* source, const char* destination, uint32_t expected,
@@ -127,7 +129,9 @@ FileStorage::FileStorage(const char* directory) : directory_{} {
 bool FileStorage::begin() { return directory_[0] && makeDirectory(directory_); }
 
 bool FileStorage::pathFor(const char* key, char* output, size_t capacity) const {
-  if (!safeComponent(key) || !output ||
+  // Runtime records use colon-separated namespaces. They are single POSIX
+  // filename components; OTA version names retain the stricter validation.
+  if (!safeComponent(key, true) || !output ||
       snprintf(output, capacity, "%s/%s", directory_, key) >=
           static_cast<int>(capacity))
     return false;

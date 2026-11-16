@@ -60,6 +60,23 @@ struct FlovaDatastreamBinding {
   } handler = {};
   void* context = nullptr;
 
+  // Copy the callback and its application context into the runtime. The
+  // runtime never borrows this binding or a temporary stream helper.
+  bool attach(flova::Datastream<T> stream) const {
+    switch (kind) {
+      case FlovaDatastreamHandlerKind::Result:
+        stream.onWrite(handler.result); break;
+      case FlovaDatastreamHandlerKind::ResultWithContext:
+        stream.onWrite(handler.resultContext, context); break;
+      case FlovaDatastreamHandlerKind::Void:
+        stream.onWrite(handler.voidHandler); break;
+      case FlovaDatastreamHandlerKind::VoidWithContext:
+        stream.onWrite(handler.voidContext, context); break;
+      default: return false;
+    }
+    return true;
+  }
+
   static flova::WriteResult dispatch(void* context,
                                      const FlovaDatastreamCommand& command) {
     FlovaDatastreamBinding& binding = *static_cast<FlovaDatastreamBinding*>(context);

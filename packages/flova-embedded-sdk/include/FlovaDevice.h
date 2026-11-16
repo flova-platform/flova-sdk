@@ -454,15 +454,9 @@ class Device {
     }
     if (unit.kind == config::UnitKind::Datastream) {
       ValueType type;
-      if (unit.data.datastream.valueType == 0) type = ValueType::Boolean;
-      else if (unit.data.datastream.valueType == 1) type = ValueType::Int64;
-      else if (unit.data.datastream.valueType == 2) type = ValueType::Float;
-      else if (unit.data.datastream.valueType == 3) type = ValueType::Double;
-      else if (unit.data.datastream.valueType == 4) type = ValueType::Text;
-      else return false;
+      if (!configurationValueType(unit.data.datastream.valueType, type)) return false;
       if (!flovaValidDatastreamId(unit.data.datastream.id)) return false;
-      State* current = nullptr;
-      for (size_t i = 0; i < count_; ++i) if (states_[i].id == unit.data.datastream.id) { current = &states_[i]; break; }
+      State* current = stateForId(unit.data.datastream.id);
       State* named = find(unit.data.datastream.key, type);
       if (current && named && current != named) return false;
       if (!current) current = named ? named : state(unit.data.datastream.key, type);
@@ -475,8 +469,7 @@ class Device {
       return true;
     }
     if (unit.kind == config::UnitKind::Safety) {
-      State* current = 0;
-      for (size_t i = 0; i < count_; ++i) if (states_[i].id == unit.data.safety.datastreamId) { current = &states_[i]; break; }
+      State* current = stateForId(unit.data.safety.datastreamId);
       if (!current) return false;
       Descriptor descriptor;
       const size_t slot = static_cast<size_t>(current - states_);
@@ -868,7 +861,7 @@ class Device {
   void receive(const Message& message) {
     if (message.kind == MessageKind::TimeResponse) return acceptTime(message);
     if (message.kind == MessageKind::Acknowledgement) {
-      acknowledgeDelivery(message.messageId);
+      settleDelivery(message.messageId, false);
       return;
     }
     if (message.kind == MessageKind::FlowControl) {
@@ -876,7 +869,7 @@ class Device {
       return;
     }
     if (message.kind == MessageKind::Rejection) {
-      rejectDelivery(message.messageId);
+      settleDelivery(message.messageId, true);
       return;
     }
     if (message.kind != MessageKind::WriteRequest) return;
@@ -904,8 +897,7 @@ class Device {
       acknowledge(message, result, nullptr);
       return;
     }
-    State* current = 0;
-    for (size_t i = 0; i < count_; ++i) if (states_[i].id == message.datastreamId) { current = &states_[i]; break; }
+    State* current = stateForId(message.datastreamId);
     if (!current) return acknowledge(message, WriteResult::reject("unknown_datastream"), 0);
     if (message.expiresAtUtcMs && (!clock_.utcValid() || clock_.utcMilliseconds() >= message.expiresAtUtcMs)) return acknowledge(message, WriteResult::reject(clock_.utcValid() ? "command_expired" : "utc_time_required"), current);
     bool stale = message.revision && message.revision <= current->lastCloudRevision;
@@ -1014,9 +1006,8 @@ class Device {
     if (!safe(state, value)) return WriteResult::reject(state.safetyPolicy == 1 || state.safetyPolicy == 3 ? "safety_minimum" : "safety_maximum");
     if (!link_.connected() && state.offline == OfflinePolicy::Reject)
       return WriteResult::reject("offline_delivery_required");
-    if (state.hasValue && readValue(state) == value && !state.restorePending)
-      return WriteResult::noChange();
-    if (state.hasValue && readValue(state) == value && state.restorePending) {
+    if (state.hasValue && readValue(state) == value) {
+      if (!state.restorePending) return WriteResult::noChange();
       WriteResult result = invoke(state, value);
       if (result.accepted()) {
         state.restorePending = false;
@@ -1069,15 +1060,6 @@ class Device {
     return WriteResult::accept();
   }
 
-  static bool toValue(const config::Value& source, Value& target) {
-    if (source.kind == config::ValueKind::Boolean) { target = Value::from(source.data.boolean); return true; }
-    if (source.kind == config::ValueKind::Int64) { target = Value::from(source.data.integer); return true; }
-    if (source.kind == config::ValueKind::Float32) { target = Value::from(source.data.float32); return true; }
-    if (source.kind == config::ValueKind::Float64) { target = Value::from(source.data.float64); return true; }
-    if (source.kind == config::ValueKind::Text) { target = Value::from(source.data.text); return true; }
-    return false;
-  }
-
   static bool configurationValueType(uint8_t input, ValueType& output) {
     if (input == 0) output = ValueType::Boolean;
     else if (input == 1) output = ValueType::Int64;
@@ -1100,11 +1082,6 @@ class Device {
       if (descriptor.safetyMaximum.compare(value) > 0) return false;
     }
     return true;
-  }
-
-  static double numeric(const Value& value) {
-    if (value.type == ValueType::Int64) return static_cast<double>(value.scalar.integer);
-    return value.type == ValueType::Float ? value.scalar.floating : value.scalar.number;
   }
 
   void setWrite(State* s, WriteResult (*h)(bool)) { if (s) { s->writeHandler.boolResult = h; s->writeKind = WriteHandlerKind::BoolResult; } }
@@ -1431,7 +1408,23 @@ class Device {
     const uint64_t now = clock_.milliseconds();
     if (historyLastSentAt_ && now - historyLastSentAt_ < 5000) return;
     if (!readHistory(historyHead_)) return;
-    HistoryRecord& record = historyWorkspace_; Message message; message.kind = MessageKind::StateUpdate; message.messageId = record.messageId; message.datastreamId = record.datastreamId; message.value = record.value; message.timestamp = record.timestamp; message.monotonic = record.monotonic; message.origin = record.origin; message.revision = record.revision; if (link_.send(message)) historyLastSentAt_ = now ? now : 1;
+    const HistoryRecord& record = historyWorkspace_;
+    Message message;
+    message.kind = MessageKind::StateUpdate;
+    message.messageId = record.messageId;
+    message.datastreamId = record.datastreamId;
+    message.value = record.value;
+    message.timestamp = record.timestamp;
+    message.monotonic = record.monotonic;
+    message.origin = record.origin;
+    message.revision = record.revision;
+    if (link_.send(message)) {
+      historyLastSentAt_ = now ? now : 1;
+    } else {
+      // Backpressure must not reread the same flash record every loop. Reuse
+      // the existing read-failure cooldown; retain its ID and durable contents.
+      historyReadRetryAt_ = now + 1000;
+    }
   }
   bool dropOldest(bool expired, bool dropped) {
     const size_t oldHead = historyHead_;
@@ -1546,21 +1539,12 @@ class Device {
     return false;
   }
 
-  void acknowledgeDelivery(uint64_t messageId) {
-    if (!messageId || finishResult(messageId, false)) return;
-    if (finishDelivery(messageId, false)) return;
+  void settleDelivery(uint64_t messageId, bool rejected) {
+    if (!messageId || finishResult(messageId, rejected)) return;
+    if (finishDelivery(messageId, rejected)) return;
     if (historyCount_ && ensureHistoryHead() && historyHeadMessageId_ == messageId) {
-      dropOldest(false, false);
-      historyLastSentAt_ = 0;
-    }
-  }
-
-  void rejectDelivery(uint64_t messageId) {
-    if (!messageId || finishResult(messageId, true)) return;
-    if (finishDelivery(messageId, true)) return;
-    if (historyCount_ && ensureHistoryHead() && historyHeadMessageId_ == messageId) {
-      dropOldest(false, true);
-      diagnostics_.rejectedDeliveries++;
+      dropOldest(false, rejected);
+      if (rejected) ++diagnostics_.rejectedDeliveries;
       historyLastSentAt_ = 0;
     }
   }
