@@ -134,6 +134,8 @@ def arguments(argv):
     parser.add_argument("--output", type=Path, help="new private artifact directory; must not exist")
     parser.add_argument("--flash", action="store_true",
                         help="authorize backup, test uploads, full erase, and original-flash restoration")
+    parser.add_argument("--disposable", action="store_true",
+                        help="with --flash, erase without backup and leave the test image installed")
     parser.add_argument("--port", help="explicit serial port; required with --flash")
     parser.add_argument("--benchmark", action="store_true", help="explicitly enable 200 ms stress telemetry during acceptance")
     parser.add_argument("--smoke", action="store_true",
@@ -147,6 +149,8 @@ def arguments(argv):
     args = parser.parse_args(argv)
     if args.flash and not args.port:
         parser.error("--flash requires an explicit --port")
+    if args.disposable and not args.flash:
+        parser.error("--disposable requires --flash")
     if args.keep_running and not args.flash:
         parser.error("--keep-running requires --flash")
     if args.smoke and (args.benchmark or args.keep_running):
@@ -243,7 +247,7 @@ def main(argv=None):
                                         "--without-uploading", "--without-testing"])
         build = run("compile-harness", ["pio", "run", "-d", output, "-e", "board-e2e"])
         report["build_resources"] = [line.strip() for line in build.splitlines()
-                                     if any(label in line for label in ("RAM:", "Flash:", "IRAM:"))]
+                                     if line.lstrip().startswith(("RAM:", "Flash:"))]
         image = output / ".pio/build/board-e2e/firmware.bin"
         if image.is_file():
             report["firmware_sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
@@ -257,11 +261,14 @@ def main(argv=None):
             detected = re.search(r"Detected flash size: (\d+)MB", identity)
             if not detected or int(detected[1]) * 1024 * 1024 != board.flash_bytes:
                 raise RuntimeError("board flash size does not match the reviewed board profile")
-            backup = output / "original-flash.bin"
-            run("backup-flash", tool + ["read_flash", "0", str(board.flash_bytes), backup])
-            if backup.stat().st_size != board.flash_bytes:
-                raise RuntimeError("incomplete full-flash backup; refusing to upload")
-            report["original_flash_sha256"] = hashlib.sha256(backup.read_bytes()).hexdigest()
+            if args.disposable:
+                report["restoration"] = "skipped-disposable"
+            else:
+                backup = output / "original-flash.bin"
+                run("backup-flash", tool + ["read_flash", "0", str(board.flash_bytes), backup])
+                if backup.stat().st_size != board.flash_bytes:
+                    raise RuntimeError("incomplete full-flash backup; refusing to upload")
+                report["original_flash_sha256"] = hashlib.sha256(backup.read_bytes()).hexdigest()
             with LocalIngress(output, config):
                 modified = True  # Restore even when an upload/erase is interrupted.
                 if not args.smoke:
@@ -297,8 +304,10 @@ def main(argv=None):
                                                  "exit_code": 0 if monitor_ok else 1})
                     if args.keep_running:
                         monitor.command("l", "started")
-                        report.update(status="passed", restoration="pending-live-session", live=True,
+                        report.update(status="passed", live=True,
                                       pid=os.getpid(), serial_port=args.port)
+                        if not args.disposable:
+                            report["restoration"] = "pending-live-session"
                         (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
                         print(f"Acceptance passed; live telemetry active: {output / 'report.json'}", flush=True)
                         try:
@@ -316,7 +325,7 @@ def main(argv=None):
         report["error"] = redact(str(error) or "interrupted", config)
         print(report["error"], file=sys.stderr)
     finally:
-        if modified:
+        if modified and not args.disposable:
             # Do not interrupt the recovery transaction with a second Ctrl+C.
             old_signals = {s: signal.signal(s, signal.SIG_IGN) for s in (signal.SIGINT, signal.SIGTERM)}
             try:

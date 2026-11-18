@@ -91,6 +91,10 @@ Build only (default; no serial access, listeners, erase or upload):
 python scripts/test_board.py --config .local/board-e2e-config.json
 ```
 
+For a board dedicated to destructive tests, add `--disposable` to a
+`--flash` command. The runner verifies board identity and flash size, skips
+backup and restoration, and leaves the test firmware installed.
+
 Full hardware run, with explicit authorization to modify the selected board:
 
 ```sh
@@ -161,7 +165,7 @@ project, including Unity uploads: the platform's older uploader can fail with
 CH340 USB control-line errors. Normal SDK platform profiles are unchanged.
 The E2E image uses the default MMU and DRAM heap with 2,048/512-byte TLS
 buffers. A temporary HAProxy edge bounds server TLS records to 2,048 bytes;
-certificate verification stays enabled. No optional IRAM heap is used.
+certificate verification stays enabled. The board uses the stock DRAM allocator.
 
 Only temperature and humidity are published. Normal operation sends one batch
 per minute. `--benchmark` explicitly selects 200 ms test traffic, still subject

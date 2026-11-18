@@ -241,7 +241,12 @@ class RunnerSafetyTests(unittest.TestCase):
             self.assertEqual(result, 1)
             self.assertEqual(report.read_text(), "existing user artifact")
 
-    def test_failed_upload_still_restores_full_flash(self):
+    def test_failed_upload_restoration_matches_fixture_mode(self):
+        for disposable in (False, True):
+            with self.subTest(disposable=disposable):
+                self.check_failed_upload_restoration(disposable)
+
+    def check_failed_upload_restoration(self, disposable):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / ".local").mkdir()
@@ -272,12 +277,16 @@ class RunnerSafetyTests(unittest.TestCase):
                  patch.object(runner.subprocess, "check_output", return_value="test-revision"), \
                  patch.dict("sys.modules", {"serial": MagicMock()}), \
                  patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()):
-                result = runner.main(["--config", str(config), "--output", str(output),
-                                      "--flash", "--keep-running", "--port", "/dev/test-board"])
+                args = ["--config", str(config), "--output", str(output),
+                        "--flash", "--keep-running", "--port", "/dev/test-board"]
+                if disposable:
+                    args.append("--disposable")
+                result = runner.main(args)
             report = json.loads((output / "report.json").read_text())
             self.assertEqual(result, 1)
-            self.assertEqual(report["restoration"], "verified")
-            self.assertTrue(any("write_flash" in c for c in commands))
+            self.assertEqual(report["restoration"], "skipped-disposable" if disposable else "verified")
+            self.assertEqual(any("read_flash" in c for c in commands), not disposable)
+            self.assertEqual(any("write_flash" in c for c in commands), not disposable)
             self.assertFalse(any("erase_flash" in c for c in commands))
 
     def test_live_session_writes_acceptance_before_wait_and_restores_on_stop(self):
