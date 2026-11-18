@@ -21,6 +21,15 @@ class Entropy final : public FlovaEntropySource {
     return static_cast<uint8_t>(millis() ^ reinterpret_cast<uintptr_t>(this));
   }
 };
+
+FlovaLinux::Config configFromEnvironment() {
+  FlovaLinux::Config config = {std::getenv("FLOVA_LINK_URL"),
+                              std::getenv("FLOVA_DEVICE_ID"),
+                              std::getenv("FLOVA_DEVICE_SECRET"),
+                              std::getenv("FLOVA_STATE_DIRECTORY")};
+  if (!config.stateDirectory) config.stateDirectory = "/var/lib/flova/device";
+  return config;
+}
 }  // namespace
 
 struct FlovaLinux::Impl::State {
@@ -84,12 +93,12 @@ flova::WriteResult FlovaLinux::Impl::write(const char* key, const T& value) {
 
 template <typename T>
 bool FlovaLinux::Impl::hasValue(const char* key) const {
-  return const_cast<flova::Device&>(state_->device).datastream<T>(key).hasValue();
+  return state_->device.datastream<T>(key).hasValue();
 }
 
 template <typename T>
 T FlovaLinux::Impl::value(const char* key) const {
-  return const_cast<flova::Device&>(state_->device).datastream<T>(key).value();
+  return state_->device.datastream<T>(key).value();
 }
 
 template <typename T>
@@ -130,10 +139,7 @@ template bool FlovaLinux::Impl::onWrite<float>(const char*, flova::ValueType, Fl
 template bool FlovaLinux::Impl::onWrite<double>(const char*, flova::ValueType, FlovaDatastreamBinding<double>&);
 template bool FlovaLinux::Impl::onWrite<flova::Text>(const char*, flova::ValueType, FlovaDatastreamBinding<flova::Text>&);
 
-FlovaLinux::FlovaLinux()
-    : impl_(new Impl({getenv("FLOVA_LINK_URL"), getenv("FLOVA_DEVICE_ID"),
-                      getenv("FLOVA_DEVICE_SECRET"),
-                      getenv("FLOVA_STATE_DIRECTORY") ?: "/var/lib/flova/device"})) {}
+FlovaLinux::FlovaLinux() : FlovaLinux(configFromEnvironment()) {}
 FlovaLinux::FlovaLinux(const Config& config) : impl_(new Impl(config)) {}
 FlovaLinux::~FlovaLinux() { delete impl_; }
 bool FlovaLinux::begin() { return impl_->begin(); }

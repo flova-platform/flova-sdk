@@ -5,6 +5,10 @@
 
 #include <FlovaCustomCode.h>
 
+class FlovaLinux;
+template <>
+struct flova::detail::UseResolvedDatastream<FlovaLinux> : std::true_type {};
+
 class FlovaLinux {
  public:
   struct Config {

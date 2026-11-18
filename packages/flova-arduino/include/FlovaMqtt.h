@@ -20,8 +20,7 @@ class FlovaMqtt final {
   FlovaMqtt(const FlovaMqtt&) = delete;
   FlovaMqtt& operator=(const FlovaMqtt&) = delete;
 
-  // TLS is already open and verified by the board. CONNECT is the only
-  // blocking MQTT operation, called during the existing paused handshake.
+  // TLS is already open and verified by the board. poll() completes the session.
   bool connect(const char* principal, const char* password, const char* epoch,
                FrameHandler handler, void* context) {
     reset();
@@ -59,28 +58,24 @@ class FlovaMqtt final {
     willInfo.qos = MQTTQoS1;
     willInfo.pTopicName = will_;
     willInfo.topicNameLength = static_cast<uint16_t>(strlen(will_));
-    bool sessionPresent = false;
-    handshaking_ = true;
-    const MQTTStatus_t result = MQTT_Connect(&mqtt_, &info, &willInfo, 3000,
-                                           &sessionPresent, nullptr, nullptr);
-    lastStatus_ = result;
-    handshaking_ = false;
-    if (result != MQTTSuccess || sessionPresent) return fail();
-    connected_ = true;
-    MQTTSubscribeInfo_t subscription = {};
-    subscription.qos = MQTTQoS1;
-    subscription.pTopicFilter = down_;
-    subscription.topicFilterLength = static_cast<uint16_t>(strlen(down_));
-    subscriptionId_ = MQTT_GetPacketId(&mqtt_);
-    lastStatus_ = MQTT_Subscribe(&mqtt_, &subscription, 1, subscriptionId_, nullptr);
-    if (lastStatus_ != MQTTSuccess || !flush())
-      return fail();
+    lastStatus_ = MQTT_FlovaStartCleanConnect(&mqtt_, &info, &willInfo);
+    if (lastStatus_ != MQTTSuccess) return fail();
+    awaitingConnack_ = true;
     openedAt_ = millis();
-    return true;
+    return flush() || fail();
   }
 
   bool poll() {
-    if (!connected_ || failed_ || !platform_.connected() || !flush()) return fail();
+    if (failed_ || !platform_.connected() || !flush()) return fail();
+    if (awaitingConnack_) {
+      if (millis() - openedAt_ >= 3000UL) {
+        lastStatus_ = MQTTNoDataAvailable;
+        return fail();
+      }
+      if (txLength_ || platform_.linkWriteBusy()) return true;
+      return pollConnack();
+    }
+    if (!connected_) return fail();
     if (!subscribed_ && millis() - openedAt_ >= 10000UL) return fail();
     for (size_t i = 0; i < kInflight; ++i)
       if (packetIds_[i] && millis() - sentAt_[i] >= 15000UL) return fail();
@@ -118,7 +113,10 @@ class FlovaMqtt final {
     return true;
   }
   void reset() {
-    connected_ = subscribed_ = failed_ = handshaking_ = false;
+    connected_ = subscribed_ = failed_ = awaitingConnack_ = false;
+    connackTypeSeen_ = connackLengthComplete_ = false;
+    connackLengthBytes_ = 0;
+    connackLength_ = connackRead_ = 0;
     txLength_ = txOffset_ = 0;
     memset(packetIds_, 0, sizeof(packetIds_));
     memset(outgoing_, 0, sizeof(outgoing_));
@@ -128,6 +126,65 @@ class FlovaMqtt final {
  private:
   static uint32_t clock() { return millis(); }
   bool fail() { failed_ = true; return false; }
+
+  bool badConnack() {
+    lastStatus_ = MQTTBadResponse;
+    return fail();
+  }
+
+  bool pollConnack() {
+    // Only the fixed header is assembled here. coreMQTT validates the body
+    // once it is complete. Leave the following packet for its normal loop.
+    for (size_t i = 0; i < 64 && platform_.available() > 0; ++i) {
+      const int byte = platform_.read();
+      if (byte < 0) {
+        lastStatus_ = MQTTRecvFailed;
+        return fail();
+      }
+      if (!connackTypeSeen_) {
+        if (byte != MQTT_PACKET_TYPE_CONNACK) return badConnack();
+        connackTypeSeen_ = true;
+      } else if (!connackLengthComplete_) {
+        const size_t part = static_cast<size_t>(byte & 0x7f);
+        if (connackLengthBytes_ >= 2) return badConnack();
+        connackLength_ += part << (7 * connackLengthBytes_);
+        if (connackLength_ >= sizeof(rx_)) return badConnack();
+        if (byte & 0x80) {
+          ++connackLengthBytes_;
+          continue;
+        }
+        if ((!part && connackLengthBytes_) || connackLength_ < 3 ||
+            connackLength_ + connackLengthBytes_ + 2 > sizeof(rx_)) return badConnack();
+        connackLengthComplete_ = true;
+      } else {
+        rx_[connackRead_++] = static_cast<uint8_t>(byte);
+        if (connackRead_ == connackLength_) return subscribe();
+      }
+    }
+    return true;
+  }
+
+  bool subscribe() {
+    MQTTPacketInfo_t packet = {};
+    packet.type = MQTT_PACKET_TYPE_CONNACK;
+    packet.remainingLength = connackLength_;
+    packet.pRemainingData = rx_;
+    lastStatus_ = MQTT_FlovaFinishCleanConnect(&mqtt_, &packet);
+    if (lastStatus_ != MQTTSuccess) return fail();
+    mqtt_.lastPacketRxTime = millis();
+
+    MQTTSubscribeInfo_t subscription = {};
+    subscription.qos = MQTTQoS1;
+    subscription.pTopicFilter = down_;
+    subscription.topicFilterLength = static_cast<uint16_t>(strlen(down_));
+    subscriptionId_ = MQTT_GetPacketId(&mqtt_);
+    lastStatus_ = MQTT_Subscribe(&mqtt_, &subscription, 1, subscriptionId_, nullptr);
+    if (lastStatus_ != MQTTSuccess || !flush()) return fail();
+    awaitingConnack_ = false;
+    connected_ = true;
+    openedAt_ = millis();
+    return true;
+  }
 
   // Platform submissions copy their input. Keep unsent bytes in owned storage,
   // splitting at 512 bytes so existing board TX budgets need not grow.
@@ -153,7 +210,6 @@ class FlovaMqtt final {
   static int32_t receive(NetworkContext_t* network, void* bytes, size_t length) {
     FlovaMqtt& self = *reinterpret_cast<FlovaMqtt*>(network);
     if (!self.flush() || !self.platform_.connected()) return -1;
-    if (self.handshaking_) delay(1);
     // Bound bytes and therefore complete MQTT packets processed per SDK tick.
     const size_t limit = length > 64 ? 64 : length;
     uint8_t* output = static_cast<uint8_t*>(bytes);
@@ -206,8 +262,11 @@ class FlovaMqtt final {
   uint32_t sentAt_[kInflight] = {};
   uint16_t subscriptionId_ = 0;
   uint32_t openedAt_ = 0;
+  size_t connackLength_ = 0, connackRead_ = 0;
+  uint8_t connackLengthBytes_ = 0;
   char up_[112] = {}, down_[112] = {}, will_[112] = {}, clientId_[85] = {};
   FrameHandler handler_ = nullptr;
   void* context_ = nullptr;
-  bool connected_ = false, subscribed_ = false, failed_ = false, handshaking_ = false;
+  bool connected_ = false, subscribed_ = false, failed_ = false, awaitingConnack_ = false;
+  bool connackTypeSeen_ = false, connackLengthComplete_ = false;
 };

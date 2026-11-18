@@ -16,6 +16,8 @@ Both concrete classes expose the same typed application API; the application
 retains ownership of GPIO, sensors, and application work. `begin()` restores
 saved networking or starts SoftAP provisioning on a fresh device. These standard
 classes own Wi-Fi and managed restart policy starting with 0.5.0.
+`FlovaEsp32Ble` provides ESP32 with BLE setup. BLE handles provisioning, and
+the device uses its network connection for runtime Link traffic.
 `FlovaUniversalEsp32` and `FlovaUniversalEsp8266` are the full-device, no-code
 compositions. Advanced Arduino ports may include `<FlovaArduino.h>` and compose
 `FlovaClient` with their own Link, temporary provisioning, runtime network, TLS
@@ -34,6 +36,18 @@ manual application-owned hardware handlers. These opt into durable setup and
 support Wi-Fi-only replacement without deleting Flova identity. Applications
 that own networking use explicit `FlovaClient` composition. Link uses CBOR over
 MQTT/TLS internally; a PubSubClient is not a supported facade constructor.
+Use `FlovaEsp32WithLink(link)` or `FlovaEsp8266WithLink(link)` for an injected
+transport. These facades replace the transport-taking constructors and borrow
+the link for their lifetime. Custom Link implementations should release
+retained key pointers and readers in `clearDatastreamBindings()`, and accept
+null receiver and scheduling callbacks on teardown.
+Custom hardware and provisioning adapters that retain callback contexts
+release them in `detach()` and `clearHandler()`, respectively.
+
+Configuration commit acknowledges durable storage. The running generation
+is reported after boot applies its records and hardware mappings. A failed
+candidate with a retained predecessor is rejected durably and the board
+restarts into the predecessor. Submit a newer generation to retry the change.
 The public protocol package is named `flova-link`; generated zcbor headers
 remain an internal implementation detail of that package.
 
@@ -42,7 +56,7 @@ remain an internal implementation detail of that package.
 `examples/custom-board-basic`.
 
 Linux applications install `Flova::Linux` with CMake and include
-`FlovaLinux.h`. `FlovaLinux` owns the POSIX services and nonblocking WSS
-transport while applications retain their event loop and hardware ownership.
+`FlovaLinux.h`. `FlovaLinux` owns the POSIX services and MQTT/TLS transport
+while applications retain their event loop and hardware ownership.
 Raspberry Pi service startup and executable activation remain supervisor
 responsibilities.

@@ -31,6 +31,11 @@ class ArduinoFlovaHardware final : public flova::Hardware {
   }
 
   void attach(flova::Device& device) override { device_ = &device; }
+  void detach(flova::Device& device) override {
+    if (device_ != &device) return;
+    resetConfiguration();
+    device_ = nullptr;
+  }
   void setFactoryResetHandler(void (*handler)(void*), void* context) override {
     factoryResetHandler_ = handler;
     factoryResetContext_ = context;

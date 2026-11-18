@@ -4409,6 +4409,78 @@ MQTTStatus_t MQTT_CheckConnectStatus( const MQTTContext_t * pContext )
 
 /*-----------------------------------------------------------*/
 
+MQTTStatus_t MQTT_FlovaStartCleanConnect( MQTTContext_t * pContext,
+                                         const MQTTConnectInfo_t * pConnectInfo,
+                                         const MQTTPublishInfo_t * pWillInfo )
+{
+    uint8_t propertyBytes[ 5 ];
+    MQTTPropBuilder_t properties = { 0 };
+    uint32_t remainingLength = 0U;
+    uint32_t packetSize = 0U;
+    MQTTStatus_t status;
+
+    if( ( pContext == NULL ) || ( pConnectInfo == NULL ) ||
+        !pConnectInfo->cleanSession || ( pContext->connectStatus != MQTTNotConnected ) ||
+        CHECK_SIZE_T_OVERFLOWS_32BIT( pContext->networkBuffer.size ) )
+    {
+        return MQTTBadParameter;
+    }
+    properties.pBuffer = propertyBytes;
+    properties.bufferLength = sizeof( propertyBytes );
+    status = MQTTPropAdd_MaxPacketSize( &properties, ( uint32_t ) pContext->networkBuffer.size, NULL );
+    if( status == MQTTSuccess )
+    {
+        status = MQTT_GetConnectPacketSize( pConnectInfo, pWillInfo, &properties,
+                                            NULL, &remainingLength, &packetSize );
+    }
+    if( status == MQTTSuccess )
+    {
+        status = sendConnectWithoutCopy( pContext, pConnectInfo, pWillInfo, remainingLength,
+                                         &properties, NULL );
+    }
+    return status;
+}
+
+MQTTStatus_t MQTT_FlovaFinishCleanConnect( MQTTContext_t * pContext,
+                                          const MQTTPacketInfo_t * pConnack )
+{
+    bool sessionPresent = false;
+    MQTTPropBuilder_t properties = { 0 };
+    MQTTStatus_t status;
+    if( ( pContext == NULL ) || ( pConnack == NULL ) ||
+        ( pContext->connectStatus != MQTTNotConnected ) )
+    {
+        return MQTTBadParameter;
+    }
+    status = MQTT_DeserializeConnAck( pConnack, &sessionPresent, &properties,
+                                      &pContext->connectionProperties );
+    if( status != MQTTSuccess )
+    {
+        return status;
+    }
+    if( sessionPresent )
+    {
+        return MQTTBadResponse;
+    }
+    if( pContext->connectionProperties.receiveMax < pContext->incomingPublishRecordMaxCount )
+    {
+        pContext->incomingPublishRecordMaxCount = pContext->connectionProperties.receiveMax;
+    }
+    if( pContext->connectionProperties.serverReceiveMax < pContext->outgoingPublishRecordMaxCount )
+    {
+        pContext->outgoingPublishRecordMaxCount = pContext->connectionProperties.serverReceiveMax;
+    }
+    status = handleCleanSession( pContext );
+    if( status == MQTTSuccess )
+    {
+        pContext->connectStatus = MQTTConnected;
+        pContext->keepAliveIntervalSec = pContext->connectionProperties.serverKeepAlive;
+        pContext->waitingForPingResp = false;
+        pContext->pingReqSendTimeMs = 0U;
+    }
+    return status;
+}
+
 MQTTStatus_t MQTT_Connect( MQTTContext_t * pContext,
                            const MQTTConnectInfo_t * pConnectInfo,
                            const MQTTPublishInfo_t * pWillInfo,

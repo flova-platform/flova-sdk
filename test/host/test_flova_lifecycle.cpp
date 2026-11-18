@@ -93,16 +93,20 @@ class TestProvisioning final : public FlovaProvisioningAdapter {
 class TestHardware final : public flova::Hardware {
  public:
   void attach(flova::Device&) override {}
-  bool apply(const flova::config::Unit&) override { return true; }
+  bool apply(const flova::config::Unit&) override { return !failApply; }
+  void failSafe() override { ++safeCalls; }
   void run() override {}
   void setConnected(bool value) override { connected = value; }
   bool connected = false;
+  bool failApply = false;
+  unsigned safeCalls = 0;
 };
 
 class TestLink final : public FlovaClientLink {
  public:
-  bool begin() override { return true; }
+  bool begin() override { return beginAllowed; }
   bool bindDatastreams(const char* const*, size_t count, DatastreamId* ids) override {
+    hasBindings = count != 0;
     for (size_t i = 0; i < count; ++i) ids[i] = static_cast<DatastreamId>(i + 1);
     return true;
   }
@@ -114,6 +118,11 @@ class TestLink final : public FlovaClientLink {
     receiver_ = receiver;
     context_ = context;
   }
+  void schedulingDeclarations(flova::SchedulingReader reader, void*, size_t) override {
+    hasScheduler = reader != nullptr;
+  }
+  void clearDatastreamBindings() override { hasBindings = false; }
+  bool callbacksDetached() const { return !receiver_ && !context_ && !hasBindings && !hasScheduler; }
   uint32_t messageNonce() const override { return 1; }
   bool configure(const char*, const char*, const char*) override { return true; }
   bool beginBootstrap(const char*, const char*, const char*, const char*,
@@ -194,6 +203,9 @@ class TestLink final : public FlovaClientLink {
   }
 
   bool online = false;
+  bool beginAllowed = true;
+  bool hasBindings = false;
+  bool hasScheduler = false;
   bool logSupport = false;
   uint64_t logAck = 0;
   std::vector<FlovaLinkLifecycleReport> logReports;
@@ -258,6 +270,89 @@ void seedRuntimeConfiguration(TestStorage& storage) {
   end.checksum = begin.checksum;
   assert(installer.end(end).accepted());
   assert(installer.promote(begin.generation));
+}
+
+void seedFailingGeneration(TestStorage& storage) {
+  FlovaLinkConfigurationStorage banks(storage, 64);
+  flova::config::Installer installer(banks, 64);
+  flova::config::Record record;
+  record.generation = 2;
+  record.kind = flova::config::RecordKind::Datastream;
+  record.length = 16;
+  memset(record.body, 0x5a, record.length);
+  flova::config::Digest digest;
+  digest.addRecord(record);
+  flova::config::Begin begin;
+  begin.generation = 2;
+  begin.schemaVersion = 1;
+  begin.maximumRecordBytes = flova::config::kMaximumRecordBytes;
+  begin.recordCount = 1;
+  digest.finish(begin.checksum);
+  assert(installer.begin(begin).accepted());
+  assert(installer.record(record).accepted());
+  flova::config::End end;
+  end.generation = 2;
+  end.recordCount = 1;
+  end.checksum = begin.checksum;
+  assert(installer.end(end).accepted());
+  assert(installer.promote(2));
+}
+
+void verifyLinkReuse() {
+  TestStorage storage; TestLink link; TestClock clock; TestLogger logger;
+  {
+    flova::Device first(link, storage, clock, logger);
+    assert(first.datastream<bool>("relay").valid());
+    link.beginAllowed = false;
+    assert(!first.begin());
+    assert(link.callbacksDetached());
+    link.beginAllowed = true;
+    assert(first.begin());
+    assert(!link.callbacksDetached());
+  }
+  assert(link.callbacksDetached());
+  {
+    flova::Device replacement(link, storage, clock, logger);
+    assert(replacement.begin());
+    assert(!link.callbacksDetached());
+  }
+  assert(link.callbacksDetached());
+}
+
+void verifyApplyRollback(bool interrupted) {
+  TestStorage storage;
+  seedRuntimeConfiguration(storage);
+  seedFailingGeneration(storage);
+  TestLink link; TestClock clock; TestLogger logger; TestEntropy entropy;
+  TestIdentity identity; TestNetwork network; TestTlsClock tlsClock;
+  TestProvisioning provisioning; TestHardware hardware;
+  if (interrupted) {
+    const uint32_t marker[] = {2, ~uint32_t(2)};
+    assert(storage.write("cfg_rejected", marker, sizeof(marker)));
+  } else {
+    hardware.failApply = true;
+    FlovaClient client(link, provisioning, network, tlsClock, identity, storage,
+                       clock, logger, entropy, hardware);
+    assert(client.begin());
+    for (unsigned i = 0; i < 64 && !client.restartRequired(); ++i) client.run();
+    assert(client.restartRequired() && hardware.safeCalls != 0);
+    assert(link.configurationGeneration() == 0);
+    assert(storage.records.count("cfg_rejected") == 1);
+  }
+
+  hardware.failApply = false;
+  network.online = tlsClock.clockReady = link.online = true;
+  FlovaClient recovered(link, provisioning, network, tlsClock, identity, storage,
+                        clock, logger, entropy, hardware);
+  assert(recovered.begin());
+  for (unsigned i = 0; i < 64 && !recovered.runtimeReady(); ++i) recovered.run();
+  assert(recovered.runtimeReady());
+  assert(link.configurationGeneration() == 1);
+  link.configuration.phase = FlovaLinkConfigurationPhase::Begin;
+  link.configuration.generation = 2;
+  link.configurationPending = true;
+  recovered.run();
+  assert(link.lastReport.status == FlovaLinkResultStatus::Error);
 }
 
 void verifyFreshSetup() {
@@ -466,6 +561,9 @@ void verifyOfflineLifecycleReplay() {
 }  // namespace
 
 int main() {
+  verifyLinkReuse();
+  verifyApplyRollback(false);
+  verifyApplyRollback(true);
   verifyOfflineLifecycleReplay();
   verifyConfigurationKeyIndex();
   TestLink link;
@@ -506,20 +604,19 @@ int main() {
 
   link.setConfigurationGeneration(5);
   client.run();
-  assert(observer.count == 4);
-  assert(observer.kinds[3] == FlovaStatusEventKind::ConfigurationChanged);
-  assert(observer.last.configurationGeneration == 5);
+  assert(observer.count == 3);
+  assert(observer.last.configurationGeneration == 0);
 
   link.online = false;
   client.run();
-  assert(observer.count == 5);
-  assert(observer.kinds[4] == FlovaStatusEventKind::LinkChanged);
+  assert(observer.count == 4);
+  assert(observer.kinds[3] == FlovaStatusEventKind::LinkChanged);
   assert(!observer.last.linkConnected);
 
   assert(!client.setFirmwareTarget("invalid target"));
   client.run();
-  assert(observer.count == 6);
-  assert(observer.kinds[5] == FlovaStatusEventKind::ErrorChanged);
+  assert(observer.count == 5);
+  assert(observer.kinds[4] == FlovaStatusEventKind::ErrorChanged);
   assert(strcmp(observer.last.errorCode, "invalid_firmware_target") == 0);
 
   FlovaStatusSnapshot snapshot = {};

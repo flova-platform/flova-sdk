@@ -97,6 +97,11 @@ class ArduinoDeviceLink final {
     return true;
   }
 
+  void clearDatastreamBindings() {
+    setDatastreamKeys(nullptr, 0);
+    memset(bindingKeys_, 0, sizeof(bindingKeys_));
+  }
+
   bool decodeStoredConfigurationUnit(const uint8_t* payload, size_t length,
                                      flova::config::Unit& output) {
     if (!payload || length > kPayloadBytes || !ensureWorkspace()) return false;
@@ -451,7 +456,6 @@ class ArduinoDeviceLink final {
         }
         transportOpening_ = false;
       }
-      if (platform_.linkWriteBusy()) return;
       if (!mqtt_ || !mqtt_->poll()) {
         if (bootstrap_) setBootstrapError("mqtt_handshake_failed");
         connectionAttemptFailed_ = true;

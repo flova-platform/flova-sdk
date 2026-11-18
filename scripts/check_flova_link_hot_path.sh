@@ -25,7 +25,8 @@ check() {
 }
 
 check dynamic_json 'DynamicJsonDocument|JsonDocument|ArduinoJson|deserializeJson|serializeJson'
-check heap_allocation '\b(malloc|calloc|realloc|free)[[:space:]]*\(|\b(new|delete)\b'
+# Deleted special member declarations are part of the ownership contract.
+check heap_allocation '\b(malloc|calloc|realloc|free)[[:space:]]*\(|\bnew\b|\bdelete\b[[:space:]]*[^;[:space:]]'
 check dynamic_container 'std::(vector|map|string)|\b(vector|map)<'
 check generic_cbor_tree 'CborValue|CborParser|nlohmann'
 check unconditional_yield '(^|[^_[:alnum:]])yield[[:space:]]*\('

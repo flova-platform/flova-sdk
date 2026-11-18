@@ -29,6 +29,7 @@ class FlovaEsp8266ProvisioningBase : public FlovaProvisioningAdapter {
     context_ = context;
     return true;
   }
+  void clearHandler() override { handler_ = nullptr; context_ = nullptr; }
 
   void loop() override {
     if (provisioning_) setup_->server.handleClient();

@@ -356,6 +356,12 @@ class ArduinoFlovaLink : public FlovaClientLink {
 
   bool bindingReady() const override { return bindingCount_ == 0 || bound_; }
 
+  void clearDatastreamBindings() override {
+    bindingCount_ = 0;
+    bound_ = false;
+    transport_.clearDatastreamBindings();
+  }
+
   bool readDatastreamBinding(DatastreamId* ids, size_t count) const override {
     if (count != bindingCount_ || (count && !ids) || !bindingReady()) return false;
     for (size_t i = 0; i < count; ++i) ids[i] = boundIds_[i];

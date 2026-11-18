@@ -18,28 +18,39 @@ class FlovaEsp32Entropy : public FlovaEntropySource {
   uint8_t byte() override { return static_cast<uint8_t>(esp_random()); }
 };
 
-// Managed custom firmware: application-owned pins, SDK-owned connectivity.
-class FlovaEsp32 final {
+class FlovaEsp32;
+class FlovaEsp32WithLink;
+template <>
+struct flova::detail::UseResolvedDatastream<FlovaEsp32> : std::true_type {};
+template <>
+struct flova::detail::UseResolvedDatastream<FlovaEsp32WithLink> : std::true_type {};
+
+namespace flova {
+namespace detail {
+
+class FlovaEsp32OwnedLink {
  public:
-  explicit FlovaEsp32(const char* setupPassword = FLOVA_SETUP_PASSWORD)
-      : linkPlatform_(), defaultLink_(linkPlatform_, entropy_), link_(defaultLink_),
-        provisioning_(storage_, setupPassword), network_(storage_),
-        identity_("custom_arduino_esp32"),
-        client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
-                clock_, logger_, entropy_, hardware_), recovery_(storage_, network_) {
+  explicit FlovaEsp32OwnedLink(FlovaEsp32Entropy& entropy) : link_(platform_, entropy) {}
+  FlovaClientLink& link() { return link_; }
+
+ private:
+  FlovaEsp32Platform platform_;
+  ArduinoFlovaLink link_;
+};
+
+template <typename Facade, typename Transport>
+class ManagedEsp32 {
+ protected:
+  template <typename... Args>
+  explicit ManagedEsp32(const char* setupPassword, Args&... args)
+      : transport_(entropy_, args...), provisioning_(storage_, setupPassword),
+        network_(storage_), identity_("custom_arduino_esp32"),
+        client_(transport_.link(), provisioning_, network_, tlsClock_, identity_,
+                storage_, clock_, logger_, entropy_, hardware_), recovery_(storage_, network_) {
     client_.setRestartHandler(scheduleManagedRestart, this);
   }
 
-  // Inject a board transport; the default uses CBOR over MQTT/TLS.
-  explicit FlovaEsp32(FlovaClientLink& transport)
-      : linkPlatform_(), defaultLink_(linkPlatform_, entropy_), link_(transport),
-        provisioning_(storage_, FLOVA_SETUP_PASSWORD), network_(storage_),
-        identity_("custom_arduino_esp32"),
-        client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
-                clock_, logger_, entropy_, hardware_), recovery_(storage_, network_) {
-    client_.setRestartHandler(scheduleManagedRestart, this);
-  }
-
+ public:
   bool begin() { return client_.begin(true); }
   void run() {
     client_.run();
@@ -71,11 +82,11 @@ class FlovaEsp32 final {
   }
   template <typename T>
   bool flovaHasValue(const char* key) const {
-    return const_cast<FlovaEsp32*>(this)->client_.datastream<T>(key).hasValue();
+    return const_cast<ManagedEsp32*>(this)->client_.datastream<T>(key).hasValue();
   }
   template <typename T>
   T flovaValue(const char* key) const {
-    return const_cast<FlovaEsp32*>(this)->client_.datastream<T>(key).value();
+    return const_cast<ManagedEsp32*>(this)->client_.datastream<T>(key).value();
   }
   template <typename T>
   flova::WriteResult flovaReport(const char* key, const T& value,
@@ -83,8 +94,8 @@ class FlovaEsp32 final {
     return client_.datastream<T>(key).report(value, origin);
   }
   template <typename T>
-  FlovaDatastream<T, FlovaEsp32> stream(const char* key) {
-    return FlovaDatastream<T, FlovaEsp32>(*this, key);
+  FlovaDatastream<T, Facade> stream(const char* key) {
+    return FlovaDatastream<T, Facade>(static_cast<Facade&>(*this), key);
   }
   template <typename T>
   bool flovaOnWrite(const char* key, flova::ValueType valueType,
@@ -94,23 +105,19 @@ class FlovaEsp32 final {
   }
   template <typename T>
   bool flovaMode(const char* key, flova::Mode value) {
-    client_.datastream<T>(key).mode(value);
-    return true;
+    return client_.datastream<T>(key).tryMode(value);
   }
   template <typename T>
   bool flovaOffline(const char* key, flova::OfflinePolicy value) {
-    client_.datastream<T>(key).offline(value);
-    return true;
+    return client_.datastream<T>(key).tryOffline(value);
   }
   template <typename T>
   bool flovaRetention(const char* key, const flova::HistoryRetentionPolicy& value) {
-    client_.datastream<T>(key).retention(value);
-    return true;
+    return client_.datastream<T>(key).tryRetention(value);
   }
   template <typename T>
   bool flovaPersist(const char* key, flova::PersistencePolicy value, uint32_t intervalMs = 1000) {
-    client_.datastream<T>(key).persist(value, intervalMs);
-    return true;
+    return client_.datastream<T>(key).tryPersist(value, intervalMs);
   }
   FlovaProvisioningResponse provision(const flova::ProvisioningHandoff& input) {
     return client_.provision(input);
@@ -158,12 +165,10 @@ class FlovaEsp32 final {
 
  private:
   static void scheduleManagedRestart(void* context, FlovaRestartReason) {
-    static_cast<FlovaEsp32*>(context)->recovery_.requestRestart(millis());
+    static_cast<ManagedEsp32*>(context)->recovery_.requestRestart(millis());
   }
   FlovaEsp32Entropy entropy_;
-  FlovaEsp32Platform linkPlatform_;
-  ArduinoFlovaLink defaultLink_;
-  FlovaClientLink& link_;
+  Transport transport_;
   FlovaEsp32Storage storage_;
   ArduinoFlovaClock clock_;
   ArduinoFlovaLogger logger_;
@@ -174,4 +179,21 @@ class FlovaEsp32 final {
   FlovaEsp32Identity identity_;
   FlovaClient client_;
   FlovaEsp32WifiRecovery recovery_;
+};
+
+}  // namespace detail
+}  // namespace flova
+
+class FlovaEsp32 final
+    : public flova::detail::ManagedEsp32<FlovaEsp32, flova::detail::FlovaEsp32OwnedLink> {
+ public:
+  explicit FlovaEsp32(const char* setupPassword = FLOVA_SETUP_PASSWORD)
+      : ManagedEsp32(setupPassword) {}
+};
+
+class FlovaEsp32WithLink final
+    : public flova::detail::ManagedEsp32<FlovaEsp32WithLink, flova::detail::BorrowedManagedLink> {
+ public:
+  explicit FlovaEsp32WithLink(FlovaClientLink& link, const char* setupPassword = FLOVA_SETUP_PASSWORD)
+      : ManagedEsp32(setupPassword, link) {}
 };

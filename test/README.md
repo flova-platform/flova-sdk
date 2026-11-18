@@ -18,6 +18,11 @@ ctest --test-dir /tmp/flova-core-build --output-on-failure
 pio test -e test-esp32 -e test-esp8266 --without-uploading --without-testing
 ```
 
+On an erased, disposable ESP8266, the `test-architecture-esp8266` target
+seeds two configuration banks, injects a hardware apply failure, and verifies
+the previous generation after a real reboot. The fixture uses on-board
+storage and does not require Wi-Fi or a broker.
+
 Keep board-specific hardware tests in a `test_*` PlatformIO suite and keep
 portable behavior in `host/`. Do not add another wrapper directory between
 `test/` and either test kind.

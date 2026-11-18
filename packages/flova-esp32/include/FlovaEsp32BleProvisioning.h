@@ -44,6 +44,7 @@ class FlovaEsp32BleProvisioning final : public FlovaProvisioningAdapter {
     context_ = context;
     return handler_ != nullptr;
   }
+  void clearHandler() override { handler_ = nullptr; context_ = nullptr; }
 
   void loop() override {
     if (managerStarted_ && credentialFailurePending_) {

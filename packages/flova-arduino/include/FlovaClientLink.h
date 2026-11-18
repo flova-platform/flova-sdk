@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 #include <FlovaDevice.h>
+#include <FlovaEntropy.h>
 #include <FlovaHardware.h>
 #include <FlovaLinkMessages.h>
 
@@ -83,3 +84,16 @@ class FlovaClientLink : public flova::Link {
   virtual bool maintenanceFailed() const { return false; }
   virtual void endMaintenance() {}
 };
+
+namespace flova {
+namespace detail {
+class BorrowedManagedLink {
+ public:
+  BorrowedManagedLink(FlovaEntropySource&, FlovaClientLink& link) : link_(link) {}
+  FlovaClientLink& link() { return link_; }
+
+ private:
+  FlovaClientLink& link_;
+};
+}  // namespace detail
+}  // namespace flova

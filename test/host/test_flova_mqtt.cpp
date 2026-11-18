@@ -66,6 +66,8 @@ static void connect(FlovaMqtt& mqtt, Received& received) {
   assert(ok);
   assert(!mqtt.ready());
   assert(mqtt.poll());
+  assert(!mqtt.ready());
+  assert(mqtt.poll());
   assert(mqtt.ready());
 }
 
@@ -163,6 +165,35 @@ int main() {
   {
     Platform platform; Received received; FlovaMqtt mqtt(platform);
     platform.answerConnect = false;
-    assert(!mqtt.connect(principal, "password", epoch, Received::onFrame, &received));
+    const uint32_t opened = nowMs;
+    assert(mqtt.connect(principal, "password", epoch, Received::onFrame, &received));
+    assert(nowMs == opened && !mqtt.connected() && !mqtt.ready());
+    nowMs += 1500;
+    assert(mqtt.poll());
+    assert(nowMs == opened + 1500 && !mqtt.ready());
+    for (uint8_t byte : {0x20, 3, 0, 0, 0}) {
+      platform.push({byte});
+      assert(mqtt.poll());
+      assert(nowMs == opened + 1500 && !mqtt.ready());
+    }
+    assert(mqtt.poll() && mqtt.ready());
+  }
+  {
+    Platform platform; Received received; FlovaMqtt mqtt(platform);
+    platform.answerConnect = false;
+    assert(mqtt.connect(principal, "password", epoch, Received::onFrame, &received));
+    nowMs += 2999;
+    assert(mqtt.poll());
+    ++nowMs;
+    assert(!mqtt.poll() && !mqtt.ready() && mqtt.lastStatus() == MQTTNoDataAvailable);
+    platform.answerConnect = true;
+    connect(mqtt, received);
+  }
+  for (uint8_t flags : {0, 1}) {
+    Platform platform; Received received; FlovaMqtt mqtt(platform);
+    platform.answerConnect = false;
+    assert(mqtt.connect(principal, "password", epoch, Received::onFrame, &received));
+    platform.push({0x20, 3, flags, static_cast<uint8_t>(flags ? 0 : 0x87), 0});
+    assert(!mqtt.poll() && !mqtt.ready());
   }
 }

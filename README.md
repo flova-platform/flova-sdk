@@ -70,7 +70,9 @@ sudo cmake --install build
 Linux applications use `find_package(FlovaLinux CONFIG REQUIRED)` and link
 `Flova::Linux`. The package provides the ready `FlovaLinux` facade, POSIX WSS,
 durable file storage, logging, and supervisor-owned OTA staging. The
-application calls `run()` from its nonblocking loop.
+application calls `run()` from its event loop. MQTT handshake progress is
+poll-driven. Durable command checkpoints and application handlers execute
+synchronously.
 
 ## Quick start
 
@@ -107,6 +109,13 @@ void loop() {
   yield();
 }
 ```
+
+On managed ESP and Linux, `FLOVA_DATASTREAM` creates a sketch helper that
+resolves and caches a typed `flova::Datastream<T>` runtime handle on first use.
+Declaring the helper at global scope does not register the stream or access
+storage. To catch registration errors during setup, call
+`led.tryOnWrite(handler)` and check its result before calling `device.begin()`.
+It returns false if the stream cannot be registered or the callback is null.
 
 ## Managed setup and Wi-Fi recovery
 

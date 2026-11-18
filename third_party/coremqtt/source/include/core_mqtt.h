@@ -880,6 +880,14 @@ MQTTStatus_t MQTT_Connect( MQTTContext_t * pContext,
                            const MQTTPropBuilder_t * pWillPropertyBuilder );
 /* @[declare_mqtt_connect] */
 
+/* Flova extension for a clean session. The adapter collects the CONNACK
+ * incrementally and passes in the complete packet body. */
+MQTTStatus_t MQTT_FlovaStartCleanConnect( MQTTContext_t * pContext,
+                                         const MQTTConnectInfo_t * pConnectInfo,
+                                         const MQTTPublishInfo_t * pWillInfo );
+MQTTStatus_t MQTT_FlovaFinishCleanConnect( MQTTContext_t * pContext,
+                                          const MQTTPacketInfo_t * pConnack );
+
 /**
  * @brief Sends MQTT SUBSCRIBE for the given list of topic filters to
  * the broker.
