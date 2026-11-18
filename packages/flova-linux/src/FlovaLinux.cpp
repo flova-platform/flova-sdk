@@ -31,6 +31,38 @@ bool safeComponent(const char* value, bool storageKey = false) {
   return strcmp(value, ".") != 0 && strcmp(value, "..") != 0;
 }
 
+bool syncDirectory(const char* path) {
+  const int fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) return false;
+  int result;
+  do {
+    result = fsync(fd);
+  } while (result < 0 && errno == EINTR);
+  close(fd);
+  return result == 0;
+}
+
+bool syncParentDirectory(const char* path) {
+  const char* slash = strrchr(path, '/');
+  if (!slash) return syncDirectory(".");
+  if (slash == path) return syncDirectory("/");
+
+  char parent[512];
+  const size_t length = static_cast<size_t>(slash - path);
+  if (length >= sizeof(parent)) return false;
+  memcpy(parent, path, length);
+  parent[length] = 0;
+  return syncDirectory(parent);
+}
+
+bool makeDirectoryEntry(const char* path) {
+  if (::mkdir(path, 0750) != 0) return errno == EEXIST;
+  if (syncParentDirectory(path)) return true;
+  // A later begin() should retry creation if the new entry could not be synced.
+  rmdir(path);
+  return false;
+}
+
 bool makeDirectory(const char* path) {
   if (!path || !path[0]) return false;
   char buffer[512] = {};
@@ -39,19 +71,47 @@ bool makeDirectory(const char* path) {
   for (char* cursor = buffer + 1; *cursor; ++cursor) {
     if (*cursor != '/') continue;
     *cursor = 0;
-    if (::mkdir(buffer, 0750) != 0 && errno != EEXIST) return false;
+    if (!makeDirectoryEntry(buffer)) return false;
     *cursor = '/';
   }
-  if (::mkdir(buffer, 0750) != 0 && errno != EEXIST) return false;
+  if (!makeDirectoryEntry(buffer)) return false;
   struct stat info = {};
   return stat(buffer, &info) == 0 && S_ISDIR(info.st_mode);
+}
+
+bool replaceActiveImage(const char* candidate, const char* active, const char* backup) {
+  struct stat info;
+  if (stat(candidate, &info) != 0 || !S_ISREG(info.st_mode)) return false;
+  if (lstat(active, &info) == 0) {
+    char pending[392];
+    const int length = snprintf(pending, sizeof(pending), "%s.tmp", backup);
+    if (length < 0 || static_cast<size_t>(length) >= sizeof(pending)) return false;
+    if (unlink(pending) != 0 && errno != ENOENT) return false;
+    // Preserve the active inode while publishing its backup. The supervisor's
+    // path always resolves to the old or new image, including on rename failure.
+    if (linkat(AT_FDCWD, active, AT_FDCWD, pending, AT_SYMLINK_FOLLOW) != 0) return false;
+    if (rename(pending, backup) != 0) {
+      unlink(pending);
+      return false;
+    }
+    // Linux leaves both names alone when they already refer to the same inode.
+    if (unlink(pending) != 0 && errno != ENOENT) return false;
+    if (!syncParentDirectory(backup)) return false;
+  } else if (errno != ENOENT) {
+    return false;
+  }
+
+  if (rename(candidate, active) != 0) return false;
+  const bool activeSynced = syncParentDirectory(active);
+  const bool candidateSynced = syncParentDirectory(candidate);
+  return activeSynced && candidateSynced;
 }
 
 bool copyFile(const char* source, const char* destination, uint32_t expected,
               uint32_t* copied, char* digestHex, size_t digestCapacity) {
   int input = open(source, O_RDONLY | O_CLOEXEC);
   if (input < 0) return false;
-  int output = open(destination, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
+  int output = open(destination, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC,
                     0640);
   if (output < 0) {
     close(input);
@@ -84,6 +144,10 @@ bool copyFile(const char* source, const char* destination, uint32_t expected,
   }
   if (expected && total != expected) ok = false;
   if (copied) *copied = total;
+  if (ok) {
+    struct stat info;
+    ok = fstat(output, &info) == 0 && fchmod(output, (info.st_mode & 0777) | S_IXUSR) == 0;
+  }
   if (fsync(output) != 0) ok = false;
   close(output);
   close(input);
@@ -167,13 +231,14 @@ bool FileStorage::write(const char* key, const void* value, size_t size) {
     unlink(pending);
     return false;
   }
-  return true;
+  return syncDirectory(directory_);
 }
 
 bool FileStorage::remove(const char* key) {
   char path[sizeof(directory_) + 128] = {};
   if (!pathFor(key, path, sizeof(path))) return false;
-  return unlink(path) == 0 || errno == ENOENT;
+  if (unlink(path) != 0 && errno != ENOENT) return false;
+  return syncDirectory(directory_);
 }
 
 bool FileStorage::clear() {
@@ -227,18 +292,27 @@ OtaStageResult OtaUpdater::stage(const char* sourcePath, const char* version,
   char destination[sizeof(root_) + 128] = {};
   if (!pathFor("staged", version, destination, sizeof(destination)))
     return OtaStageResult::InvalidOffer;
+  char pending[sizeof(destination) + 8];
+  const int length = snprintf(pending, sizeof(pending), "%s/.stage.pending", root_);
+  if (length < 0 || static_cast<size_t>(length) >= sizeof(pending))
+    return OtaStageResult::InvalidOffer;
   uint32_t copied = 0;
   char digest[65] = {};
-  if (!copyFile(sourcePath, destination, expectedBytes, &copied, digest,
+  if (!copyFile(sourcePath, pending, expectedBytes, &copied, digest,
                 sizeof(digest))) {
-    unlink(destination);
+    unlink(pending);
     return copied != expectedBytes ? OtaStageResult::SizeMismatch
                                    : OtaStageResult::DownloadUnavailable;
   }
   if (strcasecmp(digest, expectedSha256) != 0) {
-    unlink(destination);
+    unlink(pending);
     return OtaStageResult::HashMismatch;
   }
+  if (rename(pending, destination) != 0) {
+    unlink(pending);
+    return OtaStageResult::StorageFailure;
+  }
+  if (!syncDirectory(root_)) return OtaStageResult::StorageFailure;
   return OtaStageResult::Staged;
 }
 
@@ -249,10 +323,7 @@ bool OtaUpdater::activate(const char* version) {
   if (snprintf(previous, sizeof(previous), "%s/previous", root_) >=
       static_cast<int>(sizeof(previous)))
     return false;
-  unlink(previous);
-  if (access(activeLink_, F_OK) == 0 && rename(activeLink_, previous) != 0)
-    return false;
-  return rename(staged, activeLink_) == 0;
+  return replaceActiveImage(staged, activeLink_, previous);
 }
 
 bool OtaUpdater::confirm(const char* version) {
@@ -274,7 +345,7 @@ bool OtaUpdater::confirm(const char* version) {
     unlink(pending);
     return false;
   }
-  return true;
+  return syncDirectory(root_);
 }
 
 bool OtaUpdater::rollback() {
@@ -282,15 +353,11 @@ bool OtaUpdater::rollback() {
   if (snprintf(previous, sizeof(previous), "%s/previous", root_) >=
       static_cast<int>(sizeof(previous)))
     return false;
-  if (access(previous, F_OK) != 0) return false;
   char failed[sizeof(root_) + 128] = {};
   if (snprintf(failed, sizeof(failed), "%s/failed", root_) >=
       static_cast<int>(sizeof(failed)))
     return false;
-  unlink(failed);
-  if (access(activeLink_, F_OK) == 0 && rename(activeLink_, failed) != 0)
-    return false;
-  return rename(previous, activeLink_) == 0;
+  return replaceActiveImage(previous, activeLink_, failed);
 }
 
 }  // namespace flova_linux

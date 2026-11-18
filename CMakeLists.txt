@@ -123,7 +123,7 @@ add_test(NAME flova-runtime-services-test COMMAND flova-runtime-services-test)
 add_test(NAME flova-lifecycle-test COMMAND flova-lifecycle-test)
 
 add_executable(flova-linux-test test/host/test_flova_linux.cpp)
-target_link_libraries(flova-linux-test PRIVATE flova-linux)
+target_link_libraries(flova-linux-test PRIVATE flova-linux "-Wl,--wrap=fsync" "-Wl,--wrap=rename")
 add_test(NAME flova-linux-test COMMAND flova-linux-test)
 
 add_executable(flova-linux-example examples/linux-device/main.cpp)

@@ -1,6 +1,5 @@
 #include <FlovaLinux.h>
 
-#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <initializer_list>
@@ -11,36 +10,82 @@
 #include <type_traits>
 #include <unistd.h>
 
+#define CHECK(condition)                                              \
+  do {                                                                \
+    if (!(condition)) {                                               \
+      fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #condition); \
+      abort();                                                        \
+    }                                                                 \
+  } while (false)
+
 static_assert(!std::is_copy_constructible<FlovaLinux>::value, "Linux facade owns its runtime");
 static_assert(!std::is_copy_assignable<FlovaLinux>::value, "Linux facade owns its runtime");
+
+static bool failDirectorySync;
+static unsigned directorySyncs;
+static const char* rejectRenameTo;
+
+extern "C" int __real_fsync(int fd);
+extern "C" int __wrap_fsync(int fd) {
+  struct stat info;
+  if (fstat(fd, &info) == 0 && S_ISDIR(info.st_mode)) {
+    ++directorySyncs;
+    if (failDirectorySync) {
+      errno = EIO;
+      return -1;
+    }
+  }
+  return __real_fsync(fd);
+}
+
+extern "C" int __real_rename(const char* source, const char* destination);
+extern "C" int __wrap_rename(const char* source, const char* destination) {
+  if (rejectRenameTo && strcmp(destination, rejectRenameTo) == 0) {
+    errno = EIO;
+    return -1;
+  }
+  return __real_rename(source, destination);
+}
 
 int main() {
   const char* temporaryRoot = getenv("TMPDIR");
   if (!temporaryRoot || !temporaryRoot[0]) temporaryRoot = "./tmp";
-  assert(mkdir(temporaryRoot, 0700) == 0 || errno == EEXIST);
+  CHECK(mkdir(temporaryRoot, 0700) == 0 || errno == EEXIST);
   char directory[512] = {};
   const int written = snprintf(directory, sizeof(directory), "%s/flova-linux-test-XXXXXX", temporaryRoot);
-  assert(written > 0 && static_cast<size_t>(written) < sizeof(directory));
-  assert(mkdtemp(directory));
+  CHECK(written > 0 && static_cast<size_t>(written) < sizeof(directory));
+  CHECK(mkdtemp(directory));
   flova_linux::FileStorage storage(directory);
-  assert(storage.begin());
+  CHECK(storage.begin());
 
   const char value[] = "state";
-  assert(storage.write("record", value, sizeof(value)));
+  CHECK(storage.write("record", value, sizeof(value)));
   char restored[sizeof(value)] = {};
-  assert(storage.read("record", restored, sizeof(restored)));
-  assert(memcmp(value, restored, sizeof(value)) == 0);
-  assert(!storage.write("../escape", value, sizeof(value)));
+  CHECK(storage.read("record", restored, sizeof(restored)));
+  CHECK(memcmp(value, restored, sizeof(value)) == 0);
+  CHECK(!storage.write("../escape", value, sizeof(value)));
+
+  const unsigned beforeSyncs = directorySyncs;
+  failDirectorySync = true;
+  CHECK(!storage.write("checkpoint", value, sizeof(value)));
+  CHECK(directorySyncs == beforeSyncs + 1);
+  CHECK(storage.read("checkpoint", restored, sizeof(restored)));
+  failDirectorySync = false;
+  CHECK(storage.write("checkpoint", value, sizeof(value)));
+  failDirectorySync = true;
+  CHECK(!storage.remove("checkpoint"));
+  failDirectorySync = false;
+  CHECK(storage.remove("checkpoint"));
 
   // Exercise the runtime's actual names, not just application-friendly keys.
   for (const char* key : {"cmd:0", "dsid:65534", "history:0", "stream:0"}) {
-    assert(storage.write(key, value, sizeof(value)));
-    assert(storage.read(key, restored, sizeof(restored)));
-    assert(memcmp(value, restored, sizeof(value)) == 0);
-    assert(storage.remove(key));
+    CHECK(storage.write(key, value, sizeof(value)));
+    CHECK(storage.read(key, restored, sizeof(restored)));
+    CHECK(memcmp(value, restored, sizeof(value)) == 0);
+    CHECK(storage.remove(key));
   }
   for (const char* key : {"../cmd:0", "cmd:0/escape", "..", ".", ""})
-    assert(!storage.write(key, value, sizeof(value)));
+    CHECK(!storage.write(key, value, sizeof(value)));
 
   char fresh[sizeof(directory) + 16] = {};
   snprintf(fresh, sizeof(fresh), "%s/fresh", directory);
@@ -48,30 +93,30 @@ int main() {
     FlovaLinux::Config config = {"mqtts://localhost:8883", "a28cbe21-fd34-4cf6-8f28-8264e90192c7",
                                  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", fresh};
     FlovaLinux device(config);
-    assert(device.begin());
+    CHECK(device.begin());
     struct stat info = {};
-    assert(stat(fresh, &info) == 0 && S_ISDIR(info.st_mode));
+    CHECK(stat(fresh, &info) == 0 && S_ISDIR(info.st_mode));
   }
-  assert(rmdir(fresh) == 0);
+  CHECK(rmdir(fresh) == 0);
   char filePath[sizeof(directory) + 16] = {};
   snprintf(filePath, sizeof(filePath), "%s/record", directory);
   flova_linux::FileStorage invalidDirectory(filePath);
-  assert(!invalidDirectory.begin()); // EEXIST alone does not establish a directory.
+  CHECK(!invalidDirectory.begin()); // EEXIST alone does not establish a directory.
   {
     FlovaLinux::Config config = {"mqtts://localhost:8883", "a28cbe21-fd34-4cf6-8f28-8264e90192c7",
                                  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", ""};
     FlovaLinux device(config);
-    assert(!device.begin());
-    assert(!strcmp(device.lastError(), "storage_begin_failed"));
-    assert(!device.running());
+    CHECK(!device.begin());
+    CHECK(!strcmp(device.lastError(), "storage_begin_failed"));
+    CHECK(!device.running());
   }
 
   char source[sizeof(directory) + 16] = {};
   snprintf(source, sizeof(source), "%s/source", directory);
   int fd = open(source, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-  assert(fd >= 0);
+  CHECK(fd >= 0);
   const char payload[] = "hello\n";
-  assert(write(fd, payload, sizeof(payload) - 1) ==
+  CHECK(write(fd, payload, sizeof(payload) - 1) ==
          static_cast<ssize_t>(sizeof(payload) - 1));
   close(fd);
 
@@ -80,20 +125,57 @@ int main() {
   char active[sizeof(directory) + 24] = {};
   snprintf(active, sizeof(active), "%s/current", otaRoot);
   flova_linux::OtaUpdater updater(otaRoot, active);
-  assert(updater.stage(source, "1.0.0", sizeof(payload) - 1,
+  CHECK(updater.stage(source, "1.0.0", sizeof(payload) - 1,
                        "0000000000000000000000000000000000000000000000000000000000000000") ==
          flova_linux::OtaStageResult::HashMismatch);
-  assert(updater.stage(source, "1.0.0", sizeof(payload) - 1,
+  CHECK(updater.stage(source, "1.0.0", sizeof(payload) - 1,
                        "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03") ==
          flova_linux::OtaStageResult::Staged);
-  assert(updater.stage(source, "bad:version", sizeof(payload) - 1,
+  CHECK(updater.stage(source, "bad:version", sizeof(payload) - 1,
                        "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03") ==
          flova_linux::OtaStageResult::InvalidOffer);
-  assert(updater.activate("1.0.0"));
-  assert(updater.confirm("1.0.0"));
+  CHECK(updater.activate("1.0.0"));
+  CHECK(updater.confirm("1.0.0"));
+  struct stat original, current;
+  CHECK(stat(active, &original) == 0 && (original.st_mode & S_IXUSR));
+  CHECK(!updater.activate("missing"));
+  CHECK(stat(active, &current) == 0 && current.st_ino == original.st_ino);
+  CHECK(!updater.rollback());
+  CHECK(stat(active, &current) == 0 && current.st_ino == original.st_ino);
 
-  unlink(source);
-  storage.clear();
-  rmdir(directory);
+  CHECK(updater.stage(source, "2.0.0", sizeof(payload) - 1,
+                       "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03") ==
+         flova_linux::OtaStageResult::Staged);
+  CHECK(updater.stage(source, "2.0.0", sizeof(payload) - 1,
+                       "0000000000000000000000000000000000000000000000000000000000000000") ==
+         flova_linux::OtaStageResult::HashMismatch);
+  failDirectorySync = true;
+  CHECK(!updater.activate("2.0.0"));
+  CHECK(stat(active, &current) == 0 && current.st_ino == original.st_ino);
+  failDirectorySync = false;
+  rejectRenameTo = active;
+  CHECK(!updater.activate("2.0.0"));
+  CHECK(stat(active, &current) == 0 && current.st_ino == original.st_ino);
+  rejectRenameTo = nullptr;
+  CHECK(updater.activate("2.0.0"));
+  CHECK(stat(active, &current) == 0 && current.st_ino != original.st_ino);
+  const ino_t upgradedInode = current.st_ino;
+  rejectRenameTo = active;
+  CHECK(!updater.rollback());
+  CHECK(stat(active, &current) == 0 && current.st_ino == upgradedInode);
+  rejectRenameTo = nullptr;
+  CHECK(updater.rollback());
+  CHECK(stat(active, &current) == 0 && current.st_ino == original.st_ino);
+
+  for (const char* name : {"current", "failed", "confirmed"}) {
+    char otaFile[sizeof(otaRoot) + 16];
+    snprintf(otaFile, sizeof(otaFile), "%s/%s", otaRoot, name);
+    CHECK(unlink(otaFile) == 0);
+  }
+  CHECK(rmdir(otaRoot) == 0);
+  CHECK(unlink(source) == 0);
+  CHECK(storage.remove("record"));
+  CHECK(storage.clear());
+  CHECK(rmdir(directory) == 0);
   return 0;
 }
