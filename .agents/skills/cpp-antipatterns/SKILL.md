@@ -75,6 +75,12 @@ message's semantics. An arithmetic check alone is not full input validation.
   unit initialization dependencies. Use explicit board-owned setup/teardown.
 - Avoid side-effecting macros and required work inside `assert`: assertions may
   disappear in release builds. Use small typed functions and explicit checks.
+  For example, keep host test setup and its check active under `NDEBUG`:
+
+  ```cpp
+  const bool started = storage.begin();
+  if (!started) return EXIT_FAILURE;  // Inside the standalone test's main().
+  ```
 - Do not suppress warnings or add casts merely to silence a diagnostic. Explain
   the valid range, lifetime, or representation and fix the responsible boundary.
 

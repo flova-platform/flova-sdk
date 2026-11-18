@@ -36,6 +36,7 @@ For C++ implementation and review, also follow:
 
 - `.agents/skills/cpp-code-quality/SKILL.md`: contracts, scope, and verification.
 - `.agents/skills/cpp-antipatterns/SKILL.md`: language and embedded hazards.
+- `.agents/skills/cpp-style/SKILL.md`: local C++11 readability and naming.
 
 Read the firmware references for the area being changed: `storage.md`,
 `protocol.md`, `datastreams.md`, and `testing.md` under
@@ -78,9 +79,10 @@ Code and immutable constants may remain in target-appropriate flash/ROM;
 RAM-only does not mean loading the whole firmware image into RAM. Firmware
 installation/OTA writes are separate explicitly enabled lifecycle operations.
 
-**Known gap:** current ESP8266 storage-backed descriptors use a single-entry
-cache, including reads on safety-validation cache misses. Other existing
-boot/configuration paths also depend on storage. Preserve their safety and
+**Known gap:** current ESP8266 storage-backed descriptors use a two-entry
+cache. Safety validation can still read storage when the working set exceeds
+the cache or key lookups evict its entries. Other boot/configuration paths
+also depend on storage. Preserve their safety and
 durability semantics until separately redesigned and tested; do not claim that
 editing these instructions implements a RAM-only profile.
 
@@ -113,7 +115,7 @@ editing these instructions implements a RAM-only profile.
 
 - Disabled optional features must compile out their code, buffers, and exclusive
   dependencies. New dependencies need a concrete reason and measured linked cost.
-- Report affected production-profile image, static DRAM, IRAM, stack, and phase
+- Report affected production-profile image, static DRAM, stack, and phase
   peak-heap deltas separately. Moving BSS to heap or metadata to a filesystem is
   not proof of a resource improvement. Inspect linker maps for unexplained growth.
 - Verify real partition/OTA-slot fit and relevant default/capacity/MMU profiles.

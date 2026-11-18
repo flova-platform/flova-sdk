@@ -163,8 +163,10 @@ For affected paths, prove:
 - RAM-only reset behavior is documented and operations requiring unavailable
   durability fail before effects or durable acknowledgement;
 - ordinary nonpersistent processing has zero storage reads/writes;
-- alternating streams, including numeric safety validation, cannot hide cache
-  thrashing behind repeated access to a single stream;
+- ordinary operations stay within their storage budget both when alternating
+  resolved stream handles with numeric safety limits and when repeatedly
+  reporting to a key late in the registry through the public facade. Count
+  backend reads for each case so a cache hit cannot mask a full key scan;
 - unchanged settings and repeated registration do not cause redundant commits
   where verified persisted state already matches;
 - deferred writes meet maximum dirty age under continuous updates, timer
@@ -189,7 +191,7 @@ must remain explicitly unverified; do not manipulate devices for build-only work
 ## Production image regression checks
 
 For affected production profiles, compare before/after builds with the same
-toolchain and feature settings. Report image, static DRAM, IRAM, stack, and
+toolchain and feature settings. Report image, static DRAM, stack, and
 phase peak-heap evidence separately; unavailable runtime evidence stays
 unverified. Inspect linker maps for unexplained growth or new dependencies.
 Verify disabled optional features remove their buffers and exclusive linked

@@ -89,6 +89,19 @@ deletion, and metadata updates. Preserve last-valid records; never auto-format
 on mount failure or erase unrelated application storage without an explicit
 authorized recovery/reset policy. Version changed persisted representations.
 
+For file-backed records, identify the crash-durability boundary before any
+dependent action or acknowledgement. Read-back verifies what the running
+process can see. Rename atomically publishes a directory entry. On Linux,
+sync the file contents before rename and the parent directory after rename
+or unlink before reporting durable success. Propagate sync errors and define
+recovery when an operation became visible before its directory sync failed.
+
+For file-based firmware activation and rollback, keep the supervisor's active
+path resolvable throughout the transition. Prepare the replacement and retain
+a recoverable image before atomically replacing the active path. Inject
+failures and interruptions around each publication step and check which image
+the supervisor can start, including when the staged image is missing.
+
 ## Count actual costs
 
 EEPROM emulation may commit an erase sector; NVS may compact pages; LittleFS may
@@ -123,8 +136,9 @@ operation counts and semantics, not flash timing or physical endurance.
 
 ## Existing exception and future changes
 
-Current ESP8266 storage-backed descriptors have a single-entry cache. Alternating
-streams can force reads during safety validation. Preserve fail-closed safety,
+Current ESP8266 storage-backed descriptors have a two-entry cache. Two warmed
+resolved streams can alternate safety checks without reads. Larger working sets
+and key lookups can still force reads. Preserve fail-closed safety,
 registration, handle, and ACK semantics until a separate redesign is verified;
 do not claim zero-I/O acceptance or copy this design into new hot paths merely
 because it already exists. Follow the repository memory rules and executable resource checks.

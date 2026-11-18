@@ -44,7 +44,7 @@ immutable tables, keys, and literals in flash/ROM where target access rules
 permit it. Preserve portable-core isolation from platform storage APIs.
 
 Optional features must compile out their code, buffers, and exclusive
-dependencies when disabled. Report linked image, static DRAM, IRAM, stack, and
+dependencies when disabled. Report linked image, static DRAM, stack, and
 peak heap deltas for affected production profiles; do not infer peak savings
 from BSS reductions. Inspect linker maps for unexplained growth. A new
 dependency needs measured cost and a reason existing code cannot suffice.

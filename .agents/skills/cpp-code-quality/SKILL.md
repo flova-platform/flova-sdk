@@ -86,6 +86,10 @@ git diff --check
   arithmetic boundaries, and repeated lifecycle transitions as applicable.
 - Keep tests deterministic: use existing fake clocks, counting storage, and
   controlled callbacks rather than sleeps or physical dependencies for host tests.
+- For affected host tests, check the effective compiler flags and verify that
+  setup, SDK calls, and pass/fail checks execute in both the normal test build
+  and an optimized build with `NDEBUG`. Use always-active test checks in that
+  build and confirm a deliberately failing condition produces a failed test.
 - Fix new warnings in touched code; do not globally enable noisy flags or rewrite
   third-party code to satisfy an unrelated cleanup. Use available targeted static
   analysis and ASan/UBSan when appropriate; do not claim tools ran unless they did.
