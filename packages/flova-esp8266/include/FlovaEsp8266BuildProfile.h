@@ -7,8 +7,10 @@
 #endif
 #define FLOVA_BOARD_NAME "ESP8266"
 
-#if defined(MMU_IRAM_HEAP)
-#error "Flova ESP8266 requires the stock MMU; IRAM heap allocation is unsupported"
+#if (defined(MMU_ICACHE_SIZE) && MMU_ICACHE_SIZE != 0x8000) || \
+    defined(MMU_SEC_HEAP) || defined(MMU_EXTERNAL_HEAP) || \
+    defined(PIO_FRAMEWORK_ARDUINO_MMU_CUSTOM)
+#error "Flova ESP8266 requires the stock MMU and default DRAM allocator"
 #endif
 // Official Flova Link/OTA endpoints bound server TLS records to 2048 bytes.
 // Arbitrary endpoints must explicitly select the full 16384-byte RX profile.

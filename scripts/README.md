@@ -81,7 +81,7 @@ the repository and must not be committed.
 
 ESP8266 uses public stock BearSSL APIs. Package validation must use an
 unmodified framework installation; an old patched local cache is not evidence
-of compatibility. Shared IRAM is optional; the default exported project uses DRAM.
+of compatibility. The exported project uses the stock MMU and DRAM allocator.
 
 ## SDK release
 

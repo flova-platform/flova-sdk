@@ -35,11 +35,10 @@ FlovaSDK کیت توسعه رسمی C++ برای اتصال دستگاه‌ها 
 ```
 
 برای ESP8266 از فایل آماده‌ی `extras/platformio/esp8266/platformio.ini`
-استفاده کنید؛ این فایل چیدمان حافظه‌ی لازم برای heap در IRAM را فعال می‌کند:
+استفاده کنید. این پروژه با تنظیمات پیش‌فرض حافظهٔ برد کامپایل می‌شود.
 
 ```ini
   lib_deps = flova-platform/FlovaSDK@^0.5.0
-build_flags =
 ```
 
 ### Arduino IDE
@@ -58,8 +57,7 @@ build_flags =
 
 این هدر بر اساس برد انتخاب‌شده، `FlovaEsp32` یا `FlovaEsp8266` را در اختیار
 برنامه می‌گذارد و helperهای مشترک `FLOVA_*` را نیز شامل می‌شود. برای ESP8266
-گزینه **Tools → MMU → 16KB cache + 48KB IRAM and 2nd Heap (shared)** را پیش
-از کامپایل انتخاب کنید.
+تنظیم پیش‌فرض **Tools → MMU** را حفظ کنید.
 
 ## شروع سریع
 

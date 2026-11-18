@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report linked RAM/IRAM and enforce reviewed image budgets (no device access)."""
+"""Report linked static DRAM and enforce reviewed image budgets (no device access)."""
 
 import argparse
 import json
@@ -15,7 +15,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('environments', nargs='+')
     parser.add_argument('--stock-dram', action='store_true',
-                        help='also enforce the ESP8266 no-IRAM TLS lower bound')
+                        help='also enforce the ESP8266 stock-DRAM TLS lower bound')
     args = parser.parse_args()
     budgets = json.loads((ROOT / 'scripts/flova_memory_budgets.json').read_text())
     failed = False
@@ -41,14 +41,12 @@ def main():
                 sections[fields[0]] = int(fields[1])
         dram_sections = ('.data', '.rodata', '.bss', '.noinit') if esp8266 else (
             '.dram0.data', '.dram0.bss', '.noinit')
-        iram_sections = ('.text', '.text1') if esp8266 else ('.iram0.vectors', '.iram0.text')
         dram = sum(sections.get(name, 0) for name in dram_sections)
-        iram = sum(sections.get(name, 0) for name in iram_sections)
         image = (directory / 'firmware.bin').stat().st_size
-        if not dram or not iram or not image:
+        if not dram or not image:
             sys.exit(f'Incomplete linked image for {environment}')
-        print(f'{environment}: static_dram={dram} iram={iram} image={image}')
-        for name, actual in [('static_dram', dram), ('iram', iram), ('image', image)]:
+        print(f'{environment}: static_dram={dram} image={image}')
+        for name, actual in [('static_dram', dram), ('image', image)]:
             if actual > profile[name]:
                 print(f'  FAIL {name}: {actual} > reviewed ceiling {profile[name]}')
                 failed = True

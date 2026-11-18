@@ -34,8 +34,8 @@ table automatically.
 
 Use Arduino IDE or the packaged `extras/platformio/esp8266/platformio.ini`
 with `<FlovaUniversalEsp8266.h>`. Stock Arduino ESP8266 core 3.1.2 is supported;
-no framework patch is needed. Use the stock MMU profile; IRAM heap allocation
-is unsupported. The packaged PlatformIO profile supplies the tested TLS settings.
+no framework patch is needed. Keep the stock MMU and DRAM allocator.
+The packaged PlatformIO profile supplies the tested TLS settings.
 
 TLS connect operations can pause the application loop for seconds. Link and OTA
 require sufficient contiguous heap for full TLS records; allocation failures

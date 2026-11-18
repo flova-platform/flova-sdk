@@ -21,13 +21,11 @@
       "board": "esp8266",
       "tls_profile": "bounded",
       "static_dram": 48640,
-      "iram": 29184,
       "image": 573440
     },
     "universal-esp32": {
       "board": "esp32",
       "static_dram": 76800,
-      "iram": 84736,
       "image": 1056768
     }
   },

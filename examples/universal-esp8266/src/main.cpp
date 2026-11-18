@@ -13,7 +13,8 @@ void setup() {
   delay(50);
   FLOVA_SERIAL_PRINTLN_INFO("");
   FLOVA_SERIAL_PRINTLN_INFO("[flova] esp8266 boot");
-  flova::logTlsHeap("boot", flova::tlsHeapStats());
+  if (FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_DEBUG)
+    flova::logTlsHeap("boot", flova::tlsHeapStats());
 
   // Fresh devices enter setup AP mode. Configured devices restore validated
   // identity and reconnect without requiring a reboot after provisioning.
@@ -29,6 +30,7 @@ void loop() {
   // Keep this loop unblocked. It services setup/runtime Link, applies dynamic
   // hardware writes, and performs bounded OTA/restart work.
   device.run();
+  if (!FLOVA_LOGGING_ENABLED || FLOVA_LOG_LEVEL < FLOVA_LOG_LEVEL_DEBUG) return;
   static uint32_t lastReport = 0;
   static uint32_t minimumHeap = UINT32_MAX;
   static uint32_t minimumBlock = UINT32_MAX;

@@ -65,8 +65,8 @@ verification remain enabled. For another endpoint without this guarantee, set
 `FLOVA_ESP8266_BOUNDED_TLS_RECORDS=0` to use 16,384-byte RX; this requires more
 contiguous DRAM and may fail preflight on a small device.
 
-No optional IRAM heap or custom MMU is supported. The build rejects
-`MMU_IRAM_HEAP`. Memory preflight checks free DRAM and its largest block before
+Use the stock MMU profile and the default DRAM allocator. Memory preflight
+checks free DRAM and its largest block before
 constructing the secure client; actual allocation can still fail. The client is
 released on Link closure or OTA completion, including failure paths, releasing
 BearSSL's shared 6,200-byte secondary stack when its last owner exits. Trust

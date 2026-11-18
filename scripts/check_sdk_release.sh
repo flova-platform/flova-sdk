@@ -17,7 +17,7 @@ for target in esp32 esp8266; do
     exit 1
   }
 done
-if rg -q 'MMU_CACHE16_IRAM48_SECHEAP_SHARED' "$sdk_dir/extras/platformio/esp8266/platformio.ini"; then
+if rg -q 'PIO_FRAMEWORK_ARDUINO_MMU_|-D[[:space:]]*MMU_|^[[:space:]]*board_build\.mmu_' -- "$sdk_dir/extras/platformio/esp8266/platformio.ini"; then
   echo "ESP8266 example must use stock MMU" >&2
   exit 1
 fi
