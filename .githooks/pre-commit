@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+git diff --cached --check
+cmake -S . -B build/pre-commit
+cmake --build build/pre-commit --parallel 4
+ctest --test-dir build/pre-commit --output-on-failure

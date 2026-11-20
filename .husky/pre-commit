@@ -1,4 +1,0 @@
-set -e
-git diff --cached --check
-npx --no-install lint-staged
-npm test

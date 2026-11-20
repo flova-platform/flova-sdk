@@ -57,4 +57,3 @@ private_config.h
 
 # Local verification and scratch artifacts
 tmp/
-node_modules/
