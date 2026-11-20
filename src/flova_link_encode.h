@@ -82,6 +82,18 @@ int cbor_encode_datastream_bound(
 		size_t *payload_len_out);
 
 
+int cbor_encode_scheduling_ready(
+		uint8_t *payload, size_t payload_len,
+		const void *input,
+		size_t *payload_len_out);
+
+
+int cbor_encode_scheduling_declarations(
+		uint8_t *payload, size_t payload_len,
+		const struct scheduling_declarations *input,
+		size_t *payload_len_out);
+
+
 int cbor_encode_heartbeat(
 		uint8_t *payload, size_t payload_len,
 		const struct heartbeat *input,
@@ -112,18 +124,6 @@ int cbor_encode_ota_reported(
 		size_t *payload_len_out);
 
 
-int cbor_encode_schedule_reported(
-		uint8_t *payload, size_t payload_len,
-		const struct schedule_reported *input,
-		size_t *payload_len_out);
-
-
-int cbor_encode_schedule_renew(
-		uint8_t *payload, size_t payload_len,
-		const struct schedule_renew *input,
-		size_t *payload_len_out);
-
-
 int cbor_encode_time_request(
 		uint8_t *payload, size_t payload_len,
 		const struct time_request *input,
@@ -133,6 +133,18 @@ int cbor_encode_time_request(
 int cbor_encode_config_ack(
 		uint8_t *payload, size_t payload_len,
 		const struct config_ack *input,
+		size_t *payload_len_out);
+
+
+int cbor_encode_lifecycle_report(
+		uint8_t *payload, size_t payload_len,
+		const struct lifecycle_report *input,
+		size_t *payload_len_out);
+
+
+int cbor_encode_lifecycle_ready(
+		uint8_t *payload, size_t payload_len,
+		const void *input,
 		size_t *payload_len_out);
 
 
@@ -157,12 +169,6 @@ int cbor_encode_config_desired(
 int cbor_encode_ota_desired(
 		uint8_t *payload, size_t payload_len,
 		const struct ota_desired *input,
-		size_t *payload_len_out);
-
-
-int cbor_encode_schedule_desired(
-		uint8_t *payload, size_t payload_len,
-		const struct schedule_desired *input,
 		size_t *payload_len_out);
 
 
@@ -199,18 +205,6 @@ int cbor_encode_config_record(
 int cbor_encode_config_end(
 		uint8_t *payload, size_t payload_len,
 		const struct config_end *input,
-		size_t *payload_len_out);
-
-
-int cbor_encode_schedule_record_message(
-		uint8_t *payload, size_t payload_len,
-		const struct schedule_record_message *input,
-		size_t *payload_len_out);
-
-
-int cbor_encode_schedule_end(
-		uint8_t *payload, size_t payload_len,
-		const struct schedule_end *input,
 		size_t *payload_len_out);
 
 

@@ -1,24 +1,35 @@
 {
   "$schema": "https://raw.githubusercontent.com/platformio/platformio-core/develop/platformio/package/schema/library.json",
   "name": "FlovaSDK",
-  "version": "0.3.12",
+  "version": "0.5.1",
   "description": "Bounded local-first Flova device SDK for ESP32, ESP8266, and custom targets",
   "keywords": ["flova", "iot", "esp32", "esp8266", "arduino"],
-  "homepage": "https://github.com/flova-platform/flova-firmware",
+  "homepage": "https://github.com/flova-platform/flova-sdk",
   "repository": {
     "type": "git",
-    "url": "https://github.com/flova-platform/flova-firmware.git"
+    "url": "https://github.com/flova-platform/flova-sdk.git"
   },
   "authors": [
-    {"name": "Flova", "url": "https://github.com/flova-platform/flova-firmware", "maintainer": true}
+    {
+      "name": "Flova",
+      "url": "https://github.com/flova-platform/flova-sdk",
+      "maintainer": true
+    }
   ],
   "license": "MIT",
   "frameworks": "*",
   "platforms": "*",
-  "headers": ["FlovaSDK.h", "FlovaDevice.h", "FlovaCustomCode.h", "FlovaEsp32.h", "FlovaUniversalEsp32.h", "FlovaEsp8266.h", "FlovaUniversalEsp8266.h", "FlovaPubSubClientAdapter.h"],
+  "headers": [
+    "FlovaSDK.h",
+    "FlovaDevice.h",
+    "FlovaCustomCode.h",
+    "FlovaEsp32.h",
+    "FlovaUniversalEsp32.h",
+    "FlovaEsp8266.h",
+    "FlovaUniversalEsp8266.h"
+  ],
   "dependencies": {
-    "ArduinoJson": "^6.21.5",
-    "PubSubClient": "^2.8.0"
+    "ArduinoJson": "^6.21.5"
   },
   "examples": ["examples/*"]
 }

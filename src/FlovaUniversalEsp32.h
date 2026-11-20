@@ -9,12 +9,13 @@
 
 class FlovaUniversalEsp32 final {
  public:
-  explicit FlovaUniversalEsp32(const char* setupPassword = nullptr)
+  explicit FlovaUniversalEsp32(const char* setupPassword = FLOVA_SETUP_PASSWORD)
       : linkPlatform_(), link_(linkPlatform_, entropy_),
         provisioning_(storage_, setupPassword),
         network_(storage_), identity_("universal_esp32"),
         client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
                 clock_, logger_, entropy_, hardware_) {
+    client_.device().allowCloudSchedulingForOutputs(true);
     client_.setFirmwareTarget("universal_esp32");
     client_.setOtaEnabled(true);
     client_.setRestartHandler(scheduleRestart, this);

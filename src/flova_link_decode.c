@@ -35,6 +35,7 @@ static bool decode_repeated_capabilities_pin_references(zcbor_state_t *state, st
 static bool decode_capabilities(zcbor_state_t *state, struct capabilities *result);
 static bool decode_repeated_datastream_bound_ids_compact_id_m(zcbor_state_t *state, uint64_t *result);
 static bool decode_datastream_bound_ids(zcbor_state_t *state, struct datastream_bound_ids *result);
+static bool decode_scheduling_stream(zcbor_state_t *state, struct scheduling_stream *result);
 static bool decode_repeated_ota_profile_ota_boot_state(zcbor_state_t *state, struct ota_profile_ota_boot_state *result);
 static bool decode_repeated_ota_profile_ota_rollback_reason(zcbor_state_t *state, struct ota_profile_ota_rollback_reason *result);
 static bool decode_ota_profile(zcbor_state_t *state, struct ota_profile *result);
@@ -43,8 +44,6 @@ static bool decode_command_result_error(zcbor_state_t *state, struct command_res
 static bool decode_repeated_config_begin_config_command_id(zcbor_state_t *state, struct config_begin_config_command_id *result);
 static bool decode_state_reading(zcbor_state_t *state, struct state_reading *result);
 static bool decode_state_readings(zcbor_state_t *state, struct state_readings *result);
-static bool decode_schedule_action(zcbor_state_t *state, struct schedule_action *result);
-static bool decode_schedule_record(zcbor_state_t *state, struct schedule_record *result);
 static bool decode_typed_value(zcbor_state_t *state, struct typed_value_fields_r *result);
 static bool decode_repeated_datastream_record_datastream_minimum(zcbor_state_t *state, struct datastream_record_datastream_minimum *result);
 static bool decode_repeated_datastream_record_datastream_maximum(zcbor_state_t *state, struct datastream_record_datastream_maximum *result);
@@ -72,8 +71,6 @@ static bool decode_repeated_system_record_system_factory_reset_window_ms(zcbor_s
 static bool decode_repeated_system_record_system_factory_reset_debounce_ms(zcbor_state_t *state, struct system_record_system_factory_reset_debounce_ms *result);
 static bool decode_repeated_system_record_system_factory_reset_release_confirm(zcbor_state_t *state, struct system_record_system_factory_reset_release_confirm *result);
 static bool decode_system_record(zcbor_state_t *state, struct system_record *result);
-static bool decode_repeated_schedule_occurrence_record_occurrence_values_uint64_m(zcbor_state_t *state, uint64_t *result);
-static bool decode_schedule_occurrence_record(zcbor_state_t *state, struct schedule_occurrence_record *result);
 static bool decode_repeated_safety_record_safety_minimum(zcbor_state_t *state, struct safety_record_safety_minimum *result);
 static bool decode_repeated_safety_record_safety_maximum(zcbor_state_t *state, struct safety_record_safety_maximum *result);
 static bool decode_repeated_safety_record_safety_timeout_ms(zcbor_state_t *state, struct safety_record_safety_timeout_ms *result);
@@ -83,28 +80,27 @@ static bool decode_repeated_parameter_record_parameter_default(zcbor_state_t *st
 static bool decode_parameter_record(zcbor_state_t *state, struct parameter_record *result);
 static bool decode_config_record_body(zcbor_state_t *state, struct config_record_body_r *result);
 static bool decode_error(zcbor_state_t *state, struct zcbor_string *result);
-static bool decode_schedule_end(zcbor_state_t *state, struct schedule_end *result);
-static bool decode_schedule_record_message(zcbor_state_t *state, struct schedule_record_message *result);
 static bool decode_config_end(zcbor_state_t *state, struct config_end *result);
 static bool decode_config_record(zcbor_state_t *state, struct config_record *result);
 static bool decode_config_begin(zcbor_state_t *state, struct config_begin *result);
 static bool decode_message_rejected(zcbor_state_t *state, struct zcbor_string *result);
 static bool decode_flow_control(zcbor_state_t *state, struct flow_control *result);
 static bool decode_time_response(zcbor_state_t *state, struct time_response *result);
-static bool decode_schedule_desired(zcbor_state_t *state, struct schedule_desired *result);
 static bool decode_ota_desired(zcbor_state_t *state, struct ota_desired *result);
 static bool decode_config_desired(zcbor_state_t *state, struct config_desired *result);
 static bool decode_ingestion_ack(zcbor_state_t *state, void *result);
 static bool decode_command(zcbor_state_t *state, struct command *result);
+static bool decode_lifecycle_ready(zcbor_state_t *state, void *result);
+static bool decode_lifecycle_report(zcbor_state_t *state, struct lifecycle_report *result);
 static bool decode_config_ack(zcbor_state_t *state, struct config_ack *result);
 static bool decode_time_request(zcbor_state_t *state, struct time_request *result);
-static bool decode_schedule_renew(zcbor_state_t *state, struct schedule_renew *result);
-static bool decode_schedule_reported(zcbor_state_t *state, struct schedule_reported *result);
 static bool decode_ota_reported(zcbor_state_t *state, struct ota_reported *result);
 static bool decode_config_reported(zcbor_state_t *state, struct config_reported *result);
 static bool decode_command_result(zcbor_state_t *state, struct command_result_r *result);
 static bool decode_state(zcbor_state_t *state, struct state *result);
 static bool decode_heartbeat(zcbor_state_t *state, struct heartbeat *result);
+static bool decode_scheduling_declarations(zcbor_state_t *state, struct scheduling_declarations *result);
+static bool decode_scheduling_ready(zcbor_state_t *state, void *result);
 static bool decode_datastream_bound(zcbor_state_t *state, struct datastream_bound *result);
 static bool decode_datastream_bind(zcbor_state_t *state, struct datastream_bind *result);
 static bool decode_bootstrap_error(zcbor_state_t *state, struct zcbor_string *result);
@@ -295,6 +291,20 @@ static bool decode_datastream_bound_ids(
 	return res;
 }
 
+static bool decode_scheduling_stream(
+		zcbor_state_t *state, struct scheduling_stream *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_decode(state) && ((((zcbor_uint64_decode(state, (&(*result).scheduling_stream_scheduling_id)))
+	&& ((((((((*result).scheduling_stream_scheduling_id <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((zcbor_uint64_decode(state, (&(*result).scheduling_stream_scheduling_mode)))
+	&& ((((*result).scheduling_stream_scheduling_mode <= 1)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
 static bool decode_repeated_ota_profile_ota_boot_state(
 		zcbor_state_t *state, struct ota_profile_ota_boot_state *result)
 {
@@ -444,51 +454,6 @@ static bool decode_state_readings(
 		 * A compiler error here means a bug in zcbor.
 		 */
 		decode_state_reading(state, (*&(*result).state_readings_state_reading_m));
-	}
-
-	log_result(state, res, __func__);
-	return res;
-}
-
-static bool decode_schedule_action(
-		zcbor_state_t *state, struct schedule_action *result)
-{
-	zcbor_log("%s\r\n", __func__);
-
-	bool res = (((zcbor_list_start_decode(state) && ((((zcbor_uint64_decode(state, (&(*result).schedule_action_action_offset_ms)))
-	&& ((((((*result).schedule_action_action_offset_ms <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& ((zcbor_uint64_decode(state, (&(*result).schedule_action_action_compact_id)))
-	&& ((((((((*result).schedule_action_action_compact_id <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& ((decode_typed_value_fields(state, (&(*result).schedule_action_typed_value_fields_m))))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
-
-	log_result(state, res, __func__);
-	return res;
-}
-
-static bool decode_schedule_record(
-		zcbor_state_t *state, struct schedule_record *result)
-{
-	zcbor_log("%s\r\n", __func__);
-
-	bool res = (((zcbor_map_start_decode(state) && (((((zcbor_uint64_expect(state, (0))))
-	&& (zcbor_uint64_expect(state, (2))))
-	&& (((zcbor_uint64_expect(state, (1))))
-	&& (zcbor_uint64_decode(state, (&(*result).schedule_record_schedule_id)))
-	&& ((((((*result).schedule_record_schedule_id <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& (((zcbor_uint64_expect(state, (2))))
-	&& (zcbor_bool_decode(state, (&(*result).schedule_record_schedule_enabled))))
-	&& (((zcbor_uint64_expect(state, (3))))
-	&& (zcbor_uint64_decode(state, (&(*result).schedule_record_schedule_valid_from))))
-	&& (((zcbor_uint64_expect(state, (4))))
-	&& (zcbor_uint64_decode(state, (&(*result).schedule_record_schedule_valid_until))))
-	&& (((zcbor_uint64_expect(state, (5))))
-	&& (zcbor_list_start_decode(state) && ((zcbor_multi_decode(1, 8, &(*result).schedule_record_schedule_actions_schedule_action_m_count, (zcbor_decoder_t *)decode_schedule_action, state, (*&(*result).schedule_record_schedule_actions_schedule_action_m), sizeof(struct schedule_action))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state)))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_map_end_decode(state))));
-
-	if (false) {
-		/* For testing that the types of the arguments are correct.
-		 * A compiler error here means a bug in zcbor.
-		 */
-		decode_schedule_action(state, (*&(*result).schedule_record_schedule_actions_schedule_action_m));
 	}
 
 	log_result(state, res, __func__);
@@ -914,47 +879,6 @@ static bool decode_system_record(
 	return res;
 }
 
-static bool decode_repeated_schedule_occurrence_record_occurrence_values_uint64_m(
-		zcbor_state_t *state, uint64_t *result)
-{
-	zcbor_log("%s\r\n", __func__);
-
-	bool res = (((zcbor_uint64_decode(state, (&(*result))))));
-
-	log_result(state, res, __func__);
-	return res;
-}
-
-static bool decode_schedule_occurrence_record(
-		zcbor_state_t *state, struct schedule_occurrence_record *result)
-{
-	zcbor_log("%s\r\n", __func__);
-
-	bool res = (((zcbor_map_start_decode(state) && (((((zcbor_uint64_expect(state, (0))))
-	&& (zcbor_uint64_expect(state, (4))))
-	&& (((zcbor_uint64_expect(state, (1))))
-	&& (zcbor_uint64_decode(state, (&(*result).schedule_occurrence_record_occurrence_schedule_id)))
-	&& ((((((*result).schedule_occurrence_record_occurrence_schedule_id <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& (((zcbor_uint64_expect(state, (2))))
-	&& (zcbor_uint64_decode(state, (&(*result).schedule_occurrence_record_occurrence_chunk_index)))
-	&& ((((((*result).schedule_occurrence_record_occurrence_chunk_index <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& (((zcbor_uint64_expect(state, (3))))
-	&& (zcbor_uint64_decode(state, (&(*result).schedule_occurrence_record_occurrence_chunk_count)))
-	&& ((((((*result).schedule_occurrence_record_occurrence_chunk_count <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& (((zcbor_uint64_expect(state, (4))))
-	&& (zcbor_list_start_decode(state) && ((zcbor_multi_decode(1, 16, &(*result).schedule_occurrence_record_occurrence_values_uint64_m_count, (zcbor_decoder_t *)decode_repeated_schedule_occurrence_record_occurrence_values_uint64_m, state, (*&(*result).schedule_occurrence_record_occurrence_values_uint64_m), sizeof(uint64_t))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state)))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_map_end_decode(state))));
-
-	if (false) {
-		/* For testing that the types of the arguments are correct.
-		 * A compiler error here means a bug in zcbor.
-		 */
-		decode_repeated_schedule_occurrence_record_occurrence_values_uint64_m(state, (*&(*result).schedule_occurrence_record_occurrence_values_uint64_m));
-	}
-
-	log_result(state, res, __func__);
-	return res;
-}
-
 static bool decode_repeated_safety_record_safety_minimum(
 		zcbor_state_t *state, struct safety_record_safety_minimum *result)
 {
@@ -1083,8 +1007,6 @@ static bool decode_config_record_body(
 
 	bool res = (((zcbor_union_start_code(state) && (int_res = ((((decode_datastream_record(state, (&(*result).config_record_body_datastream_record_m)))) && (((*result).config_record_body_choice = config_record_body_datastream_record_m_c), true))
 	|| (zcbor_union_elem_code(state) && (((decode_system_record(state, (&(*result).config_record_body_system_record_m)))) && (((*result).config_record_body_choice = config_record_body_system_record_m_c), true)))
-	|| (zcbor_union_elem_code(state) && (((decode_schedule_record(state, (&(*result).config_record_body_schedule_record_m)))) && (((*result).config_record_body_choice = config_record_body_schedule_record_m_c), true)))
-	|| (zcbor_union_elem_code(state) && (((decode_schedule_occurrence_record(state, (&(*result).config_record_body_schedule_occurrence_record_m)))) && (((*result).config_record_body_choice = config_record_body_schedule_occurrence_record_m_c), true)))
 	|| (zcbor_union_elem_code(state) && (((decode_safety_record(state, (&(*result).config_record_body_safety_record_m)))) && (((*result).config_record_body_choice = config_record_body_safety_record_m_c), true)))
 	|| (zcbor_union_elem_code(state) && (((decode_parameter_record(state, (&(*result).config_record_body_parameter_record_m)))) && (((*result).config_record_body_choice = config_record_body_parameter_record_m_c), true)))), zcbor_union_end_code(state), int_res))));
 
@@ -1100,37 +1022,6 @@ static bool decode_error(
 	bool res = (((zcbor_list_start_decode(state) && ((((zcbor_tstr_decode(state, (&(*result))))
 	&& ((((((*result).len >= 1)
 	&& ((*result).len <= 48)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
-
-	log_result(state, res, __func__);
-	return res;
-}
-
-static bool decode_schedule_end(
-		zcbor_state_t *state, struct schedule_end *result)
-{
-	zcbor_log("%s\r\n", __func__);
-
-	bool res = (((zcbor_list_start_decode(state) && ((((zcbor_uint64_decode(state, (&(*result).schedule_end_generation)))
-	&& ((((((((*result).schedule_end_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& ((zcbor_uint64_decode(state, (&(*result).schedule_end_record_count)))
-	&& ((((((*result).schedule_end_record_count <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& ((zcbor_bstr_decode(state, (&(*result).schedule_end_checksum)))
-	&& ((((((*result).schedule_end_checksum.len == 32)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
-
-	log_result(state, res, __func__);
-	return res;
-}
-
-static bool decode_schedule_record_message(
-		zcbor_state_t *state, struct schedule_record_message *result)
-{
-	zcbor_log("%s\r\n", __func__);
-
-	bool res = (((zcbor_list_start_decode(state) && ((((zcbor_uint64_decode(state, (&(*result).schedule_record_message_schedule_message_generation)))
-	&& ((((((((*result).schedule_record_message_schedule_message_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& ((zcbor_uint64_decode(state, (&(*result).schedule_record_message_schedule_message_sequence)))
-	&& ((((((*result).schedule_record_message_schedule_message_sequence <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& ((decode_schedule_record(state, (&(*result).schedule_record_message_schedule_message_record))))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
 
 	log_result(state, res, __func__);
 	return res;
@@ -1253,24 +1144,6 @@ static bool decode_time_response(
 	return res;
 }
 
-static bool decode_schedule_desired(
-		zcbor_state_t *state, struct schedule_desired *result)
-{
-	zcbor_log("%s\r\n", __func__);
-
-	bool res = (((zcbor_list_start_decode(state) && ((((zcbor_uint64_decode(state, (&(*result).schedule_desired_desired_schedule_generation)))
-	&& ((((((((*result).schedule_desired_desired_schedule_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& ((zcbor_uint64_decode(state, (&(*result).schedule_desired_desired_schedule_revision)))
-	&& ((((((*result).schedule_desired_desired_schedule_revision <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& ((zcbor_uint64_decode(state, (&(*result).schedule_desired_desired_schedule_record_count)))
-	&& ((((((*result).schedule_desired_desired_schedule_record_count <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& ((zcbor_bstr_decode(state, (&(*result).schedule_desired_desired_schedule_checksum)))
-	&& ((((((*result).schedule_desired_desired_schedule_checksum.len == 32)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
-
-	log_result(state, res, __func__);
-	return res;
-}
-
 static bool decode_ota_desired(
 		zcbor_state_t *state, struct ota_desired *result)
 {
@@ -1356,6 +1229,39 @@ static bool decode_command(
 	return res;
 }
 
+static bool decode_lifecycle_ready(
+		zcbor_state_t *state, void *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_decode(state) && zcbor_list_end_decode(state))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_lifecycle_report(
+		zcbor_state_t *state, struct lifecycle_report *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_decode(state) && ((((zcbor_uint64_decode(state, (&(*result).lifecycle_report_log_boot_id))))
+	&& ((zcbor_uint64_decode(state, (&(*result).lifecycle_report_log_sequence)))
+	&& ((((((*result).lifecycle_report_log_sequence <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((zcbor_uint64_decode(state, (&(*result).lifecycle_report_log_uptime_ms))))
+	&& ((zcbor_uint64_decode(state, (&(*result).lifecycle_report_log_code)))
+	&& ((((*result).lifecycle_report_log_code <= 10)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((zcbor_uint64_decode(state, (&(*result).lifecycle_report_log_detail)))
+	&& ((((((*result).lifecycle_report_log_detail <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((zcbor_uint64_decode(state, (&(*result).lifecycle_report_log_generation)))
+	&& ((((((((*result).lifecycle_report_log_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((zcbor_uint64_decode(state, (&(*result).lifecycle_report_log_dropped)))
+	&& ((((((*result).lifecycle_report_log_dropped <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
 static bool decode_config_ack(
 		zcbor_state_t *state, struct config_ack *result)
 {
@@ -1382,38 +1288,6 @@ static bool decode_time_request(
 
 	bool res = (((zcbor_list_start_decode(state) && ((((zcbor_uint64_decode(state, (&(*result).time_request_id))))
 	&& ((zcbor_uint64_decode(state, (&(*result).time_request_monotonic_ms))))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
-
-	log_result(state, res, __func__);
-	return res;
-}
-
-static bool decode_schedule_renew(
-		zcbor_state_t *state, struct schedule_renew *result)
-{
-	zcbor_log("%s\r\n", __func__);
-
-	bool res = (((zcbor_list_start_decode(state) && ((((zcbor_uint64_decode(state, (&(*result).schedule_renew_renew_generation)))
-	&& ((((((((*result).schedule_renew_renew_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& ((zcbor_uint64_decode(state, (&(*result).schedule_renew_renew_revision)))
-	&& ((((((*result).schedule_renew_renew_revision <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
-
-	log_result(state, res, __func__);
-	return res;
-}
-
-static bool decode_schedule_reported(
-		zcbor_state_t *state, struct schedule_reported *result)
-{
-	zcbor_log("%s\r\n", __func__);
-
-	bool res = (((zcbor_list_start_decode(state) && ((((zcbor_uint64_decode(state, (&(*result).schedule_reported_reported_schedule_generation)))
-	&& ((((((((*result).schedule_reported_reported_schedule_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& ((zcbor_uint64_decode(state, (&(*result).schedule_reported_reported_schedule_revision)))
-	&& ((((((*result).schedule_reported_reported_schedule_revision <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& ((zcbor_uint64_decode(state, (&(*result).schedule_reported_reported_schedule_status)))
-	&& ((((*result).schedule_reported_reported_schedule_status <= UINT8_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& ((zcbor_bstr_decode(state, (&(*result).schedule_reported_reported_schedule_checksum)))
-	&& ((((((*result).schedule_reported_reported_schedule_checksum.len == 32)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
 
 	log_result(state, res, __func__);
 	return res;
@@ -1507,6 +1381,41 @@ static bool decode_heartbeat(
 	&& ((((((*result).heartbeat_last_install_id_uuid_m.len == 16)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) && (((*result).heartbeat_last_install_id_choice = heartbeat_last_install_id_uuid_m_c), true)))), zcbor_union_end_code(state), int_res)))
 	&& ((decode_ota_profile(state, (&(*result).heartbeat_ota_profile))))
 	&& ((*result).heartbeat_capabilities_present = ((decode_capabilities(state, (&(*result).heartbeat_capabilities)))), 1)) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_scheduling_declarations(
+		zcbor_state_t *state, struct scheduling_declarations *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_decode(state) && ((((zcbor_uint64_decode(state, (&(*result).scheduling_declarations_scheduling_generation)))
+	&& ((((((((*result).scheduling_declarations_scheduling_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((zcbor_uint64_decode(state, (&(*result).scheduling_declarations_scheduling_offset)))
+	&& ((((*result).scheduling_declarations_scheduling_offset <= 64)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((zcbor_uint64_decode(state, (&(*result).scheduling_declarations_scheduling_total)))
+	&& ((((*result).scheduling_declarations_scheduling_total <= 64)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((zcbor_list_start_decode(state) && ((zcbor_multi_decode(0, 16, &(*result).scheduling_declarations_scheduling_streams_scheduling_stream_m_count, (zcbor_decoder_t *)decode_scheduling_stream, state, (*&(*result).scheduling_declarations_scheduling_streams_scheduling_stream_m), sizeof(struct scheduling_stream))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state)))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
+
+	if (false) {
+		/* For testing that the types of the arguments are correct.
+		 * A compiler error here means a bug in zcbor.
+		 */
+		decode_scheduling_stream(state, (*&(*result).scheduling_declarations_scheduling_streams_scheduling_stream_m));
+	}
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_scheduling_ready(
+		zcbor_state_t *state, void *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_decode(state) && zcbor_list_end_decode(state))));
 
 	log_result(state, res, __func__);
 	return res;
@@ -1780,6 +1689,30 @@ int cbor_decode_datastream_bound(
 }
 
 
+int cbor_decode_scheduling_ready(
+		const uint8_t *payload, size_t payload_len,
+		void *result,
+		size_t *payload_len_out)
+{
+	zcbor_state_t states[3];
+
+	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
+		(zcbor_decoder_t *)decode_scheduling_ready, sizeof(states) / sizeof(zcbor_state_t), 1);
+}
+
+
+int cbor_decode_scheduling_declarations(
+		const uint8_t *payload, size_t payload_len,
+		struct scheduling_declarations *result,
+		size_t *payload_len_out)
+{
+	zcbor_state_t states[5];
+
+	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
+		(zcbor_decoder_t *)decode_scheduling_declarations, sizeof(states) / sizeof(zcbor_state_t), 1);
+}
+
+
 int cbor_decode_heartbeat(
 		const uint8_t *payload, size_t payload_len,
 		struct heartbeat *result,
@@ -1840,30 +1773,6 @@ int cbor_decode_ota_reported(
 }
 
 
-int cbor_decode_schedule_reported(
-		const uint8_t *payload, size_t payload_len,
-		struct schedule_reported *result,
-		size_t *payload_len_out)
-{
-	zcbor_state_t states[3];
-
-	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
-		(zcbor_decoder_t *)decode_schedule_reported, sizeof(states) / sizeof(zcbor_state_t), 1);
-}
-
-
-int cbor_decode_schedule_renew(
-		const uint8_t *payload, size_t payload_len,
-		struct schedule_renew *result,
-		size_t *payload_len_out)
-{
-	zcbor_state_t states[3];
-
-	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
-		(zcbor_decoder_t *)decode_schedule_renew, sizeof(states) / sizeof(zcbor_state_t), 1);
-}
-
-
 int cbor_decode_time_request(
 		const uint8_t *payload, size_t payload_len,
 		struct time_request *result,
@@ -1885,6 +1794,30 @@ int cbor_decode_config_ack(
 
 	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
 		(zcbor_decoder_t *)decode_config_ack, sizeof(states) / sizeof(zcbor_state_t), 1);
+}
+
+
+int cbor_decode_lifecycle_report(
+		const uint8_t *payload, size_t payload_len,
+		struct lifecycle_report *result,
+		size_t *payload_len_out)
+{
+	zcbor_state_t states[3];
+
+	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
+		(zcbor_decoder_t *)decode_lifecycle_report, sizeof(states) / sizeof(zcbor_state_t), 1);
+}
+
+
+int cbor_decode_lifecycle_ready(
+		const uint8_t *payload, size_t payload_len,
+		void *result,
+		size_t *payload_len_out)
+{
+	zcbor_state_t states[3];
+
+	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
+		(zcbor_decoder_t *)decode_lifecycle_ready, sizeof(states) / sizeof(zcbor_state_t), 1);
 }
 
 
@@ -1933,18 +1866,6 @@ int cbor_decode_ota_desired(
 
 	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
 		(zcbor_decoder_t *)decode_ota_desired, sizeof(states) / sizeof(zcbor_state_t), 1);
-}
-
-
-int cbor_decode_schedule_desired(
-		const uint8_t *payload, size_t payload_len,
-		struct schedule_desired *result,
-		size_t *payload_len_out)
-{
-	zcbor_state_t states[3];
-
-	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
-		(zcbor_decoder_t *)decode_schedule_desired, sizeof(states) / sizeof(zcbor_state_t), 1);
 }
 
 
@@ -2001,7 +1922,7 @@ int cbor_decode_config_record(
 		struct config_record *result,
 		size_t *payload_len_out)
 {
-	zcbor_state_t states[8];
+	zcbor_state_t states[7];
 
 	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
 		(zcbor_decoder_t *)decode_config_record, sizeof(states) / sizeof(zcbor_state_t), 1);
@@ -2017,30 +1938,6 @@ int cbor_decode_config_end(
 
 	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
 		(zcbor_decoder_t *)decode_config_end, sizeof(states) / sizeof(zcbor_state_t), 1);
-}
-
-
-int cbor_decode_schedule_record_message(
-		const uint8_t *payload, size_t payload_len,
-		struct schedule_record_message *result,
-		size_t *payload_len_out)
-{
-	zcbor_state_t states[7];
-
-	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
-		(zcbor_decoder_t *)decode_schedule_record_message, sizeof(states) / sizeof(zcbor_state_t), 1);
-}
-
-
-int cbor_decode_schedule_end(
-		const uint8_t *payload, size_t payload_len,
-		struct schedule_end *result,
-		size_t *payload_len_out)
-{
-	zcbor_state_t states[3];
-
-	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
-		(zcbor_decoder_t *)decode_schedule_end, sizeof(states) / sizeof(zcbor_state_t), 1);
 }
 
 

@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 #include <FlovaDevice.h>
+#include <FlovaEntropy.h>
 #include <FlovaHardware.h>
 #include <FlovaLinkMessages.h>
 
@@ -38,8 +39,11 @@ class FlovaClientLink : public flova::Link {
   virtual bool publishConfigurationState(
       const FlovaLinkConfigurationState& state) = 0;
   virtual bool publishHeartbeat(const FlovaLinkHeartbeat& heartbeat) = 0;
-  virtual bool publishScheduleStatus(const FlovaLinkScheduleStatus& status) = 0;
-  virtual bool publishScheduleRenew(const FlovaLinkScheduleStatus& status) = 0;
+  virtual bool lifecycleLogsSupported() const { return false; }
+  virtual bool publishLifecycle(const FlovaLinkLifecycleReport&) { return false; }
+  virtual bool takeLifecycleAck(uint64_t) { return false; }
+  virtual uint32_t connectionAttempts() const { return 0; }
+  virtual uint32_t connectionFailures() const { return 0; }
   virtual bool takeOtaOffer(FlovaLinkOtaOffer& offer) = 0;
   virtual bool publishOtaReport(const FlovaLinkOtaReport& report) = 0;
   virtual flova::OtaInstallResult installOta(
@@ -80,3 +84,16 @@ class FlovaClientLink : public flova::Link {
   virtual bool maintenanceFailed() const { return false; }
   virtual void endMaintenance() {}
 };
+
+namespace flova {
+namespace detail {
+class BorrowedManagedLink {
+ public:
+  BorrowedManagedLink(FlovaEntropySource&, FlovaClientLink& link) : link_(link) {}
+  FlovaClientLink& link() { return link_; }
+
+ private:
+  FlovaClientLink& link_;
+};
+}  // namespace detail
+}  // namespace flova

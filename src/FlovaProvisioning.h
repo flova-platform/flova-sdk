@@ -16,7 +16,7 @@ struct ProvisioningSession {
   char linkUrl[kMaxText], secret[kMaxText];
   uint64_t serverUtcMs;
   ProvisioningSession() : schemaVersion(0), serverUtcMs(0) { deviceId[0] = organizationId[0] = templateVersionId[0] = linkUrl[0] = secret[0] = 0; }
-  bool valid() const { return schemaVersion == 1 && deviceId[0] && strncmp(linkUrl, "wss://", 6) == 0 && secret[0]; }
+  bool valid() const { return schemaVersion == 1 && deviceId[0] && strncmp(linkUrl, "mqtts://", 8) == 0 && secret[0]; }
 };
 
 class LinkBootstrapClient {

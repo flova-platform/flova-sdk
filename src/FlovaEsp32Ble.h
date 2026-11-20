@@ -17,9 +17,9 @@
 
 class FlovaEsp32Ble final {
  public:
-  FlovaEsp32Ble()
+  explicit FlovaEsp32Ble(const char* proofOfPossession = FLOVA_SETUP_PROOF_OF_POSSESSION)
       : linkPlatform_(), link_(linkPlatform_, entropy_),
-        identity_(FLOVA_ESP32_BLE_TARGET),
+        provisioning_(proofOfPossession), identity_(FLOVA_ESP32_BLE_TARGET),
     client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
                 clock_, logger_, entropy_, hardware_) {
     client_.setFirmwareTarget(FLOVA_ESP32_BLE_TARGET);
@@ -61,6 +61,10 @@ class FlovaEsp32Ble final {
 
   template <typename T>
   flova::Datastream<T> datastream(const char* key) {
+    return client_.datastream<T>(key);
+  }
+  template <typename T>
+  flova::Datastream<T> stream(const char* key) {
     return client_.datastream<T>(key);
   }
   template <typename T>

@@ -10,8 +10,10 @@
 #include <FlovaConfigurationInstaller.h>
 #include <FlovaHardware.h>
 #include <FlovaArduinoPlatform.h>
-#include <FlovaWs.h>
+#include <FlovaMqtt.h>
+#include <FlovaEntropy.h>
 #include <FlovaLinkMessages.h>
+#include <FlovaScheduling.h>
 
 extern "C" {
 #include <flova_link_decode.h>
@@ -30,7 +32,6 @@ class ArduinoDeviceLink final {
     CborSchema,
     CborCanonical,
     FrameHeader,
-    WebSocketFrame,
     TransportSubmit,
     TransportWrite,
     BootstrapFields,
@@ -40,7 +41,7 @@ class ArduinoDeviceLink final {
   static const size_t kFrameBytes = flova::link::kMaximumFrameBytes;
   static const size_t kPayloadBytes = flova::link::kMaximumPayloadBytes;
   static const size_t kTransmitWorkspaceBytes =
-      kFrameBytes + FlovaWs::kMaximumOutgoingHeaderBytes;
+      kFrameBytes;
   // Authentication and CONFIG_BEGIN can arrive in the same network turn.
   // Two slots cover that burst without taking another transport-sized buffer.
   static const uint8_t kPendingFrameSlots = 2;
@@ -52,13 +53,12 @@ class ArduinoDeviceLink final {
                 "generated CONFIG_RECORD decode workspace exceeded its budget");
 
   ArduinoDeviceLink(FlovaArduinoPlatform& platform, FlovaEntropySource& entropy)
-      : platform_(platform), websocket_(platform, entropy) {}
+      : platform_(platform), entropy_(entropy) {}
   ~ArduinoDeviceLink() { disconnect(false); }
   void beginDrain() {
     drainFailed_ = false;
     draining_ = true;
     drainStartedAt_ = millis();
-    websocket_.close();
   }
   bool drainComplete() const { return !draining_ && platform_.linkClosed(); }
   bool drainFailed() const { return drainFailed_; }
@@ -95,6 +95,11 @@ class ArduinoDeviceLink final {
     bindingPending_ = false;
     bindingOffset_ = bindingBatchCount_ = 0;
     return true;
+  }
+
+  void clearDatastreamBindings() {
+    setDatastreamKeys(nullptr, 0);
+    memset(bindingKeys_, 0, sizeof(bindingKeys_));
   }
 
   bool decodeStoredConfigurationUnit(const uint8_t* payload, size_t length,
@@ -157,11 +162,9 @@ class ArduinoDeviceLink final {
           output.recordType = 0; break;
         case config_record_body_r::config_record_body_system_record_m_c:
           output.recordType = 1; break;
-        case config_record_body_r::config_record_body_schedule_record_m_c:
           output.recordType = 2; break;
         case config_record_body_r::config_record_body_safety_record_m_c:
           output.recordType = 3; break;
-        case config_record_body_r::config_record_body_schedule_occurrence_record_m_c:
           output.recordType = 4; break;
         case config_record_body_r::config_record_body_parameter_record_m_c:
           output.recordType = 5; break;
@@ -191,7 +194,7 @@ class ArduinoDeviceLink final {
   }
 
   bool connected() {
-    return active_ && websocket_.connected() &&
+    return active_ && mqtt_ && mqtt_->ready() &&
            (bootstrap_ || (authenticated_ && !bindingPending_));
   }
 
@@ -214,8 +217,7 @@ class ArduinoDeviceLink final {
     connectionAttemptFailed_ = false;
     resourceUnavailable_ = false;
     if (!openConnection(false)) return false;
-    // WebSocket authentication completes from loop(); do not stop the
-    // application's loop for up to ten seconds during startup/reconnect.
+    // TLS and broker/application authentication advance from the board loop.
     return true;
   }
 
@@ -235,9 +237,29 @@ class ArduinoDeviceLink final {
   }
 
   bool resourceRecoveryRequired() const { return resourceUnavailable_; }
+  bool takeConnectionAttemptFailure() {
+    const bool failed = connectionAttemptFailed_;
+    connectionAttemptFailed_ = false;
+    return failed;
+  }
 
   void setConfigurationGeneration(uint32_t generation) {
+    if (configurationGeneration_ != generation) {
+      schedulingDirty_ = true;
+      schedulingOffset_ = 0;
+      schedulingSent_ = false;
+    }
     configurationGeneration_ = generation;
+  }
+
+  void schedulingDeclarations(flova::SchedulingReader reader, void* context,
+                              size_t count) {
+    schedulingReader_ = reader;
+    schedulingContext_ = context;
+    schedulingCount_ = count;
+    schedulingDirty_ = true;
+    schedulingOffset_ = 0;
+    schedulingSent_ = false;
   }
 
   void setHardwareCapabilities(
@@ -287,6 +309,21 @@ class ArduinoDeviceLink final {
       result.command_result_error_result_error_version = message.desiredVersion;
     }
     return sendEncoded(0x12, message.messageId, value, cbor_encode_command_result);
+  }
+
+  bool lifecycleLogsSupported() const { return lifecycleSupported_; }
+
+  bool publishLifecycle(const FlovaLinkLifecycleReport& message) {
+    if (!connected() || !lifecycleSupported_) return false;
+    struct lifecycle_report value = {};
+    value.lifecycle_report_log_boot_id = message.bootId;
+    value.lifecycle_report_log_sequence = message.sequence;
+    value.lifecycle_report_log_uptime_ms = message.uptimeMs;
+    value.lifecycle_report_log_code = message.code;
+    value.lifecycle_report_log_detail = message.detail;
+    value.lifecycle_report_log_generation = message.generation;
+    value.lifecycle_report_log_dropped = message.dropped;
+    return sendEncoded(0x19, message.messageId, value, cbor_encode_lifecycle_report);
   }
 
   bool publishHeartbeat(const FlovaLinkHeartbeat& message) {
@@ -370,25 +407,7 @@ class ArduinoDeviceLink final {
     return sendEncoded(0x14, message.messageId, value, cbor_encode_ota_reported);
   }
 
-  bool publishScheduleStatus(const FlovaLinkScheduleStatus& message) {
-    if (!connected()) return false;
-    struct schedule_reported value = {};
-    value.schedule_reported_reported_schedule_generation = message.generation;
-    value.schedule_reported_reported_schedule_revision = message.revision;
-    value.schedule_reported_reported_schedule_status = static_cast<uint8_t>(message.status);
-    static const uint8_t emptyChecksum[32] = {};
-    value.schedule_reported_reported_schedule_checksum.value = emptyChecksum;
-    value.schedule_reported_reported_schedule_checksum.len = 32;
-    return sendEncoded(0x15, message.messageId, value, cbor_encode_schedule_reported);
-  }
 
-  bool publishScheduleRenew(const FlovaLinkScheduleStatus& message) {
-    if (!connected()) return false;
-    struct schedule_renew value = {};
-    value.schedule_renew_renew_generation = message.generation;
-    value.schedule_renew_renew_revision = message.revision;
-    return sendEncoded(0x16, message.messageId, value, cbor_encode_schedule_renew);
-  }
 
   bool publishTimeRequest(const FlovaLinkTimeRequest& message) {
     if (!connected()) return false;
@@ -405,9 +424,9 @@ class ArduinoDeviceLink final {
   }
   void loop() {
     if (draining_) {
-      const bool ok = platform_.serviceLinkWrite() && websocket_.serviceControl();
+      const bool ok = platform_.serviceLinkWrite() && (!mqtt_ || mqtt_->poll());
       if (!ok || millis() - drainStartedAt_ >= 5000UL ||
-          (!platform_.linkWriteBusy() && !websocket_.controlPending())) {
+          (!platform_.linkWriteBusy() && (!mqtt_ || !mqtt_->busy()))) {
         drainFailed_ = !ok || millis() - drainStartedAt_ >= 5000UL;
         draining_ = false;
         disconnect(false);
@@ -415,7 +434,6 @@ class ArduinoDeviceLink final {
       return;
     }
     if (!active_ && !connecting_) return;
-    if (!websocket_.serviceControl()) { disconnect(false); return; }
     if (!platform_.serviceLinkWrite()) {
       if (bootstrap_) setBootstrapError("link_transport_write_failed");
       connectionAttemptFailed_ = true;
@@ -427,30 +445,24 @@ class ArduinoDeviceLink final {
         const FlovaLinkOpenStatus status = platform_.pollLink();
         if (status == FlovaLinkOpenStatus::InProgress) return;
         if (status == FlovaLinkOpenStatus::Failed ||
-            !startWebSocketHandshake()) {
+             !startMqttSession()) {
           if (bootstrap_)
             setBootstrapError(status == FlovaLinkOpenStatus::Failed
                                   ? platform_.linkError()
-                                  : "link_ws_start_failed");
+                                   : "mqtt_session_failed");
           connectionAttemptFailed_ = true;
           disconnect();
           return;
         }
         transportOpening_ = false;
       }
-      if (platform_.linkWriteBusy()) return;
-      const FlovaWs::HandshakeProgress progress = websocket_.pollHandshake();
-      if (progress == FlovaWs::HandshakeProgress::InProgress) return;
-      if (progress == FlovaWs::HandshakeProgress::Failed) {
-        FLOVA_SERIAL_PRINTF_WARN("[flova] Link websocket handshake failed code=%u reason=%s status=%u\n",
-                      static_cast<unsigned>(websocket_.error()),
-                      FlovaWs::handshakeFailureName(websocket_.handshakeFailure()),
-                      static_cast<unsigned>(websocket_.handshakeStatus()));
-        if (bootstrap_) setBootstrapError("link_ws_handshake_failed");
+      if (!mqtt_ || !mqtt_->poll()) {
+        if (bootstrap_) setBootstrapError("mqtt_handshake_failed");
         connectionAttemptFailed_ = true;
         disconnect();
         return;
       }
+      if (!mqtt_->ready()) return;
       connecting_ = false;
       active_ = true;
       SendFailure failure = SendFailure::None;
@@ -464,15 +476,40 @@ class ArduinoDeviceLink final {
       }
       return;
     }
+    // Drain application work before accepting another MQTT receive batch. In
+    // particular, a slow PUBACK write must not make already-ACKed downlinks
+    // overflow this queue and disappear during a disconnect.
+    for (uint8_t i = 0; i < kPendingFrameSlots && pendingFrameCount_ && active_; ++i) {
+      if (platform_.linkWriteBusy()) return;
+      dispatchPendingFrame();
+      if (!platform_.serviceLinkWrite()) { disconnect(false); return; }
+    }
+    if (!active_ || pendingFrameCount_ || platform_.linkWriteBusy()) return;
+    if (!mqtt_ || !mqtt_->poll()) { disconnect(false); return; }
+    if (active_ && authenticated_ && !bindingPending_ && lifecycleProbePending_ && !mqtt_->busy()) {
+      const uint8_t empty = 0;
+      if (sendEncoded(0x04, UINT64_MAX, empty, encodeLifecycleProbe)) lifecycleProbePending_ = false;
+    }
+    if (active_ && authenticated_ && !bindingPending_ && !mqtt_->busy()) {
+      const uint8_t empty = 0;
+      if (schedulingProbePending_) {
+        if (sendEncoded(0x04, UINT64_MAX - 1, empty, encodeLifecycleProbe)) schedulingProbePending_ = false;
+      } else if (schedulingSupported_ && schedulingDirty_ &&
+                 (!schedulingSent_ || millis() - schedulingSentAt_ >= 5000UL)) {
+        if (sendSchedulingDeclarations()) {
+          schedulingSentAt_ = millis();
+          schedulingSent_ = true;
+        }
+      }
+    }
     if (active_ && bindingPending_) {
       if (bindingBatchCount_) {
         if (millis() - bindingSentAt_ >= 15000UL) { disconnect(); return; }
-      } else if (!platform_.linkWriteBusy() && !websocket_.controlPending()) {
+      } else if (!mqtt_->busy()) {
         if (!sendDatastreamBinding()) { disconnect(); return; }
       }
     }
     for (uint8_t i = 0; i < kPendingFrameSlots && active_; ++i) {
-      pumpWebSocket();
       if (!platform_.linkWriteBusy()) dispatchPendingFrame();
       if (!platform_.serviceLinkWrite()) {
         connectionAttemptFailed_ = true;
@@ -537,7 +574,7 @@ class ArduinoDeviceLink final {
     disconnecting_ = true;
     draining_ = false;
     const bool hadConnection = active_ || connecting_ || authenticated_ || bootstrap_ ||
-                               pendingFrameCount_ != 0 || websocket_.connected();
+                               pendingFrameCount_ != 0 || (mqtt_ && mqtt_->connected());
     active_ = false;
     connecting_ = false;
     transportOpening_ = false;
@@ -550,8 +587,7 @@ class ArduinoDeviceLink final {
     pendingFrameTail_ = 0;
     pendingFrameLength_ = 0;
     pendingCallback_ = false;
-    if (notifyPeer) websocket_.close();
-    else websocket_.abort();
+    (void)notifyPeer;
     if (hadConnection || !platform_.linkClosed()) platform_.closeLink();
     disconnecting_ = false;
     releaseIdleWorkspace();
@@ -562,17 +598,28 @@ class ArduinoDeviceLink final {
   void releaseIdleWorkspace() {
     if (!active_ && !connecting_ && !dispatching_) {
       workspace_.reset();
+      mqtt_.reset();
     }
   }
 
  private:
+  // The embedded memory budget uses 32-bit pointers; host codec records are larger.
+  static_assert(sizeof(uintptr_t) > 4 || sizeof(datastream_bind) <= sizeof(FlovaLinkInboundMessage), "Binding encode must fit the existing inbound slot");
+  static_assert(sizeof(uintptr_t) > 4 || sizeof(datastream_bound) <= sizeof(FlovaLinkInboundMessage), "Binding decode must fit the existing inbound slot");
+  static_assert(sizeof(scheduling_declarations) <= kPayloadBytes,
+                "Scheduling declarations must fit the shared bounded codec workspace");
   struct Workspace {
     uint8_t tx_[kTransmitWorkspaceBytes] = {};
     uint8_t pendingFrames_[kPendingFrameSlots][kFrameBytes] = {};
-    FlovaLinkInboundMessage inbound_ = {};
+    union {
+      FlovaLinkInboundMessage inbound_ = {};
+      struct datastream_bind bindingEncodeWorkspace_;
+      struct datastream_bound bindingDecodeWorkspace_;
+    };
     union {
       struct config_record configurationDecodeWorkspace_ = {};
       char bindingNames_[9][FLOVA_MAX_DATASTREAM_KEY_LENGTH + 1];
+      struct scheduling_declarations schedulingWorkspace_;
     };
   };
   bool ensureWorkspace() {
@@ -601,46 +648,65 @@ class ArduinoDeviceLink final {
     return true;
   }
 
-  bool startWebSocketHandshake() {
-    if (!ensureWorkspace()) return false;
-    size_t requestLength = 0;
-    if (!websocket_.startHandshake(host_, port_, path_, workspace_->tx_, sizeof(workspace_->tx_),
-                                   requestLength) ||
-        !platform_.submitLinkWrite(workspace_->tx_, requestLength) ||
-        !platform_.serviceLinkWrite()) {
-      platform_.closeLink();
+  bool startMqttSession() {
+    if (!ensureWorkspace() || !mqtt_.create(platform_)) {
+      resourceUnavailable_ = true;
       return false;
     }
-    return true;
+    static const char hex[] = "0123456789abcdef";
+    char epoch[17] = {};
+    for (size_t i = 0; i < 8; ++i) {
+      const uint8_t value = entropy_.byte();
+      epoch[i * 2] = hex[value >> 4];
+      epoch[i * 2 + 1] = hex[value & 15];
+    }
+    char principal[67] = {};
+    char password[65] = {};
+    if (bootstrap_) {
+      const flova::config::Checksum digest = flova::config::Digest::hash(bootstrapToken_, bootstrapTokenLength_);
+      principal[0] = 'b'; principal[1] = '-';
+      for (size_t i = 0; i < sizeof(digest.bytes); ++i) {
+        principal[2 + i * 2] = hex[digest.bytes[i] >> 4];
+        principal[3 + i * 2] = hex[digest.bytes[i] & 15];
+      }
+      memcpy(password, bootstrapToken_, bootstrapTokenLength_);
+    } else {
+      char id[37] = {};
+      const struct zcbor_string bytes = {deviceId_, sizeof(deviceId_)};
+      if (!copyUuidText(id, bytes)) return false;
+      snprintf(principal, sizeof(principal), "d-%s", id);
+      static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+      uint32_t bits = 0;
+      uint8_t available = 0;
+      size_t cursor = 0;
+      for (size_t i = 0; i < sizeof(secret_); ++i) {
+        bits = (bits << 8) | secret_[i];
+        available = static_cast<uint8_t>(available + 8);
+        while (available >= 6) {
+          available = static_cast<uint8_t>(available - 6);
+          password[cursor++] = alphabet[(bits >> available) & 63];
+        }
+      }
+      if (available) password[cursor] = alphabet[(bits << (6 - available)) & 63];
+    }
+    const bool ok = mqtt_->connect(principal, password, epoch, receiveMqttFrame, this);
+    memset(password, 0, sizeof(password));
+    return ok;
   }
 
-  void pumpWebSocket() {
-    if (pendingFrameCount_ >= kPendingFrameSlots) return;
-    const uint8_t slot = pendingFrameTail_;
-    const size_t capacity = kFrameBytes - pendingFrameLength_;
-    const int length = websocket_.read(workspace_->pendingFrames_[slot] + pendingFrameLength_, capacity);
-    if (length < 0) {
-      connectionAttemptFailed_ = true;
-      FLOVA_SERIAL_PRINTF_WARN("[flova] Link websocket error code=%u\n",
-                    static_cast<unsigned>(websocket_.error()));
-      disconnect(false);
-      return;
-    }
-    pendingFrameLength_ += static_cast<size_t>(length);
-    if (websocket_.messageComplete()) {
-      if (!pendingFrameLength_ || pendingFrameLength_ > kFrameBytes) {
-        connectionAttemptFailed_ = true;
-        disconnect();
-        return;
-      }
-      pendingFrameLengths_[slot] = pendingFrameLength_;
+  static bool receiveMqttFrame(void* context, const uint8_t* bytes, size_t length) {
+    ArduinoDeviceLink& self = *static_cast<ArduinoDeviceLink*>(context);
+    if (!self.workspace_ || !length || length > kFrameBytes || self.pendingFrameCount_ >= kPendingFrameSlots)
+      return false;
+    const uint8_t slot = self.pendingFrameTail_;
+    memcpy(self.workspace_->pendingFrames_[slot], bytes, length);
+    self.pendingFrameLengths_[slot] = length;
 #if FLOVA_LINK_PERFORMANCE_LOGGING && FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_TRACE
-      pendingFrameQueuedAtMs_[slot] = millis();
+    self.pendingFrameQueuedAtMs_[slot] = millis();
 #endif
-      pendingFrameTail_ = static_cast<uint8_t>((pendingFrameTail_ + 1) % kPendingFrameSlots);
-      ++pendingFrameCount_;
-      pendingFrameLength_ = 0;
-    }
+    self.pendingFrameTail_ = static_cast<uint8_t>((self.pendingFrameTail_ + 1) % kPendingFrameSlots);
+    ++self.pendingFrameCount_;
+    return true;
   }
 
   template <typename T>
@@ -652,8 +718,8 @@ class ArduinoDeviceLink final {
     const uint32_t startedAt = millis();
 #endif
     size_t payloadLength = 0;
-    uint8_t* frame = workspace_->tx_ + FlovaWs::kMaximumOutgoingHeaderBytes;
-    if (platform_.linkWriteBusy() || websocket_.controlPending())
+    uint8_t* frame = workspace_->tx_;
+    if (!mqtt_ || mqtt_->busy())
       return setSendFailure(failure, SendFailure::WriteBusy);
     if (encoder(frame + flova::link::kHeaderBytes, kPayloadBytes, &value,
                 &payloadLength) != 0 ||
@@ -668,23 +734,17 @@ class ArduinoDeviceLink final {
 #if FLOVA_LINK_PERFORMANCE_LOGGING && FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_TRACE
     const uint32_t encodedAt = millis();
 #endif
-    size_t wireLength = 0;
-    if (!websocket_.prepareBinary(frame, flova::link::kHeaderBytes + payloadLength,
-                                  workspace_->tx_, sizeof(workspace_->tx_), wireLength))
-      return setSendFailure(failure, SendFailure::WebSocketFrame);
-    if (!platform_.submitLinkWrite(workspace_->tx_, wireLength))
+    if (!mqtt_->publish(frame, flova::link::kHeaderBytes + payloadLength))
       return setSendFailure(failure, SendFailure::TransportSubmit);
     const bool sent = platform_.serviceLinkWrite();
     if (!sent) return setSendFailure(failure, SendFailure::TransportWrite);
 #if FLOVA_LINK_PERFORMANCE_LOGGING && FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_TRACE
-    FLOVA_SERIAL_PRINTF_TRACE("[flova] Link send type=0x%02x id=%llu bytes=%u encode_ms=%lu send_ms=%lu writes=%u wire_bytes=%u accepted=%u\n",
+    FLOVA_SERIAL_PRINTF_TRACE("[flova] MQTT send type=0x%02x id=%llu bytes=%u encode_ms=%lu send_ms=%lu accepted=%u\n",
                   static_cast<unsigned>(type),
                   static_cast<unsigned long long>(messageId),
                   static_cast<unsigned>(flova::link::kHeaderBytes + payloadLength),
                   static_cast<unsigned long>(encodedAt - startedAt),
-                  static_cast<unsigned long>(websocket_.lastSendDurationMs()),
-                  static_cast<unsigned>(websocket_.lastSendWriteCalls()),
-                  static_cast<unsigned>(websocket_.lastSendWireBytes()), sent ? 1U : 0U);
+                  static_cast<unsigned long>(millis() - encodedAt), sent ? 1U : 0U);
 #endif
     return sent;
   }
@@ -704,7 +764,9 @@ class ArduinoDeviceLink final {
     const uint8_t remaining = bindingCount_ - bindingOffset_;
     bindingBatchCount_ = remaining > 9 ? 9 : remaining;
     if (!bindingBatchCount_) return false;
-    struct datastream_bind value = {};
+    // Sent before frame dispatch, so the inbound callback slot is idle.
+    auto& value = workspace_->bindingEncodeWorkspace_;
+    value = {};
     value.datastream_bind_binding_generation = configurationGeneration_;
     value.datastream_bind_binding_keys.datastream_binding_keys_tstr1_48_count = bindingBatchCount_;
     for (uint8_t i = 0; i < bindingBatchCount_; ++i) {
@@ -722,6 +784,29 @@ class ArduinoDeviceLink final {
     }
     bindingSentAt_ = millis();
     return sendEncoded(0x09, ++bindingRequestId_, value, cbor_encode_datastream_bind);
+  }
+
+  bool sendSchedulingDeclarations() {
+    if (!schedulingReader_ || schedulingCount_ > 64 || !ensureWorkspace()) return false;
+    auto& value = workspace_->schedulingWorkspace_;
+    memset(&value, 0, sizeof(value));
+    value.scheduling_declarations_scheduling_generation = configurationGeneration_;
+    const size_t remaining = schedulingCount_ - schedulingOffset_;
+    const size_t count = remaining > 16 ? 16 : remaining;
+    value.scheduling_declarations_scheduling_offset = schedulingOffset_;
+    value.scheduling_declarations_scheduling_total = schedulingCount_;
+    value.scheduling_declarations_scheduling_streams_scheduling_stream_m_count = count;
+    for (size_t i = 0; i < count; ++i) {
+      uint16_t id = 0;
+      flova::Scheduling mode = flova::Scheduling::Disabled;
+      if (!schedulingReader_(schedulingContext_, schedulingOffset_ + i, id, mode)) return false;
+      value.scheduling_declarations_scheduling_streams_scheduling_stream_m[i].scheduling_stream_scheduling_id = id;
+      value.scheduling_declarations_scheduling_streams_scheduling_stream_m[i].scheduling_stream_scheduling_mode = static_cast<uint8_t>(mode);
+    }
+    return sendEncoded(0x2f, schedulingReportId(), value, cbor_encode_scheduling_declarations);
+  }
+  uint64_t schedulingReportId() const {
+    return UINT64_MAX - 2 - static_cast<uint64_t>(configurationGeneration_) * 5 - schedulingOffset_ / 16;
   }
 
   bool sendBootstrapAuthentication(SendFailure* failure = nullptr) {
@@ -743,7 +828,7 @@ class ArduinoDeviceLink final {
     caps.capabilities_input_slots = hardwareCapabilities_.automaticMapping ? hardwareCapabilities_.inputSlots : 0;
     caps.capabilities_output_slots = hardwareCapabilities_.automaticMapping ? hardwareCapabilities_.outputSlots : 0;
     caps.capabilities_command_slots = FLOVA_COMMAND_DEDUP_CAPACITY;
-    caps.capabilities_schedule_slots = FLOVA_SCHEDULE_RUNTIME_ENABLED ? FLOVA_SCHEDULE_CAPACITY : 0;
+    caps.capabilities_schedule_slots = 0;
     caps.capabilities_manifest_bytes = 0;
     caps.capabilities_history_bytes = 0;
     caps.capabilities_pin_references_present = true;
@@ -794,7 +879,6 @@ class ArduinoDeviceLink final {
       case SendFailure::CborSchema: error = "bootstrap_auth_cbor_schema"; break;
       case SendFailure::CborCanonical: error = "bootstrap_auth_cbor_canonical"; break;
       case SendFailure::FrameHeader: error = "bootstrap_auth_frame_failed"; break;
-      case SendFailure::WebSocketFrame: error = "bootstrap_auth_ws_failed"; break;
       case SendFailure::TransportSubmit: error = "bootstrap_auth_submit_failed"; break;
       case SendFailure::TransportWrite: error = "bootstrap_auth_write_failed"; break;
       case SendFailure::BootstrapFields: error = "bootstrap_auth_fields_failed"; break;
@@ -810,11 +894,22 @@ class ArduinoDeviceLink final {
     bootstrapErrorPending_ = true;
   }
 
+  static int encodeLifecycleProbe(uint8_t* output, size_t length, const uint8_t* value, size_t* written) {
+    return cbor_encode_ping(output, length, value, written);
+  }
+
   void handleFrame(const flova::link::FrameView& frame) {
     if (frame.messageType == 0x02) {
       struct auth_ok value = {};
       if (decode(frame, value, cbor_decode_auth_ok, cbor_encode_auth_ok)) {
         authenticated_ = true;
+        lifecycleSupported_ = false;
+        lifecycleProbePending_ = true;
+        schedulingSupported_ = false;
+        schedulingProbePending_ = true;
+        schedulingDirty_ = true;
+        schedulingSent_ = false;
+        schedulingOffset_ = 0;
         bindingPending_ = bindingCount_ != 0;
         bindingOffset_ = bindingBatchCount_ = 0;
       } else {
@@ -825,6 +920,7 @@ class ArduinoDeviceLink final {
     }
     if (frame.messageType == 0x0a && authenticated_) return handleDatastreamBound(frame);
     if (frame.messageType == 0x03) {
+      connectionAttemptFailed_ = true;
       zcbor_string reason = {};
       if (decode(frame, reason, cbor_decode_auth_error, cbor_encode_auth_error)) {
         FLOVA_SERIAL_PRINTF_ERROR("[flova] Link auth rejected reason=%.*s\n",
@@ -863,8 +959,24 @@ class ArduinoDeviceLink final {
       return;
     }
     if (!authenticated_ && !bootstrap_) return;
+    if (frame.messageType == 0x2d && authenticated_) {
+      // The empty schema is canonical CBOR 0x80. No payload is retained.
+      lifecycleSupported_ = frame.payloadLength == 1 && frame.payload[0] == 0x80;
+      return;
+    }
+    if (frame.messageType == 0x2e && authenticated_ && frame.messageId == UINT64_MAX - 1) {
+      schedulingSupported_ = frame.payloadLength == 1 && frame.payload[0] == 0x80;
+      return;
+    }
     if (frame.messageType == 0x20) return handleCommand(frame);
     if (frame.messageType == 0x21) {
+      if (schedulingSent_ && frame.messageId == schedulingReportId()) {
+        const size_t remaining = schedulingCount_ - schedulingOffset_;
+        schedulingOffset_ += remaining > 16 ? 16 : remaining;
+        schedulingDirty_ = schedulingOffset_ < schedulingCount_;
+        schedulingSent_ = false;
+        return;
+      }
       // INGESTION_ACK has an empty payload; the frame id identifies the
       // state message being acknowledged.
       workspace_->inbound_ = FlovaLinkInboundMessage();
@@ -915,7 +1027,8 @@ class ArduinoDeviceLink final {
   void handleCommand(const flova::link::FrameView& frame) {
     struct command value = {};
     if (!decode(frame, value, cbor_decode_command, cbor_encode_command) ||
-        value.command_id.len != sizeof(deviceId_)) return disconnect();
+        value.command_id.len != sizeof(deviceId_) ||
+        value.command_generation != configurationGeneration_) return disconnect();
     workspace_->inbound_ = FlovaLinkInboundMessage();
     workspace_->inbound_.type = FlovaLinkMessageType::Command;
     workspace_->inbound_.messageId = frame.messageId;
@@ -930,7 +1043,9 @@ class ArduinoDeviceLink final {
   }
 
   void handleDatastreamBound(const flova::link::FrameView& frame) {
-    struct datastream_bound value = {};
+    // Binding decode borrows the inbound slot, then copies ids before creating the callback.
+    auto& value = workspace_->bindingDecodeWorkspace_;
+    value = {};
     if (!bindingPending_ || !bindingBatchCount_ || frame.messageId != bindingRequestId_ ||
         !decode(frame, value, cbor_decode_datastream_bound, cbor_encode_datastream_bound) ||
         value.datastream_bound_bound_ids.datastream_bound_ids_compact_id_m_count != bindingBatchCount_ ||
@@ -1031,9 +1146,7 @@ class ArduinoDeviceLink final {
       switch (value.config_record_record_body.config_record_body_choice) {
         case config_record_body_r::config_record_body_datastream_record_m_c: workspace_->inbound_.body.configuration.recordType = 0; break;
         case config_record_body_r::config_record_body_system_record_m_c: workspace_->inbound_.body.configuration.recordType = 1; break;
-        case config_record_body_r::config_record_body_schedule_record_m_c: workspace_->inbound_.body.configuration.recordType = 2; break;
         case config_record_body_r::config_record_body_safety_record_m_c: workspace_->inbound_.body.configuration.recordType = 3; break;
-        case config_record_body_r::config_record_body_schedule_occurrence_record_m_c: workspace_->inbound_.body.configuration.recordType = 4; break;
         case config_record_body_r::config_record_body_parameter_record_m_c: workspace_->inbound_.body.configuration.recordType = 5; break;
         default: return disconnect();
       }
@@ -1210,42 +1323,8 @@ class ArduinoDeviceLink final {
         out.data.system.factoryResetReleaseConfirm = source.system_record_system_factory_reset_release_confirm.system_record_system_factory_reset_release_confirm;
         return true;
       }
-      case config_record_body_r::config_record_body_schedule_record_m_c: {
-        const schedule_record& source = input.config_record_body_schedule_record_m;
-        if (source.schedule_record_schedule_actions_schedule_action_m_count > 8 || source.schedule_record_schedule_id > UINT32_MAX) return false;
-        out.kind = flova::config::UnitKind::Schedule;
-        out.data.schedule.id = static_cast<uint32_t>(source.schedule_record_schedule_id);
-        out.data.schedule.enabled = source.schedule_record_schedule_enabled;
-        out.data.schedule.validFrom = source.schedule_record_schedule_valid_from;
-        out.data.schedule.validUntil = source.schedule_record_schedule_valid_until;
-        out.data.schedule.actionCount = static_cast<uint8_t>(source.schedule_record_schedule_actions_schedule_action_m_count);
-        for (uint8_t i = 0; i < out.data.schedule.actionCount; ++i) {
-          const schedule_action& action = source.schedule_record_schedule_actions_schedule_action_m[i];
-          if (action.schedule_action_action_offset_ms > UINT32_MAX || action.schedule_action_action_compact_id == 0 || action.schedule_action_action_compact_id > UINT16_MAX ||
-              !readConfigurationValue(out.data.schedule.actions[i].value, action.schedule_action_typed_value_fields_m)) return false;
-          out.data.schedule.actions[i].offsetMs = static_cast<uint32_t>(action.schedule_action_action_offset_ms);
-          out.data.schedule.actions[i].datastreamId = static_cast<DatastreamId>(action.schedule_action_action_compact_id);
-        }
-        return true;
-      }
-      case config_record_body_r::config_record_body_schedule_occurrence_record_m_c: {
-        const schedule_occurrence_record& source = input.config_record_body_schedule_occurrence_record_m;
-        if (source.schedule_occurrence_record_occurrence_schedule_id > UINT32_MAX ||
-            source.schedule_occurrence_record_occurrence_chunk_index > UINT16_MAX ||
-            source.schedule_occurrence_record_occurrence_chunk_count == 0 ||
-            source.schedule_occurrence_record_occurrence_chunk_count > UINT16_MAX ||
-            source.schedule_occurrence_record_occurrence_values_uint64_m_count == 0 ||
-            source.schedule_occurrence_record_occurrence_values_uint64_m_count > flova::config::kConfigurationOccurrenceChunk) return false;
-        out.kind = flova::config::UnitKind::ScheduleOccurrences;
-        out.data.occurrences.scheduleId = static_cast<uint32_t>(source.schedule_occurrence_record_occurrence_schedule_id);
-        out.data.occurrences.chunkIndex = static_cast<uint16_t>(source.schedule_occurrence_record_occurrence_chunk_index);
-        out.data.occurrences.chunkCount = static_cast<uint16_t>(source.schedule_occurrence_record_occurrence_chunk_count);
-        out.data.occurrences.occurrenceCount = static_cast<uint8_t>(source.schedule_occurrence_record_occurrence_values_uint64_m_count);
-        for (uint8_t i = 0; i < out.data.occurrences.occurrenceCount; ++i) {
-          out.data.occurrences.occurrences[i] = source.schedule_occurrence_record_occurrence_values_uint64_m[i];
-        }
-        return true;
-      }
+
+
       case config_record_body_r::config_record_body_safety_record_m_c: {
         const safety_record& source = input.config_record_body_safety_record_m;
         if (source.safety_record_safety_compact_id == 0 || source.safety_record_safety_compact_id > UINT16_MAX || source.safety_record_safety_policy > 4) return false;
@@ -1428,9 +1507,10 @@ class ArduinoDeviceLink final {
   }
 
   bool parseUrl() {
-    if (strncmp(url_, "wss://", 6) != 0) return false;
-    const char* authority = url_ + 6;
+    if (strncmp(url_, "mqtts://", 8) != 0) return false;
+    const char* authority = url_ + 8;
     const char* slash = strchr(authority, '/');
+    if (slash && strcmp(slash, "/")) return false;
     const size_t authorityLength = slash ? static_cast<size_t>(slash - authority) : strlen(authority);
     if (!authorityLength || authorityLength >= sizeof(host_)) return false;
     const char* colon = static_cast<const char*>(memchr(authority, ':', authorityLength));
@@ -1456,23 +1536,22 @@ class ArduinoDeviceLink final {
       if (!parsedPort) return false;
       port_ = static_cast<uint16_t>(parsedPort);
     } else {
-      port_ = 443;
+      port_ = 8883;
     }
-    path_ = slash ? slash : "/";
     return true;
   }
 
   char url_[kUrlBytes] = {};
   char host_[kUrlBytes] = {};
-  const char* path_ = "/";
-  uint16_t port_ = 443;
+  uint16_t port_ = 8883;
   bool active_ = false;
   bool connecting_ = false;
   bool transportOpening_ = false;
   bool authenticated_ = false;
   bool bootstrap_ = false;
   FlovaArduinoPlatform& platform_;
-  FlovaWs websocket_;
+  FlovaEntropySource& entropy_;
+  FlovaPhaseStorage<FlovaMqtt> mqtt_;
   bool identityValid_ = false;
   uint8_t deviceId_[16] = {};
   uint8_t secret_[32] = {};
@@ -1482,6 +1561,13 @@ class ArduinoDeviceLink final {
   char bootstrapError_[FLOVA_TEXT_CAPACITY] = {};
   char bootstrapHardwareId_[97] = {};
   char bootstrapFirmwareTarget_[65] = {};
+  flova::SchedulingReader schedulingReader_ = nullptr;
+  void* schedulingContext_ = nullptr;
+  size_t schedulingCount_ = 0;
+  size_t schedulingOffset_ = 0;
+  bool schedulingSupported_ = false, schedulingProbePending_ = false;
+  bool schedulingDirty_ = true, schedulingSent_ = false;
+  uint32_t schedulingSentAt_ = 0;
   const char* bindingKeys_[kMaximumDatastreamBindings] = {};
   uint8_t bindingCount_ = 0;
   bool bindingPending_ = false;
@@ -1491,6 +1577,8 @@ class ArduinoDeviceLink final {
   uint64_t bindingRequestId_ = 0;
   DatastreamId bindingIds_[kMaximumDatastreamBindings] = {};
   uint32_t configurationGeneration_ = 0;
+  bool lifecycleSupported_ = false;
+  bool lifecycleProbePending_ = false;
   flova::HardwareCapabilities hardwareCapabilities_;
   FlovaMessageCallback callback_ = nullptr;
   FlovaMessageCallbackWithContext callbackWithContext_ = nullptr;

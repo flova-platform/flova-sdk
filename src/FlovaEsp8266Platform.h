@@ -1,5 +1,7 @@
 #pragma once
 
+#include <FlovaEsp8266OtaWriter.h>
+
 #include <FlovaFlashLog.h>
 
 #include <Arduino.h>
@@ -11,6 +13,7 @@
 #include <new>
 
 #include <FlovaArduinoPlatform.h>
+#include <FlovaOtaTimeout.h>
 #include <FlovaEsp8266TlsProfile.h>
 
 class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
@@ -69,9 +72,7 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
       // no polling facade can make its cryptographic work nonblocking.
       const uint32_t started = millis();
       bool connected = false;
-      // BearSSL selects IRAM for record buffers itself. Keep its contexts and
-      // TCP allocations in DRAM, matching the separate preflight budgets.
-      { HeapSelectDram dram; connected = client_->connect(linkHost_, linkPort_); }
+      connected = client_->connect(linkHost_, linkPort_);
       if (!connected) {
         linkError_ = "link_tls_failed";
         flova::logLinkTlsFailure(*client_);
@@ -97,7 +98,7 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
   bool resourceRecoveryRequired() const override { return resourceUnavailable_; }
   const char* linkError() const override { return linkError_; }
   bool linkWriteBusy() const override {
-    return writeOffset_ < writeLength_ || writeAwaitingFlush_;
+    return writeOffset_ < writeLength_;
   }
 
   bool submitLinkWrite(const uint8_t* data, size_t length) override {
@@ -110,26 +111,14 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
   }
 
   bool serviceLinkWrite() override {
-    if (writeAwaitingFlush_) {
-      // BearSSL may report a short wait timeout even though the TLS record is
-      // already queued for TCP. Do not tear down a healthy link for that
-      // advisory result; clear the application frame and let the next loop
-      // service the socket normally.
-      if (static_cast<int32_t>(millis() - writeFlushReadyAt_) < 0) return true;
-      (void)client_->flush(5000);
-      writeAwaitingFlush_ = false;
-      writeFlushReadyAt_ = 0;
-      return true;
-    }
     if (!linkWriteBusy()) return true;
+    // Stock BearSSL::write() already flushes each TLS fragment. A second TCP
+    // flush here only adds another peer-ACK wait; application delivery is
+    // tracked by Link ACKs, not by waiting synchronously for TCP ACKs.
     const size_t written = client_->write(writeData_ + writeOffset_,
                                          writeLength_ - writeOffset_);
     if (!written) return false;
     writeOffset_ += written;
-    if (writeOffset_ == writeLength_) {
-      writeAwaitingFlush_ = true;
-      writeFlushReadyAt_ = millis() + 1UL;
-    }
     return true;
   }
 
@@ -139,6 +128,7 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
   bool otaRollbackCapable() const override { return false; }
 
   flova::OtaInstallResult installOta(const FlovaLinkOtaOffer& offer) override {
+    const uint32_t startedAt = millis();
     if (!linkClosed() || !trustAnchors_) return flova::OtaInstallResult::ResourceUnavailable;
     if (strncmp(offer.url, "https://", 8) != 0 || !offer.sizeBytes ||
         offer.sizeBytes > otaMaxImageBytes())
@@ -160,8 +150,8 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
       return flova::OtaInstallResult::DownloadFailed;
     http.setTimeout(flova::kHttpsTimeoutMs);
     int status = 0;
-    // OTA uses the same context/buffer heap split as Device Link.
-    { HeapSelectDram dram; status = http.GET(); }
+    // OTA uses the same stock DRAM allocator as Device Link.
+    status = http.GET();
     if (status != HTTP_CODE_OK || static_cast<uint32_t>(http.getSize()) != offer.sizeBytes) {
       http.end();
       return flova::OtaInstallResult::DownloadFailed;
@@ -170,6 +160,7 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
       http.end();
       return flova::OtaInstallResult::FlashFailed;
     }
+    flova::Esp8266OtaWriter<UpdaterClass> writer(Update, offer.sizeBytes);
 
     br_sha256_context hash;
     br_sha256_init(&hash);
@@ -177,10 +168,15 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
     uint32_t written = 0;
     uint32_t lastProgressAt = millis();
     while (http.connected() && written < offer.sizeBytes) {
+      if (flovaOtaTimedOut(millis(), startedAt, lastProgressAt, flova::kHttpsTimeoutMs)) {
+        writer.abort();
+        http.end();
+        return flova::OtaInstallResult::DownloadFailed;
+      }
       const size_t available = stream->available();
       if (!available) {
         if (millis() - lastProgressAt >= flova::kHttpsTimeoutMs) {
-          abortUpdate();
+          writer.abort();
           http.end();
           return flova::OtaInstallResult::DownloadFailed;
         }
@@ -189,8 +185,8 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
       }
       const size_t remaining = offer.sizeBytes - written;
       const size_t count = stream->readBytes(writeData_, min(remaining, min(available, sizeof(writeData_))));
-      if (!count || Update.write(writeData_, count) != count) {
-        abortUpdate();
+      if (!count || !writer.write(writeData_, count)) {
+        writer.abort();
         http.end();
         return flova::OtaInstallResult::FlashFailed;
       }
@@ -202,17 +198,16 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
     uint8_t digest[32] = {};
     br_sha256_out(&hash, digest);
     if (written != offer.sizeBytes || !hashMatches(digest, sizeof(digest), offer.sha256)) {
-      abortUpdate();
+      writer.finish(false);
       return flova::OtaInstallResult::HashMismatch;
     }
-    return Update.end(true) ? flova::OtaInstallResult::Installed
+    return writer.finish(true) ? flova::OtaInstallResult::Installed
                             : flova::OtaInstallResult::FlashFailed;
   }
 
  private:
   bool createClient() {
     if (client_) return true;
-    HeapSelectDram dram;
     client_ = new (std::nothrow) BearSSL::WiFiClientSecure;
     return client_ != nullptr;
   }
@@ -226,11 +221,7 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
   void clearWrite() {
     writeLength_ = 0;
     writeOffset_ = 0;
-    writeAwaitingFlush_ = false;
-    writeFlushReadyAt_ = 0;
   }
-
-  void abortUpdate() { Update.end(false); }
 
   static bool hashMatches(const uint8_t* bytes, size_t length,
                           const char* expected) {
@@ -252,8 +243,6 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
   uint8_t writeData_[526] = {};
   size_t writeLength_ = 0;
   size_t writeOffset_ = 0;
-  bool writeAwaitingFlush_ = false;
-  uint32_t writeFlushReadyAt_ = 0;
   bool resourceUnavailable_ = false;
   const char* linkError_ = "link_open_failed";
 };

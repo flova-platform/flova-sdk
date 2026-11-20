@@ -21,6 +21,7 @@ class FlovaProvisioningAdapter {
  public:
   virtual ~FlovaProvisioningAdapter() {}
   virtual bool begin(FlovaProvisioningHandler, void*) { return true; }
+  virtual void clearHandler() {}
   virtual void loop() {}
   virtual bool startProvisioning() { return false; }
   virtual bool stopProvisioning() { return true; }

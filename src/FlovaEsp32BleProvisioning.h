@@ -8,6 +8,7 @@
 #include <wifi_provisioning/scheme_ble.h>
 
 #include <FlovaProvisioningAdapter.h>
+#include <FlovaProvisioningSecurity.h>
 #include <FlovaWifiProvisioning.h>
 
 namespace flova {
@@ -28,9 +29,11 @@ void ensureBleArduinoSupport();
 // FlovaClient perform durable handoff acceptance from the cooperative loop.
 class FlovaEsp32BleProvisioning final : public FlovaProvisioningAdapter {
  public:
-  explicit FlovaEsp32BleProvisioning(const char* proofOfPossession = nullptr) {
+  explicit FlovaEsp32BleProvisioning(
+      const char* proofOfPossession = FLOVA_SETUP_PROOF_OF_POSSESSION)
+      : proofValid_(flova::validSetupProofOfPossession(proofOfPossession)) {
     flova::esp32::detail::ensureBleArduinoSupport();
-    if (proofOfPossession) {
+    if (proofOfPossession && strlen(proofOfPossession) <= sizeof(pop_) - 1) {
       strncpy(pop_, proofOfPossession, sizeof(pop_) - 1);
       pop_[sizeof(pop_) - 1] = 0;
     }
@@ -41,6 +44,7 @@ class FlovaEsp32BleProvisioning final : public FlovaProvisioningAdapter {
     context_ = context;
     return handler_ != nullptr;
   }
+  void clearHandler() override { handler_ = nullptr; context_ = nullptr; }
 
   void loop() override {
     if (managerStarted_ && credentialFailurePending_) {
@@ -81,6 +85,10 @@ class FlovaEsp32BleProvisioning final : public FlovaProvisioningAdapter {
 
   bool startProvisioning() override {
     if (managerStarted_) return true;
+    if (!proofValid_) {
+      copyError("proof_of_possession_required");
+      return false;
+    }
     if (bleMemoryReleased_) {
       copyError("ble_restart_required");
       return false;
@@ -293,6 +301,7 @@ class FlovaEsp32BleProvisioning final : public FlovaProvisioningAdapter {
   FlovaProvisioningHandler handler_ = nullptr;
   void* context_ = nullptr;
   char pop_[65] = {};
+  bool proofValid_;
   char input_[768] = {};
   char lastError_[40] = {};
   flova::ProvisioningHandoff handoff_;

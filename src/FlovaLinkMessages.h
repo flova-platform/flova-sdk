@@ -23,6 +23,17 @@ static const size_t FLOVA_LINK_RECORD_BYTES = 448;
 // the final 512-byte frame invariant.
 static const uint8_t FLOVA_LINK_MAX_STATE_READINGS = 4;
 
+struct FlovaLinkLifecycleReport {
+  uint64_t messageId;
+  uint64_t bootId;
+  uint64_t uptimeMs;
+  uint32_t sequence;
+  uint32_t detail;
+  uint32_t generation;
+  uint32_t dropped;
+  uint8_t code;
+};
+
 enum class FlovaLinkMessageType : uint8_t {
   State,
   Command,
@@ -38,9 +49,6 @@ enum class FlovaLinkMessageType : uint8_t {
   DatastreamBound,
   OtaOffer,
   OtaReport,
-  ScheduleRecord,
-  ScheduleReport,
-  ScheduleRenew,
   TimeRequest,
   TimeResponse,
   FlowControl
@@ -183,24 +191,6 @@ struct FlovaLinkOtaReport {
   char errorCode[FLOVA_LINK_TEXT_BYTES];
 };
 
-struct FlovaLinkScheduleRecord {
-  uint64_t messageId;
-  uint32_t generation;
-  uint32_t revision;
-  uint16_t sequence;
-  uint16_t recordLength;
-  uint8_t record[FLOVA_LINK_RECORD_BYTES];
-};
-
-struct FlovaLinkScheduleStatus {
-  uint64_t messageId;
-  uint32_t generation;
-  uint32_t revision;
-  uint64_t validUntilUtcMs;
-  FlovaLinkResultStatus status;
-  char errorCode[FLOVA_LINK_TEXT_BYTES];
-};
-
 struct FlovaLinkHeartbeat {
   uint64_t messageId;
   uint32_t configurationGeneration;
@@ -208,7 +198,6 @@ struct FlovaLinkHeartbeat {
   uint32_t capabilityMask;
   uint16_t protocolVersion;
   uint16_t datastreamSlots;
-  uint16_t scheduleSlots;
   bool otaCapable;
   char firmwareVersion[FLOVA_LINK_OTA_VERSION_BYTES];
   char firmwareTarget[FLOVA_LINK_OTA_TARGET_BYTES];
@@ -241,7 +230,6 @@ struct FlovaLinkInboundMessage {
     FlovaLinkConfigurationRecord configuration;
     FlovaLinkBootstrapCommitted bootstrapCommitted;
     FlovaLinkOtaOffer otaOffer;
-    FlovaLinkScheduleRecord schedule;
     FlovaLinkTimeResponse timeResponse;
     struct {
       uint32_t generation;

@@ -10,7 +10,9 @@
 #include <time.h>
 
 #include <FlovaRuntimeServices.h>
+#include <FlovaDevice.h>
 #include <FlovaWifiProvisioning.h>
+#include <FlovaWifiRecovery.h>
 #include <adapters/ArduinoFlovaUtcBootstrap.h>
 
 class FlovaEsp8266Storage : public flova::Storage {
@@ -133,7 +135,6 @@ class FlovaEsp8266Storage : public flova::Storage {
       return false;
     }
     LittleFS.remove(backup);
-    refreshCapacity();
     clearError();
     return true;
   }
@@ -160,7 +161,6 @@ class FlovaEsp8266Storage : public flova::Storage {
       setError("remove");
       return false;
     }
-    refreshCapacity();
     clearError();
     return true;
   }
@@ -188,11 +188,7 @@ class FlovaEsp8266Storage : public flova::Storage {
     return value;
   }
 
- private:
-  static const size_t kMaximumKeyBytes = 21;
-  static const size_t kMaximumRecordBytes = 2048;
-
-  void refreshCapacity() {
+  void refreshCapacity() override {
     FSInfo info = {};
     if (!mounted_ || !LittleFS.info(info)) return;
     totalBytes_ = info.totalBytes;
@@ -200,6 +196,10 @@ class FlovaEsp8266Storage : public flova::Storage {
                           ? info.totalBytes - info.usedBytes
                           : 0;
   }
+
+ private:
+  static const size_t kMaximumKeyBytes = 21;
+  static const size_t kMaximumRecordBytes = 2048;
 
   static bool makePaths(const char* key, char* path, size_t pathCapacity,
                         char* backup, size_t backupCapacity) {
@@ -273,16 +273,23 @@ class FlovaEsp8266ObservedNetwork final : public FlovaNetworkRuntime {
   bool connected() const override { return WiFi.status() == WL_CONNECTED; }
 };
 
-class FlovaEsp8266StoredNetwork final : public FlovaNetworkRuntime {
+class FlovaEsp8266StoredNetwork final : public FlovaWifiNetworkRuntime {
  public:
   explicit FlovaEsp8266StoredNetwork(FlovaEsp8266Storage& storage)
       : storage_(storage) {}
 
   bool begin() override {
+    if (!flova::restoreWifiRecovery(storage_)) return false;
     flova::WifiRuntimeData wifi = {};
     if (!storage_.read("wifi", &wifi, sizeof(wifi)) ||
         !flova::validWifiRuntimeData(wifi))
       return false;
+    return connectWifi(wifi);
+  }
+
+  bool connectWifi(const flova::WifiRuntimeData& wifi) override {
+    if (!flova::validWifiRuntimeData(wifi)) return false;
+    WiFi.persistent(false);
     WiFi.mode((WiFi.getMode() & WIFI_AP) ? WIFI_AP_STA : WIFI_STA);
     WiFi.setAutoReconnect(true);
     WiFi.begin(wifi.ssid, wifi.password);
@@ -303,7 +310,7 @@ class FlovaEsp8266StoredNetwork final : public FlovaNetworkRuntime {
   }
   bool clearCredentials() override {
     WiFi.disconnect(true);
-    return storage_.remove("wifi");
+    return storage_.remove("wifi") && storage_.remove("wifi_trial");
   }
 
  private:
@@ -322,7 +329,16 @@ class FlovaEsp8266Identity final : public FlovaBoardIdentity {
   }
 
   const char* firmwareTarget() const override { return firmwareTarget_; }
+  uint32_t resetReason() const override { return ESP.getResetInfoPtr()->reason; }
 
  private:
   const char* firmwareTarget_;
+};
+
+// The managed composition owns restart policy; passive applications do not.
+class FlovaEsp8266WifiRecovery final : public FlovaWifiRecovery {
+ public:
+  FlovaEsp8266WifiRecovery(flova::Storage& storage, FlovaWifiNetworkRuntime& network)
+      : FlovaWifiRecovery(storage, network) {}
+  void restartIfDue(uint32_t now) { if (restartDue(now)) ESP.restart(); }
 };

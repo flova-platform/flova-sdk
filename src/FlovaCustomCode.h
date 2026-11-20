@@ -6,6 +6,16 @@
 #include "FlovaDevice.h"
 
 #include <stdint.h>
+#include <type_traits>
+
+namespace flova {
+namespace detail {
+// Built-in facades use the same runtime for handle resolution and key methods.
+// Downstream clients using the helper's key-based backend retain that path.
+template <typename Client>
+struct UseResolvedDatastream : std::false_type {};
+}  // namespace detail
+}  // namespace flova
 
 struct FlovaDatastreamCommand {
   const char* key;
@@ -60,8 +70,25 @@ struct FlovaDatastreamBinding {
   } handler = {};
   void* context = nullptr;
 
+  // Copy the callback and its application context into the runtime. The
+  // runtime never borrows this binding or a temporary stream helper.
+  bool attach(flova::Datastream<T> stream) const {
+    switch (kind) {
+      case FlovaDatastreamHandlerKind::Result:
+        return stream.tryOnWrite(handler.result);
+      case FlovaDatastreamHandlerKind::ResultWithContext:
+        return stream.tryOnWrite(handler.resultContext, context);
+      case FlovaDatastreamHandlerKind::Void:
+        return stream.tryOnWrite(handler.voidHandler);
+      case FlovaDatastreamHandlerKind::VoidWithContext:
+        return stream.tryOnWrite(handler.voidContext, context);
+      default: return false;
+    }
+  }
+
   static flova::WriteResult dispatch(void* context,
                                      const FlovaDatastreamCommand& command) {
+    if (!context) return flova::WriteResult::failure("write_handler_missing");
     FlovaDatastreamBinding& binding = *static_cast<FlovaDatastreamBinding*>(context);
     if (command.value.type != FlovaDatastreamType<T>::value())
       return flova::WriteResult::reject("type_mismatch");
@@ -95,62 +122,125 @@ class FlovaDatastream {
   FlovaDatastream(Client& client, const char* key) : client_(client), key_(key) {}
 
   const char* key() const { return key_; }
-  flova::WriteResult write(const T& value) { return client_.flovaWrite(key_, value); }
-  bool hasValue() const { return client_.template flovaHasValue<T>(key_); }
-  T value() const { return client_.template flovaValue<T>(key_); }
+  flova::WriteResult write(const T& value) {
+    return useResolved() ? cached_.write(value) : client_.flovaWrite(key_, value);
+  }
+  bool hasValue() const {
+    return useResolved() ? cached_.hasValue() : client_.template flovaHasValue<T>(key_);
+  }
+  T value() const {
+    return useResolved() ? cached_.value() : client_.template flovaValue<T>(key_);
+  }
   flova::WriteResult report(const T& value,
                             flova::Origin origin = flova::Origin::SensorRead) {
-    return client_.flovaReport(key_, value, origin);
+    return useResolved() ? cached_.report(value, origin)
+                         : client_.flovaReport(key_, value, origin);
   }
   FlovaDatastream& mode(flova::Mode value) {
-    client_.template flovaMode<T>(key_, value);
+    resolve().mode(value);
     return *this;
   }
   FlovaDatastream& offline(flova::OfflinePolicy value) {
-    client_.template flovaOffline<T>(key_, value);
+    resolve().offline(value);
+    return *this;
+  }
+  FlovaDatastream& scheduling(flova::Scheduling value) {
+    resolve().scheduling(value);
     return *this;
   }
   FlovaDatastream& retention(const flova::HistoryRetentionPolicy& value) {
-    client_.template flovaRetention<T>(key_, value);
+    resolve().retention(value);
     return *this;
   }
-  FlovaDatastream& persist(flova::PersistencePolicy value) {
-    client_.template flovaPersist<T>(key_, value);
+  FlovaDatastream& persist(flova::PersistencePolicy value, uint32_t intervalMs = 1000) {
+    resolve().persist(value, intervalMs);
     return *this;
+  }
+  bool flush() { return resolve().flush(); }
+
+  bool tryOnWrite(typename FlovaDatastreamBinding<T>::ResultHandler handler) {
+    if (!handler) return false;
+    if (flova::detail::UseResolvedDatastream<Client>::value)
+      return resolve().tryOnWrite(handler);
+    FlovaDatastreamBinding<T> binding;
+    binding.kind = FlovaDatastreamHandlerKind::Result;
+    binding.handler.result = handler;
+    return registerLegacyWrite(binding);
+  }
+  bool tryOnWrite(typename FlovaDatastreamBinding<T>::ResultContextHandler handler,
+                  void* context) {
+    if (!handler) return false;
+    if (flova::detail::UseResolvedDatastream<Client>::value)
+      return resolve().tryOnWrite(handler, context);
+    FlovaDatastreamBinding<T> binding;
+    binding.kind = FlovaDatastreamHandlerKind::ResultWithContext;
+    binding.handler.resultContext = handler;
+    binding.context = context;
+    return registerLegacyWrite(binding);
+  }
+  bool tryOnWrite(typename FlovaDatastreamBinding<T>::VoidHandler handler) {
+    if (!handler) return false;
+    if (flova::detail::UseResolvedDatastream<Client>::value)
+      return resolve().tryOnWrite(handler);
+    FlovaDatastreamBinding<T> binding;
+    binding.kind = FlovaDatastreamHandlerKind::Void;
+    binding.handler.voidHandler = handler;
+    return registerLegacyWrite(binding);
+  }
+  bool tryOnWrite(typename FlovaDatastreamBinding<T>::VoidContextHandler handler,
+                  void* context) {
+    if (!handler) return false;
+    if (flova::detail::UseResolvedDatastream<Client>::value)
+      return resolve().tryOnWrite(handler, context);
+    FlovaDatastreamBinding<T> binding;
+    binding.kind = FlovaDatastreamHandlerKind::VoidWithContext;
+    binding.handler.voidContext = handler;
+    binding.context = context;
+    return registerLegacyWrite(binding);
   }
 
   FlovaDatastream& onWrite(typename FlovaDatastreamBinding<T>::ResultHandler handler) {
-    binding_.kind = FlovaDatastreamHandlerKind::Result;
-    binding_.handler.result = handler;
-    client_.flovaOnWrite(key_, FlovaDatastreamType<T>::value(), binding_);
+    tryOnWrite(handler);
     return *this;
   }
   FlovaDatastream& onWrite(typename FlovaDatastreamBinding<T>::ResultContextHandler handler,
                           void* context) {
-    binding_.kind = FlovaDatastreamHandlerKind::ResultWithContext;
-    binding_.handler.resultContext = handler;
-    binding_.context = context;
-    client_.flovaOnWrite(key_, FlovaDatastreamType<T>::value(), binding_);
+    tryOnWrite(handler, context);
     return *this;
   }
   FlovaDatastream& onWrite(typename FlovaDatastreamBinding<T>::VoidHandler handler) {
-    binding_.kind = FlovaDatastreamHandlerKind::Void;
-    binding_.handler.voidHandler = handler;
-    client_.flovaOnWrite(key_, FlovaDatastreamType<T>::value(), binding_);
+    tryOnWrite(handler);
     return *this;
   }
   FlovaDatastream& onWrite(typename FlovaDatastreamBinding<T>::VoidContextHandler handler,
                           void* context) {
-    binding_.kind = FlovaDatastreamHandlerKind::VoidWithContext;
-    binding_.handler.voidContext = handler;
-    binding_.context = context;
-    client_.flovaOnWrite(key_, FlovaDatastreamType<T>::value(), binding_);
+    tryOnWrite(handler, context);
     return *this;
   }
 
  private:
+  bool registerLegacyWrite(const FlovaDatastreamBinding<T>& binding) {
+    // A downstream callback backend can borrow the member's stable address.
+    const FlovaDatastreamBinding<T> previous = binding_;
+    binding_ = binding;
+    if (client_.flovaOnWrite(key_, FlovaDatastreamType<T>::value(), binding_)) return true;
+    binding_ = previous;
+    return false;
+  }
+
+  bool useResolved() const {
+    return resolve().valid() || flova::detail::UseResolvedDatastream<Client>::value;
+  }
+
+  flova::Datastream<T>& resolve() const {
+    // Slots remain stable for the runtime's lifetime. Resolve lazily: global
+    // helper construction must never mount storage or register descriptors.
+    if (!cached_.valid()) cached_ = client_.template flovaDatastream<T>(key_);
+    return cached_;
+  }
   Client& client_;
   const char* key_;
+  mutable flova::Datastream<T> cached_;
   FlovaDatastreamBinding<T> binding_;
 };
 

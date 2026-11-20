@@ -21,11 +21,13 @@
 
 class FlovaUniversalEsp32Ble final {
  public:
-  explicit FlovaUniversalEsp32Ble(const char* proofOfPossession = nullptr)
+  explicit FlovaUniversalEsp32Ble(
+      const char* proofOfPossession = FLOVA_SETUP_PROOF_OF_POSSESSION)
       : linkPlatform_(), link_(linkPlatform_, entropy_), provisioning_(proofOfPossession),
         identity_(FLOVA_UNIVERSAL_ESP32_BLE_TARGET),
         client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
                 clock_, logger_, entropy_, hardware_) {
+    client_.device().allowCloudSchedulingForOutputs(true);
     client_.setFirmwareTarget(FLOVA_UNIVERSAL_ESP32_BLE_TARGET);
     client_.setOtaProfile(FlovaOtaStrategy::Ab, FLOVA_UNIVERSAL_ESP32_BLE_LAYOUT, true);
     client_.setOtaEnabled(true);

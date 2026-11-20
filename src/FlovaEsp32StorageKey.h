@@ -42,12 +42,11 @@ inline bool makeNvsStorageKey(const char* logical, char* output,
       {"config", "cfg"},
       {"prov_pending", "pp"},
       {"prov_error", "pe"},
+      {"cfg_rejected", "cr"},
       {"ota_pending", "op"},
       {"wifi", "wf"},
+      {"wifi_trial", "wt"},
       {"history.meta", "hm"},
-      {"schedule.staging", "ss"},
-      {"schedule.active", "sa"},
-      {"schedule.progress", "sp"},
       {"session.pending", "xp"},
       {"session", "xs"},
       {"flova_l_a", "ca"},
@@ -67,6 +66,10 @@ inline bool makeNvsStorageKey(const char* logical, char* output,
   if (strncmp(logical, "history:", 8) == 0) {
     value = logical + 8;
     format = "h%u";
+    maximum = 255;
+  } else if (strncmp(logical, "cmd:", 4) == 0) {
+    value = logical + 4;
+    format = "c%u";
     maximum = 255;
   } else if (strncmp(logical, "dsid:", 5) == 0) {
     value = logical + 5;

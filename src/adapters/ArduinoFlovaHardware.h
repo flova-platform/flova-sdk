@@ -31,6 +31,11 @@ class ArduinoFlovaHardware final : public flova::Hardware {
   }
 
   void attach(flova::Device& device) override { device_ = &device; }
+  void detach(flova::Device& device) override {
+    if (device_ != &device) return;
+    resetConfiguration();
+    device_ = nullptr;
+  }
   void setFactoryResetHandler(void (*handler)(void*), void* context) override {
     factoryResetHandler_ = handler;
     factoryResetContext_ = context;
@@ -366,7 +371,7 @@ class ArduinoFlovaHardware final : public flova::Hardware {
                                 : input.type == flova::ValueType::Float
                                       ? input.scalar.floating
                                       : input.scalar.number;
-      if (actual < mapping->minimum || actual > mapping->maximum)
+      if (!isfinite(actual) || actual < mapping->minimum || actual > mapping->maximum)
         return flova::WriteResult::reject("out_of_range");
       const double ratio = (actual - mapping->minimum) /
                            (mapping->maximum - mapping->minimum);

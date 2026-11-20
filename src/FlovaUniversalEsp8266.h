@@ -10,13 +10,14 @@
 // Full-device composition used by the no-code universal firmware.
 class FlovaUniversalEsp8266 final {
  public:
-  explicit FlovaUniversalEsp8266(const char* setupPassword = nullptr)
+  explicit FlovaUniversalEsp8266(const char* setupPassword = FLOVA_SETUP_PASSWORD)
       : linkPlatform_(), link_(linkPlatform_, entropy_),
         provisioning_(storage_, setupPassword),
         network_(storage_), identity_("universal_esp8266"),
         client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
                 clock_, logger_, entropy_, hardware_) {
     analogWriteRange(255);
+    client_.device().allowCloudSchedulingForOutputs(true);
     client_.setFirmwareTarget("universal_esp8266");
     client_.setOtaEnabled(true);
     client_.setRestartHandler(scheduleRestart, this);

@@ -7,6 +7,17 @@
 #endif
 #define FLOVA_BOARD_NAME "ESP8266"
 
+#if (defined(MMU_ICACHE_SIZE) && MMU_ICACHE_SIZE != 0x8000) || \
+    defined(MMU_SEC_HEAP) || defined(MMU_EXTERNAL_HEAP) || \
+    defined(PIO_FRAMEWORK_ARDUINO_MMU_CUSTOM)
+#error "Flova ESP8266 requires the stock MMU and default DRAM allocator"
+#endif
+// Official Flova Link/OTA endpoints bound server TLS records to 2048 bytes.
+// Arbitrary endpoints must explicitly select the full 16384-byte RX profile.
+#ifndef FLOVA_ESP8266_BOUNDED_TLS_RECORDS
+#define FLOVA_ESP8266_BOUNDED_TLS_RECORDS 1
+#endif
+
 // Board defaults keep the portable runtime explicitly bounded for ESP8266
 // heap constraints. An application may define any value before including a
 // Flova header.
@@ -33,10 +44,4 @@
 #endif
 #ifndef FLOVA_HARDWARE_OUTPUT_CAPACITY
 #define FLOVA_HARDWARE_OUTPUT_CAPACITY 2
-#endif
-#ifndef FLOVA_SCHEDULE_CAPACITY
-#define FLOVA_SCHEDULE_CAPACITY 2
-#endif
-#ifndef FLOVA_SCHEDULE_OCCURRENCE_CAPACITY
-#define FLOVA_SCHEDULE_OCCURRENCE_CAPACITY 16
 #endif

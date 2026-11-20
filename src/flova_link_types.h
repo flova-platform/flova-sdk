@@ -101,23 +101,21 @@ struct config_reported {
 	struct zcbor_string config_reported_reported_config_checksum;
 };
 
-struct schedule_reported {
-	uint64_t schedule_reported_reported_schedule_generation;
-	uint64_t schedule_reported_reported_schedule_revision;
-	uint64_t schedule_reported_reported_schedule_status;
-	struct zcbor_string schedule_reported_reported_schedule_checksum;
-};
-
-struct schedule_renew {
-	uint64_t schedule_renew_renew_generation;
-	uint64_t schedule_renew_renew_revision;
-};
-
 struct config_ack {
 	uint64_t config_ack_ack_generation;
 	uint64_t config_ack_ack_sequence;
 	uint64_t config_ack_ack_status;
 	struct zcbor_string config_ack_ack_reason;
+};
+
+struct lifecycle_report {
+	uint64_t lifecycle_report_log_boot_id;
+	uint64_t lifecycle_report_log_sequence;
+	uint64_t lifecycle_report_log_uptime_ms;
+	uint64_t lifecycle_report_log_code;
+	uint64_t lifecycle_report_log_detail;
+	uint64_t lifecycle_report_log_generation;
+	uint64_t lifecycle_report_log_dropped;
 };
 
 struct typed_value_fields_r {
@@ -174,23 +172,10 @@ struct config_desired {
 	uint64_t config_desired_desired_config_record_count;
 };
 
-struct schedule_desired {
-	uint64_t schedule_desired_desired_schedule_generation;
-	uint64_t schedule_desired_desired_schedule_revision;
-	uint64_t schedule_desired_desired_schedule_record_count;
-	struct zcbor_string schedule_desired_desired_schedule_checksum;
-};
-
 struct config_end {
 	uint64_t config_end_end_generation;
 	uint64_t config_end_end_record_count;
 	struct zcbor_string config_end_end_checksum;
-};
-
-struct schedule_end {
-	uint64_t schedule_end_generation;
-	uint64_t schedule_end_record_count;
-	struct zcbor_string schedule_end_checksum;
 };
 
 struct capabilities_pin_references {
@@ -225,6 +210,19 @@ struct datastream_bound_ids {
 struct datastream_bound {
 	uint64_t datastream_bound_bound_generation;
 	struct datastream_bound_ids datastream_bound_bound_ids;
+};
+
+struct scheduling_stream {
+	uint64_t scheduling_stream_scheduling_id;
+	uint64_t scheduling_stream_scheduling_mode;
+};
+
+struct scheduling_declarations {
+	uint64_t scheduling_declarations_scheduling_generation;
+	uint64_t scheduling_declarations_scheduling_offset;
+	uint64_t scheduling_declarations_scheduling_total;
+	struct scheduling_stream scheduling_declarations_scheduling_streams_scheduling_stream_m[16];
+	size_t scheduling_declarations_scheduling_streams_scheduling_stream_m_count;
 };
 
 struct ota_profile_ota_boot_state {
@@ -335,27 +333,6 @@ struct state_readings {
 struct state {
 	uint64_t state_generation;
 	struct state_readings state_values;
-};
-
-struct schedule_action {
-	uint64_t schedule_action_action_offset_ms;
-	uint64_t schedule_action_action_compact_id;
-	struct typed_value_fields_r schedule_action_typed_value_fields_m;
-};
-
-struct schedule_record {
-	uint64_t schedule_record_schedule_id;
-	bool schedule_record_schedule_enabled;
-	uint64_t schedule_record_schedule_valid_from;
-	uint64_t schedule_record_schedule_valid_until;
-	struct schedule_action schedule_record_schedule_actions_schedule_action_m[8];
-	size_t schedule_record_schedule_actions_schedule_action_m_count;
-};
-
-struct schedule_record_message {
-	uint64_t schedule_record_message_schedule_message_generation;
-	uint64_t schedule_record_message_schedule_message_sequence;
-	struct schedule_record schedule_record_message_schedule_message_record;
 };
 
 struct datastream_record_datastream_minimum {
@@ -521,14 +498,6 @@ struct system_record {
 	bool system_record_system_factory_reset_release_confirm_present;
 };
 
-struct schedule_occurrence_record {
-	uint64_t schedule_occurrence_record_occurrence_schedule_id;
-	uint64_t schedule_occurrence_record_occurrence_chunk_index;
-	uint64_t schedule_occurrence_record_occurrence_chunk_count;
-	uint64_t schedule_occurrence_record_occurrence_values_uint64_m[16];
-	size_t schedule_occurrence_record_occurrence_values_uint64_m_count;
-};
-
 struct safety_record_safety_minimum {
 	struct typed_value_fields_r safety_record_safety_minimum;
 };
@@ -573,16 +542,12 @@ struct config_record_body_r {
 	union {
 		struct datastream_record config_record_body_datastream_record_m;
 		struct system_record config_record_body_system_record_m;
-		struct schedule_record config_record_body_schedule_record_m;
-		struct schedule_occurrence_record config_record_body_schedule_occurrence_record_m;
 		struct safety_record config_record_body_safety_record_m;
 		struct parameter_record config_record_body_parameter_record_m;
 	};
 	enum {
 		config_record_body_datastream_record_m_c,
 		config_record_body_system_record_m_c,
-		config_record_body_schedule_record_m_c,
-		config_record_body_schedule_occurrence_record_m_c,
 		config_record_body_safety_record_m_c,
 		config_record_body_parameter_record_m_c,
 	} config_record_body_choice;

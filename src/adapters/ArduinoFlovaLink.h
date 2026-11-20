@@ -3,6 +3,7 @@
 #include <FlovaFlashLog.h>
 
 #include <Arduino.h>
+#include <new>
 
 #include <FlovaDevice.h>
 #include <FlovaClientLink.h>
@@ -11,7 +12,7 @@
 #include "ArduinoDeviceLink.h"
 
 // Canonical flova::Link adapter for Arduino projects. It deliberately maps
-// only the core state/command/time contract; provisioning, OTA, schedules,
+// only the core state/command/time contract; provisioning, OTA,
 // and configuration installation remain opt-in board services.
 class ArduinoFlovaLink : public FlovaClientLink {
  public:
@@ -23,12 +24,13 @@ class ArduinoFlovaLink : public FlovaClientLink {
   }
 
   bool beginBootstrap(const char* url, const char* token, const char* hardwareId,
-                      const char* firmwareTarget, const char* secret) {
+                       const char* firmwareTarget, const char* secret) {
+    ++connectionAttempts_;
     if (!transport_.configure(url)) return false;
     if (!ensureTransport()) return false;
     if (!enterHandshake()) return false;
     const bool started = transport_.connectBootstrap(token, hardwareId, firmwareTarget, secret);
-    if (!started) leaveHandshake();
+    if (!started) { ++connectionFailures_; transport_.takeConnectionAttemptFailure(); leaveHandshake(); }
     return started;
   }
 
@@ -79,14 +81,7 @@ class ArduinoFlovaLink : public FlovaClientLink {
   }
 
   bool queueConfigurationRecord(const FlovaLinkConfigurationRecord& input) {
-    if (!pendingRecords_.create() ||
-        configurationPendingCount_ >= kConfigurationPendingSlots)
-      return false;
-    pendingRecords_->configuration_[configurationPendingTail_] = input;
-    configurationPendingTail_ = static_cast<uint8_t>(
-        (configurationPendingTail_ + 1) % kConfigurationPendingSlots);
-    ++configurationPendingCount_;
-    return true;
+    return pendingRecords_.create() && enqueueConfigurationRecord(input);
   }
 
   bool decodeConfigurationPayload(const char* phase, const uint8_t* payload,
@@ -105,6 +100,20 @@ class ArduinoFlovaLink : public FlovaClientLink {
     return transport_.publishConfigurationState(state);
   }
 
+  bool lifecycleLogsSupported() const override { return transport_.lifecycleLogsSupported(); }
+  uint32_t connectionAttempts() const override { return connectionAttempts_; }
+  uint32_t connectionFailures() const override { return connectionFailures_; }
+  bool publishLifecycle(const FlovaLinkLifecycleReport& report) override {
+    if (!transport_.publishLifecycle(report)) return false;
+    lifecyclePendingId_ = report.messageId;
+    return true;
+  }
+  bool takeLifecycleAck(uint64_t id) override {
+    if (lifecycleAckId_ != id || !id) return false;
+    lifecycleAckId_ = 0;
+    return true;
+  }
+
   bool publishHeartbeat(const FlovaLinkHeartbeat& heartbeat) override {
     if (!transport_.publishHeartbeat(heartbeat)) return false;
     // Keep the oldest unanswered heartbeat so a later publish cannot extend
@@ -116,12 +125,9 @@ class ArduinoFlovaLink : public FlovaClientLink {
     return true;
   }
 
-  bool publishScheduleStatus(const FlovaLinkScheduleStatus& status) override {
-    return transport_.publishScheduleStatus(status);
-  }
-
-  bool publishScheduleRenew(const FlovaLinkScheduleStatus& status) override {
-    return transport_.publishScheduleRenew(status);
+  void schedulingDeclarations(flova::SchedulingReader reader, void* context,
+                              size_t count) override {
+    transport_.schedulingDeclarations(reader, context, count);
   }
 
   bool takeOtaOffer(FlovaLinkOtaOffer& offer) override {
@@ -289,7 +295,12 @@ class ArduinoFlovaLink : public FlovaClientLink {
     if (!transport_.connected() && !transport_.connectionInProgress() &&
         static_cast<int32_t>(millis() - nextReconnectAt_) >= 0) {
       bound_ = false;
-      if (enterHandshake() && !transport_.connect()) leaveHandshake();
+      ++connectionAttempts_;
+      if (!enterHandshake() || !transport_.connect()) {
+        ++connectionFailures_;
+        transport_.takeConnectionAttemptFailure();
+        leaveHandshake();
+      }
       nextReconnectAt_ = millis() + reconnectBackoff_.next(static_cast<uint8_t>(messageNonce_));
     }
   }
@@ -304,6 +315,23 @@ class ArduinoFlovaLink : public FlovaClientLink {
   }
 
   uint32_t messageNonce() const override { return messageNonce_; }
+
+  bool batchesState() const override { return true; }
+  size_t sendStateBatch(flova::StateUpdateReader reader, void* context,
+                       size_t count, uint64_t messageId) override {
+    if (!connected() || !reader || !count || count > FLOVA_LINK_MAX_STATE_READINGS) return 0;
+    FlovaLinkStateBatch batch = {};
+    batch.messageId = messageId;
+    batch.configurationGeneration = configurationGeneration_;
+    batch.count = static_cast<uint8_t>(count);
+    flova::Value value;
+    for (size_t i = 0; i < count; ++i) {
+      auto& reading = batch.readings[i];
+      if (!reader(context, i, reading.datastreamId, reading.revision, value) ||
+          !toLinkValue(reading.value, value)) return 0;
+    }
+    return transport_.publishState(batch) ? count : 0;
+  }
 
   bool bindDatastreams(const char* const* keys, size_t count, DatastreamId* ids) override {
     if (!keys || !ids || !count || count > ArduinoDeviceLink::kMaximumDatastreamBindings) return false;
@@ -328,6 +356,12 @@ class ArduinoFlovaLink : public FlovaClientLink {
 
   bool bindingReady() const override { return bindingCount_ == 0 || bound_; }
 
+  void clearDatastreamBindings() override {
+    bindingCount_ = 0;
+    bound_ = false;
+    transport_.clearDatastreamBindings();
+  }
+
   bool readDatastreamBinding(DatastreamId* ids, size_t count) const override {
     if (count != bindingCount_ || (count && !ids) || !bindingReady()) return false;
     for (size_t i = 0; i < count; ++i) ids[i] = boundIds_[i];
@@ -339,6 +373,8 @@ class ArduinoFlovaLink : public FlovaClientLink {
     FlovaLinkBootstrapCommitted bootstrapCommitted_ = {};
     FlovaLinkConfigurationRecord configuration_[2] = {};
     FlovaLinkOtaOffer otaOffer_ = {};
+    // Borrowed for the synchronous receiver call; keep it off the command/ACK stack.
+    flova::Message inboundMessage_;
   };
   FlovaPhaseStorage<PendingRecords> pendingRecords_;
   bool enterHandshake() {
@@ -362,6 +398,7 @@ class ArduinoFlovaLink : public FlovaClientLink {
   }
   void serviceTransport() {
     transport_.loop();
+    if (transport_.takeConnectionAttemptFailure()) ++connectionFailures_;
     if (handshakePaused_ && !transport_.tlsOpening()) {
       if (transport_.connectionInProgress() || transport_.connected()) {
         if (!pendingRecords_.create()) {
@@ -377,6 +414,7 @@ class ArduinoFlovaLink : public FlovaClientLink {
   void* handshakeContext_ = nullptr;
   bool handshakePaused_ = false;
   bool maintenance_ = false;
+  uint32_t connectionAttempts_ = 0, connectionFailures_ = 0;
   flova::RetryBackoff reconnectBackoff_;
   static uint32_t readNonce(FlovaEntropySource& entropy) {
     uint32_t value = 0;
@@ -476,6 +514,16 @@ class ArduinoFlovaLink : public FlovaClientLink {
     static_cast<ArduinoFlovaLink*>(context)->accept(inbound);
   }
 
+  bool enqueueConfigurationRecord(const FlovaLinkConfigurationRecord& input) {
+    if (!pendingRecords_ || configurationPendingCount_ >= kConfigurationPendingSlots)
+      return false;
+    pendingRecords_->configuration_[configurationPendingTail_] = input;
+    configurationPendingTail_ = static_cast<uint8_t>(
+        (configurationPendingTail_ + 1) % kConfigurationPendingSlots);
+    ++configurationPendingCount_;
+    return true;
+  }
+
   void accept(const FlovaLinkInboundMessage& inbound) {
     if (inbound.type == FlovaLinkMessageType::BootstrapCommitted) {
       pendingRecords_->bootstrapCommitted_ = inbound.body.bootstrapCommitted;
@@ -491,12 +539,8 @@ class ArduinoFlovaLink : public FlovaClientLink {
     if (inbound.type == FlovaLinkMessageType::ConfigurationBegin ||
         inbound.type == FlovaLinkMessageType::ConfigurationRecord ||
         inbound.type == FlovaLinkMessageType::ConfigurationEnd) {
-      if (configurationPendingCount_ >= kConfigurationPendingSlots) return;
-      pendingRecords_->configuration_[configurationPendingTail_] =
-          inbound.body.configuration;
-      configurationPendingTail_ = static_cast<uint8_t>(
-          (configurationPendingTail_ + 1) % kConfigurationPendingSlots);
-      ++configurationPendingCount_;
+      // Transport callbacks only use storage allocated at phase entry.
+      (void)enqueueConfigurationRecord(inbound.body.configuration);
       return;
     }
     if (inbound.type == FlovaLinkMessageType::DatastreamBound) {
@@ -505,6 +549,12 @@ class ArduinoFlovaLink : public FlovaClientLink {
       configurationGeneration_ = inbound.body.datastreamBound.generation;
       transport_.setConfigurationGeneration(configurationGeneration_);
       bound_ = true;
+      return;
+    }
+    if (inbound.type == FlovaLinkMessageType::Acknowledgement && lifecyclePendingId_ &&
+        inbound.body.acknowledgement.acknowledgedMessageId == lifecyclePendingId_) {
+      lifecycleAckId_ = lifecyclePendingId_;
+      lifecyclePendingId_ = 0;
       return;
     }
     if (inbound.type == FlovaLinkMessageType::Acknowledgement &&
@@ -517,7 +567,9 @@ class ArduinoFlovaLink : public FlovaClientLink {
       return;
     }
     if (!receiver_) return;
-    flova::Message message;
+    flova::Message& message = pendingRecords_->inboundMessage_;
+    message.~Message();
+    new (&message) flova::Message();
     if (inbound.type == FlovaLinkMessageType::Acknowledgement) {
       message.kind = flova::MessageKind::Acknowledgement;
       message.messageId = inbound.body.acknowledgement.acknowledgedMessageId;
@@ -570,6 +622,8 @@ class ArduinoFlovaLink : public FlovaClientLink {
   uint32_t messageNonce_;
   static const uint32_t kHeartbeatAckTimeoutMs = 15000UL;
   uint64_t pendingHeartbeatId_ = 0;
+  uint64_t lifecyclePendingId_ = 0;
+  uint64_t lifecycleAckId_ = 0;
   uint32_t pendingHeartbeatAt_ = 0;
   bool heartbeatAckSupported_ = false;
   FlovaOtaStrategy otaStrategy_ = FlovaOtaStrategy::None;

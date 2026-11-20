@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include <FlovaDevice.h>
+#include <FlovaLifecycleLog.h>
 #include "FlovaSdkVersion.h"
 #include <FlovaConfiguration.h>
 #include <FlovaClientLink.h>
@@ -22,7 +23,6 @@
 #include <FlovaWifiProvisioning.h>
 #include <FlovaLinkConfigurationStorage.h>
 #include <FlovaHardware.h>
-#include <FlovaScheduleRuntime.h>
 #include "adapters/ArduinoFlovaServices.h"
 #include "FlovaProvisioningAdapter.h"
 #include "FlovaRuntimeServices.h"
@@ -133,19 +133,37 @@ class FlovaClient {
     link_.setHandshakeHandlers(pauseForHandshake, resumeAfterHandshake, this);
   }
 
-  ~FlovaClient() { link_.setHandshakeHandlers(nullptr, nullptr, nullptr); }
+  ~FlovaClient() {
+    device_.detachLink();
+    link_.setHandshakeHandlers(nullptr, nullptr, nullptr);
+    provisioning_.clearHandler();
+    hardware_.setFactoryResetHandler(nullptr, nullptr);
+    hardware_.detach(device_);
+  }
 
   bool begin(bool allowProvisioning = false) {
 #if defined(FLOVA_OTA_METADATA_ENABLED)
     flovaFirmwareMetadataRuntimePointer = flovaFirmwareMetadata;
 #endif
     if (lifecycle_ != FlovaLifecycle::Idle) return false;
+    uint64_t bootId = 0;
+    for (size_t i = 0; i < sizeof(bootId); ++i) bootId = (bootId << 8) | entropy_.byte();
+    lifecycleLog_.begin(bootId);
+    lifecycleLog_.append(0, identity_.resetReason(), 0, clock_.milliseconds());
+    captureStatus(statusEventWorkspace_.previous);
+    statusSnapshotValid_ = true;
     flovaPrintStartup();
     managedProvisioning_ = allowProvisioning;
     pending_.lastError[0] = 0;
     if (!beginStorage()) {
       setLastError("storage_begin_failed");
       FLOVA_LOG_ERROR(logger_, "[flova] lifecycle failed reason=storage_begin_failed");
+      lifecycle_ = FlovaLifecycle::Failed;
+      return false;
+    }
+    if (!restoreRejectedConfiguration()) {
+      hardware_.failSafe();
+      writeError("configuration_recovery_failed");
       lifecycle_ = FlovaLifecycle::Failed;
       return false;
     }
@@ -156,8 +174,6 @@ class FlovaClient {
       lifecycle_ = FlovaLifecycle::Failed;
       return false;
     }
-    if (!ensureScheduleMemory()) return false;
-    scheduleMemory_->runtime.begin();
     if (!provisioning_.begin(handleProvisioning, this)) {
       writeError("board_begin_failed");
       FLOVA_LOG_ERROR(logger_, "[flova] lifecycle failed reason=board_begin_failed");
@@ -165,8 +181,7 @@ class FlovaClient {
       return false;
     }
 
-    memset(&configurationMemory_->image, 0,
-           sizeof(configurationMemory_->image));
+    memset(validationWorkspace(), 0, kValidationBytes);
     const bool hasConfiguration =
         storage_.read("config", &configurationMemory_->image,
                       sizeof(configurationMemory_->image)) &&
@@ -232,6 +247,7 @@ class FlovaClient {
   void run() {
     runLifecycle();
     dispatchStatusChanges();
+    drainLifecycleLog();
   }
 
 #if defined(FLOVA_EXTERNAL_CONFIGURATION_ENABLED)
@@ -273,7 +289,7 @@ class FlovaClient {
     if (setupLifecycle || provisioningDuringNetworkStart_)
       provisioning_.loop();
     network_.loop();
-    tlsClock_.loop(network_.connected() && !provisioningDuringNetworkStart_);
+    tlsClock_.loop(network_.connected() && !provisioningDuringNetworkStart_ && !networkSetup_);
     if ((setupLifecycle || provisioningDuringNetworkStart_) && handoffAccepted_) {
       handoffAccepted_ = false;
       if (!markBootstrapAttempt()) {
@@ -363,8 +379,8 @@ class FlovaClient {
       drainConfiguration(true);
       FlovaLinkBootstrapCommitted committed = {};
       if (link_.takeBootstrapCommitted(committed)) {
-        if (!configurationCommitted_ ||
-            committed.generation != activeConfigurationGeneration_) {
+        if (!configurationCommittedGeneration_ ||
+            committed.generation != configurationCommittedGeneration_) {
           failBootstrap("configuration_not_committed");
           return;
         }
@@ -392,7 +408,20 @@ class FlovaClient {
         return;
       }
       if (otaDraining_) { finishOta(); return; }
-      link_.setConnectionAllowed(network_.connected() && tlsClock_.ready());
+      if (networkSetupDraining_) {
+        device_.run(); // Poll the bounded transport maintenance drain.
+        if (!link_.maintenanceReady()) return;
+        if (link_.maintenanceFailed()) {
+          link_.endMaintenance();
+          networkSetupDraining_ = networkSetup_ = false;
+          setLastError("network_setup_drain_failed");
+          return;
+        }
+        link_.setConnectionAllowed(false);
+        link_.endMaintenance();
+        networkSetupDraining_ = false;
+      }
+      link_.setConnectionAllowed(!networkSetup_ && network_.connected() && tlsClock_.ready());
       hardware_.setConnected(link_.connected());
       if (!link_.applicationPaused()) hardware_.run();
       if (lifecycle_ != FlovaLifecycle::Runtime) return;
@@ -403,11 +432,11 @@ class FlovaClient {
         factoryReset();
         return;
       }
-      if (scheduleMemory_ && !link_.applicationPaused()) scheduleMemory_->runtime.run();
       if (configurationWork_.mode != ConfigurationWorkMode::None) {
         stepConfigurationWork();
         return;
       }
+      if (networkSetup_) return;
       drainConfiguration(false);
       if (configurationActivation_.active()) return;
       processOta();
@@ -418,7 +447,28 @@ class FlovaClient {
   }
 
  public:
+  // Board-owned network replacement: never remove Flova configuration.
+  bool beginNetworkSetup() {
+    if (networkSetup_ || lifecycle_ != FlovaLifecycle::Runtime ||
+        configurationMemory_ || configurationTransferActive_ ||
+        configurationWork_.mode != ConfigurationWorkMode::None ||
+        configurationActivation_.active() || otaDraining_ || otaInstallPending_ ||
+        otaResultPending_ || factoryResetRequestedAt_ || powerDownDraining_ ||
+        powerDownReady_ || device_.commandResultsPending()) return false;
+    setLastError("");
+    networkSetup_ = networkSetupDraining_ = true;
+    link_.beginMaintenance();
+    return true;
+  }
+  bool networkSetupReady() const { return networkSetup_ && !networkSetupDraining_; }
+  bool networkSetupActive() const { return networkSetup_; }
+  void endNetworkSetup() {
+    if (networkSetupDraining_) link_.endMaintenance();
+    networkSetup_ = networkSetupDraining_ = false;
+  }
+
   bool startProvisioning() {
+    if (networkSetup_) return false;
     link_.disconnect();
     if (!storage_.remove("config") || !storage_.remove("prov_pending") ||
         !storage_.remove("prov_error") || !storage_.remove("ota_pending")) {
@@ -431,6 +481,7 @@ class FlovaClient {
     releaseConfigurationMemory();
     memset(&pending_, 0, sizeof(pending_));
     configurationVerifiedGeneration_ = 0;
+    configurationCommittedGeneration_ = 0;
     if (managedProvisioning_) return provisioningFallback();
     awaitProvisioning();
     return true;
@@ -461,7 +512,7 @@ class FlovaClient {
   FlovaPowerDownStatus prepareForPowerDown() {
     if (powerDownReady_) return FlovaPowerDownStatus::Ready;
     if (!powerDownDraining_) {
-      if (!ready() || configurationMemory_ || configurationTransferActive_ ||
+      if (networkSetup_ || !ready() || configurationMemory_ || configurationTransferActive_ ||
           configurationWork_.mode != ConfigurationWorkMode::None ||
           configurationActivation_.active() || otaDraining_ ||
           otaResultPending_ || factoryResetRequestedAt_)
@@ -473,7 +524,7 @@ class FlovaClient {
       powerDownDraining_ = true;
     }
     if (!link_.maintenanceReady()) return FlovaPowerDownStatus::Draining;
-    if (link_.maintenanceFailed()) {
+    if (link_.maintenanceFailed() || !device_.flushPersistence()) {
       link_.endMaintenance();
       powerDownDraining_ = false;
       return FlovaPowerDownStatus::Failed;
@@ -489,11 +540,6 @@ class FlovaClient {
                          void* context = nullptr) {
     statusListener_ = listener;
     statusContext_ = context;
-    statusSnapshotValid_ = false;
-    if (statusListener_) {
-      captureStatus(statusEventWorkspace_.previous);
-      statusSnapshotValid_ = true;
-    }
   }
   void setRestartHandler(FlovaRestartHandler handler, void* context = nullptr) {
     restartHandler_ = handler;
@@ -513,6 +559,7 @@ class FlovaClient {
   // Erases Flova runtime/provisioning state. Custom application storage and
   // application-owned network credentials remain outside this boundary.
   bool factoryReset() {
+    if (networkSetup_) return false;
     if (!network_.stop() || !network_.clearCredentials()) return false;
     link_.disconnect();
     hardware_.failSafe();
@@ -526,6 +573,8 @@ class FlovaClient {
   template <typename T>
   flova::Datastream<T> datastream(const char* key) { return device_.datastream<T>(key); }
 
+  template <typename T>
+  flova::Datastream<T> stream(const char* key) { return device_.datastream<T>(key); }
   template <typename T>
   flova::Setting<T> setting(const char* key, const T& defaultValue) {
     return device_.setting<T>(key, defaultValue);
@@ -541,16 +590,13 @@ class FlovaClient {
     output.runtimeReady = lifecycle_ == FlovaLifecycle::Runtime;
     output.ready = output.runtimeReady && device_.ready();
     output.restartReason = restartReason_;
-    output.configurationGeneration = activeConfigurationGeneration_
-                                         ? activeConfigurationGeneration_
-                                         : link_.configurationGeneration();
+    output.configurationGeneration = activeConfigurationGeneration_;
     strncpy(output.errorCode, pending_.lastError,
             sizeof(output.errorCode) - 1);
     output.errorCode[sizeof(output.errorCode) - 1] = 0;
   }
 
   void dispatchStatusChanges() {
-    if (!statusListener_) return;
     captureStatus(statusEventWorkspace_.current);
     if (!statusSnapshotValid_) {
       statusEventWorkspace_.previous = statusEventWorkspace_.current;
@@ -579,8 +625,54 @@ class FlovaClient {
 
   void dispatchStatusEvent(FlovaStatusEventKind kind) {
     statusEventWorkspace_.kind = kind;
+    const FlovaStatusSnapshot& s = statusEventWorkspace_.current;
+    uint32_t detail = 0;
+    switch (kind) {
+      case FlovaStatusEventKind::LifecycleChanged: detail = static_cast<uint32_t>(s.lifecycle); break;
+      case FlovaStatusEventKind::NetworkChanged: detail = (s.networkConnected ? 1 : 0) | (s.tlsReady ? 2 : 0); break;
+      case FlovaStatusEventKind::LinkChanged: detail = s.linkConnected; break;
+      case FlovaStatusEventKind::ReadyChanged: detail = (s.runtimeReady ? 1 : 0) | (s.ready ? 2 : 0); break;
+      case FlovaStatusEventKind::ConfigurationChanged: detail = s.configurationGeneration; break;
+      case FlovaStatusEventKind::ErrorChanged: detail = s.errorCode[0] ? 1 : 0; break;
+      case FlovaStatusEventKind::MaintenanceChanged: detail = s.maintenance; break;
+    }
+    lifecycleLog_.append(static_cast<uint8_t>(kind) + 1, detail, s.configurationGeneration, clock_.milliseconds());
     if (statusListener_) statusListener_(statusContext_, statusEventWorkspace_);
   }
+
+  void drainLifecycleLog() {
+    if (link_.connectionAttempts() != loggedConnectionAttempts_) {
+      loggedConnectionAttempts_ = link_.connectionAttempts();
+      lifecycleLog_.append(9, loggedConnectionAttempts_, link_.configurationGeneration(), clock_.milliseconds());
+    }
+    if (link_.connectionFailures() != loggedConnectionFailures_) {
+      loggedConnectionFailures_ = link_.connectionFailures();
+      lifecycleLog_.append(10, loggedConnectionFailures_, link_.configurationGeneration(), clock_.milliseconds());
+    }
+    const flova::Diagnostics& d = device_.diagnostics();
+    const uint32_t failures = d.storageFailures + d.queueOverflow + d.rejectedDeliveries + d.clockSyncFailures + d.droppedHistory + d.expiredHistory;
+    if (failures != loggedDiagnosticFailures_) {
+      lifecycleLog_.append(8, failures, link_.configurationGeneration(), clock_.milliseconds());
+      loggedDiagnosticFailures_ = failures;
+    }
+    FlovaLinkLifecycleReport* event = lifecycleLog_.front();
+    if (!event) return;
+    if (event->messageId && link_.takeLifecycleAck(event->messageId)) {
+      lifecycleLog_.acknowledge();
+      lifecycleLogSent_ = false;
+      return;
+    }
+    if (!link_.connected() || !link_.lifecycleLogsSupported() || link_.applicationPaused()) return;
+    const uint32_t now = millis();
+    if (lifecycleLogSent_ && now - lifecycleLogSentAt_ < 5000UL) return;
+    if (!event->messageId) event->messageId = nextControlMessageId();
+    if (link_.publishLifecycle(*event)) { lifecycleLogSentAt_ = now; lifecycleLogSent_ = true; }
+  }
+
+  flova::LifecycleLog lifecycleLog_;
+  uint32_t lifecycleLogSentAt_ = 0, loggedDiagnosticFailures_ = 0;
+  uint32_t loggedConnectionAttempts_ = 0, loggedConnectionFailures_ = 0;
+  bool lifecycleLogSent_ = false;
 
   flova::ConfigurationActivation configurationActivation_;
   bool otaDraining_ = false;
@@ -593,7 +685,7 @@ class FlovaClient {
   static const uint32_t kOtaHealthDeadlineMs = 120000UL;
   static const uint32_t kFactoryResetAckGraceMs = 5000UL;
   static const uint32_t kMaximumConfigurationRecords =
-      FLOVA_DATASTREAM_CAPACITY + FLOVA_SCHEDULE_CAPACITY + FLOVA_PARAMETER_CAPACITY + 8;
+      FLOVA_DATASTREAM_CAPACITY + FLOVA_PARAMETER_CAPACITY + 8;
   static const uint32_t kOtaPendingMagic = 0x4f544131UL;
 
   enum class ConfigurationWorkMode : uint8_t {
@@ -611,7 +703,6 @@ class FlovaClient {
     Semantic,
     KeyScan,
     References,
-    PrepareSchedules,
     ApplyInit,
     Apply,
     Finish,
@@ -636,10 +727,6 @@ class FlovaClient {
     size_t outputMappingCount = 0;
     uint16_t statusLedPin = UINT16_MAX;
     bool systemSeen = false;
-    bool scheduleAlreadyInstalled = false;
-    uint8_t scheduleCount = 0;
-    uint64_t generatedAt = 0;
-    uint64_t validUntil = 0;
     bool bootstrapping = false;
   };
 
@@ -789,6 +876,14 @@ class FlovaClient {
 
   flova::config::Ack applyConfiguration(
       const FlovaLinkConfigurationRecord& input) {
+    if (rejectedConfigurationGeneration_ && input.generation == rejectedConfigurationGeneration_) {
+      flova::config::Ack rejected;
+      rejected.messageId = input.messageId;
+      rejected.generation = input.generation;
+      rejected.sequence = input.sequence;
+      rejected.status = flova::config::Status::VerificationFailure;
+      return rejected;
+    }
     if (input.phase == FlovaLinkConfigurationPhase::Begin) {
       flova::config::Begin begin;
       begin.messageId = input.messageId;
@@ -938,7 +1033,6 @@ class FlovaClient {
     if (!ensureConfigurationMemory()) return;
     configurationWork_ = ConfigurationWork();
     configurationWork_.mode = mode;
-    configurationWork_.scheduleAlreadyInstalled = false;
     configurationWork_.bootstrapping = mode == ConfigurationWorkMode::BootstrapRestore ||
                                         mode == ConfigurationWorkMode::BootstrapApply;
     if (mode == ConfigurationWorkMode::BootstrapRestore) {
@@ -947,9 +1041,7 @@ class FlovaClient {
       configurationWork_.phase = ConfigurationWorkPhase::SelectCandidate;
     } else if (mode == ConfigurationWorkMode::BootstrapApply) {
       configurationWork_.generation = generation;
-      configurationWork_.scheduleAlreadyInstalled =
-          scheduleMemory_->runtime.revision() == generation;
-      configurationWork_.phase = ConfigurationWorkPhase::PrepareSchedules;
+      configurationWork_.phase = ConfigurationWorkPhase::ApplyInit;
       if (!configurationStorage_.generationManifest(
               generation, configurationWork_.manifest)) {
         failConfigurationWork(false);
@@ -994,9 +1086,6 @@ class FlovaClient {
       case ConfigurationWorkPhase::References:
         stepConfigurationReferences();
         return;
-      case ConfigurationWorkPhase::PrepareSchedules:
-        stepConfigurationSchedules();
-        return;
       case ConfigurationWorkPhase::ApplyInit:
         hardware_.resetConfiguration();
         configurationWork_.sequence = 0;
@@ -1029,12 +1118,14 @@ class FlovaClient {
         }
         return;
       }
-      configurationWork_.scheduleAlreadyInstalled =
-          scheduleMemory_->runtime.revision() == generation;
       configurationWork_.sequence = 0;
       configurationMemory_->digest.reset();
       configurationWork_.phase = ConfigurationWorkPhase::Digest;
       FLOVA_LOG_INFO(logger_, "[flova] configuration restore candidate");
+      return;
+    }
+    if (rejectedConfigurationGeneration_ && configurationWork_.mode == ConfigurationWorkMode::BootRestore) {
+      failConfigurationWork(false);
       return;
     }
     completeConfigurationRestore();
@@ -1060,7 +1151,6 @@ class FlovaClient {
     configurationWork_.sequence = 0;
     configurationWork_.priorSequence = 0;
     validationDatastreamCount_ = 0;
-    validationScheduleCount_ = 0;
     configurationWork_.mappedPinCount = 0;
     configurationWork_.inputMappingCount = 0;
     configurationWork_.outputMappingCount = 0;
@@ -1138,59 +1228,11 @@ class FlovaClient {
       }
       return true;
     }
-    if (unit.kind == flova::config::UnitKind::Schedule) {
-      if (validationScheduleCount_ >= FLOVA_SCHEDULE_CAPACITY ||
-          !unit.data.schedule.id || !unit.data.schedule.validUntil ||
-          !unit.data.schedule.actionCount ||
-          unit.data.schedule.actionCount >
-              flova::config::kConfigurationScheduleActions)
-        return false;
-      for (size_t i = 0; i < validationScheduleCount_; ++i)
-        if (validationSchedule(i).id == unit.data.schedule.id) return false;
-      ValidationSchedule schedule = {};
-      schedule.id = unit.data.schedule.id;
-      setValidationSchedule(validationScheduleCount_++, schedule);
-      return true;
-    }
-    if (unit.kind != flova::config::UnitKind::ScheduleOccurrences)
-      return true;
-    size_t index = validationScheduleCount_;
-    for (size_t i = 0; i < validationScheduleCount_; ++i)
-      if (validationSchedule(i).id == unit.data.occurrences.scheduleId) {
-        index = i;
-        break;
-      }
-    ValidationSchedule schedule =
-        index < validationScheduleCount_ ? validationSchedule(index)
-                                         : ValidationSchedule();
-    if (index == validationScheduleCount_ ||
-        !unit.data.occurrences.chunkCount ||
-        unit.data.occurrences.chunkIndex >= unit.data.occurrences.chunkCount ||
-        unit.data.occurrences.chunkIndex != schedule.nextChunk ||
-        (schedule.chunkCount &&
-         schedule.chunkCount != unit.data.occurrences.chunkCount) ||
-        !unit.data.occurrences.occurrenceCount ||
-        unit.data.occurrences.occurrenceCount >
-            flova::config::kConfigurationOccurrenceChunk ||
-        schedule.occurrences + unit.data.occurrences.occurrenceCount >
-            FLOVA_SCHEDULE_OCCURRENCE_CAPACITY)
-      return false;
-    schedule.chunkCount = unit.data.occurrences.chunkCount;
-    ++schedule.nextChunk;
-    schedule.occurrences += unit.data.occurrences.occurrenceCount;
-    setValidationSchedule(index, schedule);
     return true;
   }
 
   void stepConfigurationSemantic() {
     if (configurationWork_.sequence >= configurationWork_.manifest.recordCount) {
-      for (size_t i = 0; i < validationScheduleCount_; ++i) {
-        const ValidationSchedule schedule = validationSchedule(i);
-        if (!schedule.chunkCount || schedule.nextChunk != schedule.chunkCount) {
-          failConfigurationWork(true);
-          return;
-        }
-      }
       configurationWork_.sequence = 0;
       configurationWork_.phase = ConfigurationWorkPhase::References;
       return;
@@ -1203,6 +1245,8 @@ class FlovaClient {
     }
     if (configurationMemory_->unit.kind ==
         flova::config::UnitKind::Datastream) {
+      setValidationKeyHash(configurationWork_.sequence,
+                           configurationKeyHash(configurationWork_.keyTarget));
       configurationWork_.priorSequence = 0;
       configurationWork_.phase = ConfigurationWorkPhase::KeyScan;
       return;
@@ -1211,6 +1255,12 @@ class FlovaClient {
   }
 
   void stepConfigurationKeyScan() {
+    const uint32_t hash = validationKeyHash(configurationWork_.sequence);
+    // Fingerprints only filter candidates. Exact comparison below remains
+    // authoritative, including when distinct untrusted keys collide.
+    while (configurationWork_.priorSequence < configurationWork_.sequence &&
+           validationKeyHash(configurationWork_.priorSequence) != hash)
+      ++configurationWork_.priorSequence;
     if (configurationWork_.priorSequence < configurationWork_.sequence) {
       if (!decodeGenerationUnit(configurationWork_.generation,
                                 configurationWork_.priorSequence)) {
@@ -1238,11 +1288,7 @@ class FlovaClient {
       }
       FLOVA_LOG_INFO(logger_, "[flova] configuration generation validated");
       configurationWork_.sequence = 0;
-      configurationWork_.phase = ConfigurationWorkPhase::PrepareSchedules;
-      configurationWork_.scheduleCount = 0;
-      configurationWork_.generatedAt = 0;
-      configurationWork_.validUntil = 0;
-      compilingSchedules_ = false;
+      configurationWork_.phase = ConfigurationWorkPhase::ApplyInit;
       return;
     }
     if (!decodeGenerationUnit(configurationWork_.generation,
@@ -1256,64 +1302,7 @@ class FlovaClient {
       failConfigurationWork(true);
       return;
     }
-    if (unit.kind == flova::config::UnitKind::Schedule)
-      for (uint8_t action = 0; action < unit.data.schedule.actionCount; ++action)
-        if (!hasValidatedDatastream(
-                unit.data.schedule.actions[action].datastreamId)) {
-          failConfigurationWork(true);
-          return;
-        }
     ++configurationWork_.sequence;
-  }
-
-  void stepConfigurationSchedules() {
-    if (configurationWork_.sequence < configurationWork_.manifest.recordCount) {
-      if (!configurationMemory_->installer.loadWorkspace(
-              configurationWork_.generation, configurationWork_.sequence)) {
-        failConfigurationWork(true);
-        return;
-      }
-      const flova::config::Record& stored = configurationMemory_->installer.workspace();
-      configurationMemory_->unit = flova::config::Unit();
-      if (!link_.decodeStoredConfigurationUnit(
-              stored.body, stored.length, configurationMemory_->unit)) {
-        failConfigurationWork(true);
-        return;
-      }
-      const flova::config::Unit& unit = configurationMemory_->unit;
-      if (unit.kind == flova::config::UnitKind::Schedule) {
-        if (configurationWork_.scheduleCount >= FLOVA_SCHEDULE_CAPACITY ||
-            !unit.data.schedule.validUntil) {
-          failConfigurationWork(true);
-          return;
-        }
-        ++configurationWork_.scheduleCount;
-        if (!configurationWork_.generatedAt ||
-            unit.data.schedule.validFrom < configurationWork_.generatedAt)
-          configurationWork_.generatedAt = unit.data.schedule.validFrom;
-        if (!configurationWork_.validUntil ||
-            unit.data.schedule.validUntil < configurationWork_.validUntil)
-          configurationWork_.validUntil = unit.data.schedule.validUntil;
-      }
-      ++configurationWork_.sequence;
-      return;
-    }
-    compilingSchedules_ = configurationWork_.scheduleCount != 0;
-    if (compilingSchedules_) {
-      static const uint64_t kRenewBeforeMs =
-          14ULL * 24ULL * 60ULL * 60ULL * 1000ULL;
-      const uint64_t renewBefore = configurationWork_.validUntil > kRenewBeforeMs
-                                       ? configurationWork_.validUntil - kRenewBeforeMs
-                                       : configurationWork_.validUntil;
-      if (!scheduleMemory_->compiler.begin(
-              configurationWork_.generation, configurationWork_.generatedAt,
-              configurationWork_.validUntil, renewBefore,
-              configurationWork_.scheduleCount)) {
-        failConfigurationWork(false);
-        return;
-      }
-    }
-    configurationWork_.phase = ConfigurationWorkPhase::ApplyInit;
   }
 
   void stepConfigurationApply() {
@@ -1323,36 +1312,66 @@ class FlovaClient {
     }
     if (!decodeGenerationUnit(configurationWork_.generation,
                               configurationWork_.sequence)) {
-      hardware_.failSafe();
-      failConfigurationWork(false);
+      failConfigurationApply();
       return;
     }
     flova::config::Unit& unit = configurationMemory_->unit;
-    if (!hardware_.resolve(unit) || !device_.applyConfigurationUnit(unit) || !hardware_.apply(unit) ||
-        !applyScheduleUnit(unit)) {
-      hardware_.failSafe();
-      failConfigurationWork(false);
+    if (!hardware_.resolve(unit) || !device_.applyConfigurationUnit(unit) || !hardware_.apply(unit)) {
+      failConfigurationApply();
       return;
     }
     ++configurationWork_.sequence;
   }
 
-  void finishConfigurationApply() {
-    if (compilingSchedules_ &&
-        (!scheduleMemory_->compiler.finish() ||
-         (!configurationWork_.scheduleAlreadyInstalled &&
-          !scheduleMemory_->runtime.installPrepared()))) {
-      hardware_.failSafe();
+  bool restoreRejectedConfiguration() {
+    uint32_t marker[2];
+    if (!storage_.read("cfg_rejected", marker, sizeof(marker))) return true;
+    if (!marker[0] || marker[1] != ~marker[0]) return false;
+    rejectedConfigurationGeneration_ = marker[0];
+    uint32_t newest, previous;
+    configurationStorage_.generations(newest, previous);
+    // Finish rejecting the candidate if power was lost before removing its pointer.
+    if (newest == marker[0] || previous == marker[0])
+      return configurationStorage_.discardGeneration(marker[0]);
+    return true;
+  }
+
+  void failConfigurationApply() {
+    hardware_.failSafe();
+    const uint32_t generation = configurationWork_.generation;
+    const bool hasFallback = configurationWork_.mode == ConfigurationWorkMode::BootRestore &&
+                             configurationWork_.candidateIndex == 1 &&
+                             configurationWork_.candidates[1] != 0;
+    if (!hasFallback) {
       failConfigurationWork(false);
       return;
     }
-    if (!compilingSchedules_) scheduleMemory_->runtime.clear();
+
+    const uint32_t marker[] = {generation, ~generation};
+    uint32_t verified[2];
+    if (!storage_.write("cfg_rejected", marker, sizeof(marker)) ||
+        !storage_.read("cfg_rejected", verified, sizeof(verified)) ||
+        memcmp(marker, verified, sizeof(marker)) != 0 ||
+        !configurationStorage_.discardGeneration(generation)) {
+      failConfigurationWork(false);
+      return;
+    }
+    writeError("configuration_apply_rollback");
+    configurationWork_ = ConfigurationWork();
+    requestRestart(FlovaRestartReason::ConfigurationActivation);
+  }
+
+  void finishConfigurationApply() {
     FLOVA_LOG_INFO(logger_, "[flova] configuration generation applied");
     const ConfigurationWorkMode mode = configurationWork_.mode;
     activeConfigurationGeneration_ = configurationWork_.generation;
+    if (rejectedConfigurationGeneration_ &&
+        activeConfigurationGeneration_ > rejectedConfigurationGeneration_ &&
+        storage_.remove("cfg_rejected"))
+      rejectedConfigurationGeneration_ = 0;
     memcpy(activeConfigurationChecksum_, configurationWork_.manifest.checksum.bytes,
            sizeof(activeConfigurationChecksum_));
-    configurationCommitted_ = configurationWork_.generation != 0;
+    configurationCommittedGeneration_ = configurationWork_.generation;
     link_.setConfigurationGeneration(configurationWork_.generation);
     configurationWork_ = ConfigurationWork();
     if (mode == ConfigurationWorkMode::BootstrapRestore ||
@@ -1405,12 +1424,8 @@ class FlovaClient {
       configurationWork_ = ConfigurationWork();
       return;
     }
-    activeConfigurationGeneration_ = generation;
-    memcpy(activeConfigurationChecksum_, configurationWork_.manifest.checksum.bytes,
-           sizeof(activeConfigurationChecksum_));
     configurationVerifiedGeneration_ = generation;
-    configurationCommitted_ = true;
-    link_.setConfigurationGeneration(generation);
+    configurationCommittedGeneration_ = generation;
     FLOVA_LOG_INFO(logger_, "[flova] configuration generation committed");
     publishConfigurationReport(flova::config::Status::Accepted,
                                FlovaLinkConfigurationPhase::End,
@@ -1463,11 +1478,7 @@ class FlovaClient {
     if (phase == FlovaLinkConfigurationPhase::End) configurationTransferActive_ = false;
     if (phase == FlovaLinkConfigurationPhase::End &&
         configurationReportWorkspace_.status == FlovaLinkResultStatus::Ok) {
-      configurationCommitted_ = true;
-      activeConfigurationGeneration_ = configurationReportWorkspace_.generation;
-      memcpy(activeConfigurationChecksum_, configurationReportWorkspace_.checksum,
-             sizeof(activeConfigurationChecksum_));
-      link_.setConfigurationGeneration(activeConfigurationGeneration_);
+      configurationCommittedGeneration_ = configurationReportWorkspace_.generation;
     }
     (void)bootstrapping;
   }
@@ -1510,26 +1521,32 @@ class FlovaClient {
     return false;
   }
 
-  struct ValidationSchedule {
-    uint32_t id;
-    uint16_t nextChunk;
-    uint16_t chunkCount;
-    uint16_t occurrences;
-  };
-
   static const size_t kValidationDatastreamBytes =
       FLOVA_DATASTREAM_CAPACITY * sizeof(DatastreamId);
-  static const size_t kValidationScheduleOffset = kValidationDatastreamBytes;
-  static_assert(kValidationScheduleOffset +
-                        FLOVA_SCHEDULE_CAPACITY * sizeof(ValidationSchedule) <=
-                    sizeof(flova::ConfigurationImage),
-                "configuration validation workspace exceeds the shared image buffer");
+  static const size_t kValidationKeyHashOffset = kValidationDatastreamBytes;
+  static const size_t kValidationBytes = kValidationKeyHashOffset +
+      kMaximumConfigurationRecords * sizeof(uint32_t);
 
   uint8_t* validationWorkspace() {
-    return reinterpret_cast<uint8_t*>(&configurationMemory_->image);
+    return configurationMemory_->validation;
   }
   const uint8_t* validationWorkspace() const {
-    return reinterpret_cast<const uint8_t*>(&configurationMemory_->image);
+    return configurationMemory_->validation;
+  }
+  static uint32_t configurationKeyHash(const char* key) {
+    uint32_t hash = 2166136261UL;
+    while (*key) { hash ^= static_cast<uint8_t>(*key++); hash *= 16777619UL; }
+    return hash ? hash : 1;
+  }
+  uint32_t validationKeyHash(size_t sequence) const {
+    uint32_t hash = 0;
+    memcpy(&hash, validationWorkspace() + kValidationKeyHashOffset +
+                      sequence * sizeof(hash), sizeof(hash));
+    return hash;
+  }
+  void setValidationKeyHash(size_t sequence, uint32_t hash) {
+    memcpy(validationWorkspace() + kValidationKeyHashOffset +
+               sequence * sizeof(hash), &hash, sizeof(hash));
   }
   DatastreamId validatedDatastreamId(size_t index) const {
     DatastreamId id = FLOVA_INVALID_DATASTREAM_ID;
@@ -1539,69 +1556,6 @@ class FlovaClient {
   void setValidatedDatastreamId(size_t index, DatastreamId id) {
     memcpy(validationWorkspace() + index * sizeof(id), &id, sizeof(id));
   }
-  ValidationSchedule validationSchedule(size_t index) const {
-    ValidationSchedule value = {};
-    memcpy(&value,
-           validationWorkspace() + kValidationScheduleOffset +
-               index * sizeof(value),
-           sizeof(value));
-    return value;
-  }
-  void setValidationSchedule(size_t index,
-                             const ValidationSchedule& value) {
-    memcpy(validationWorkspace() + kValidationScheduleOffset +
-               index * sizeof(value),
-           &value, sizeof(value));
-  }
-
-  bool applyScheduleUnit(const flova::config::Unit& unit) {
-    if (!compilingSchedules_) {
-      return unit.kind != flova::config::UnitKind::Schedule &&
-             unit.kind != flova::config::UnitKind::ScheduleOccurrences;
-    }
-    if (unit.kind == flova::config::UnitKind::Schedule)
-      return scheduleMemory_->compiler.addSchedule(unit.data.schedule);
-    if (unit.kind == flova::config::UnitKind::ScheduleOccurrences)
-      return scheduleMemory_->compiler.addOccurrences(unit.data.occurrences);
-    return true;
-  }
-
-  static flova::WriteResult applyScheduledWrite(
-      void* context, const char*, const flova::ScheduleAction& action,
-      uint64_t) {
-    FlovaClient* client = static_cast<FlovaClient*>(context);
-    return client->device_.write(action.datastreamId, action.value,
-                                 flova::Origin::Internal);
-  }
-
-  static void requestScheduleRenewal(void* context, uint32_t revision,
-                                     uint64_t validUntil) {
-    FlovaClient* client = static_cast<FlovaClient*>(context);
-    FlovaLinkScheduleStatus status = {};
-    status.messageId = client->nextControlMessageId();
-    status.generation = client->activeConfigurationGeneration_;
-    status.revision = revision;
-    status.validUntilUtcMs = validUntil;
-    status.status = FlovaLinkResultStatus::Ok;
-    client->link_.publishScheduleRenew(status);
-  }
-
-  static void reportScheduleStatus(void* context, const char* code,
-                                   uint32_t revision, uint64_t validUntil) {
-    FlovaClient* client = static_cast<FlovaClient*>(context);
-    FlovaLinkScheduleStatus status = {};
-    status.messageId = client->nextControlMessageId();
-    status.generation = client->activeConfigurationGeneration_;
-    status.revision = revision;
-    status.validUntilUtcMs = validUntil;
-    status.status = strcmp(code, "installed") == 0
-                        ? FlovaLinkResultStatus::Ok
-                        : FlovaLinkResultStatus::Error;
-    strncpy(status.errorCode, code ? code : "schedule_failed",
-            sizeof(status.errorCode) - 1);
-    client->link_.publishScheduleStatus(status);
-  }
-
   void processOta() {
     if (configurationMemory_ || link_.applicationPaused()) return;
     if (otaResultPending_ && link_.connected()) {
@@ -1670,7 +1624,7 @@ class FlovaClient {
       otaPendingRecordValid_ = false;
       return;
     }
-    if (!suspendSchedules()) {
+    if (!device_.flushPersistence()) {
       otaResult_.status = FlovaLinkResultStatus::Error;
       copy(otaResult_.errorCode, "maintenance_checkpoint_failed");
       otaResultPending_ = true;
@@ -1709,7 +1663,6 @@ class FlovaClient {
       requestRestart(FlovaRestartReason::OtaActivation);
       return;
     }
-    if (!resumeSchedules()) return;
     otaResult_.status = FlovaLinkResultStatus::Error;
     const char* error = result == flova::OtaInstallResult::HashMismatch
                             ? "ota_hash_mismatch"
@@ -1759,15 +1712,10 @@ class FlovaClient {
     if (lastHeartbeatAt_ && now - lastHeartbeatAt_ < 30000UL) return;
     FlovaLinkHeartbeat heartbeat = {};
     heartbeat.messageId = nextControlMessageId();
-    heartbeat.configurationGeneration = activeConfigurationGeneration_
-                                            ? activeConfigurationGeneration_
-                                            : link_.configurationGeneration();
+    heartbeat.configurationGeneration = activeConfigurationGeneration_;
     heartbeat.uptimeMs = now;
     heartbeat.protocolVersion = 1;
     heartbeat.datastreamSlots = FLOVA_DATASTREAM_CAPACITY;
-    heartbeat.scheduleSlots = FLOVA_SCHEDULE_RUNTIME_ENABLED
-                                  ? FLOVA_SCHEDULE_CAPACITY
-                                  : 0;
     const uint32_t maxImageBytes = link_.otaMaxImageBytes();
     heartbeat.otaCapable = otaEnabled_ && maxImageBytes > 0;
     heartbeat.otaMaxImageBytes = heartbeat.otaCapable ? maxImageBytes : 0;
@@ -1881,13 +1829,6 @@ class FlovaClient {
       return;
     }
     link_.disconnect();
-    // Keep the schedule workspace out of the TLS/configuration overlap on
-    // constrained boards. The handshake pause defers its restoration during
-    // bootstrap; restore it only after the link has been closed.
-    if (!resumeSchedules()) {
-      failBootstrap("schedule_restore_failed");
-      return;
-    }
     memset(&pending_, 0, sizeof(pending_));
     if (configurationVerifiedGeneration_ == committed.generation) {
       startConfigurationRestore(ConfigurationWorkMode::BootstrapApply,
@@ -1983,61 +1924,15 @@ class FlovaClient {
     }
   }
 
-  struct ScheduleMemory {
-    ScheduleMemory(flova::Storage& storage, flova::Clock& clock)
-        : runtime(storage, clock), compiler(runtime.workspace()) {}
-    flova::ScheduleRuntime runtime;
-    flova::ScheduleChunkCompiler compiler;
-  };
-  bool ensureScheduleMemory() {
-    if (!scheduleMemory_) {
-      scheduleMemory_.create(storage_, clock_);
-      if (!scheduleMemory_) {
-        writeError("schedule_memory_unavailable");
-        lifecycle_ = FlovaLifecycle::Failed;
-        return false;
-      }
-      scheduleMemory_->runtime.handlers(applyScheduledWrite, requestScheduleRenewal,
-                                        reportScheduleStatus, this);
-    }
-    return true;
-  }
-  bool suspendSchedules() {
-    if (!scheduleMemory_) return true;
-    if (!scheduleMemory_->runtime.checkpoint()) return false;
-    suspendedScheduleRevision_ = scheduleMemory_->runtime.revision();
-    scheduleMemory_.reset();
-    return true;
-  }
-  bool resumeSchedules() {
-    if (scheduleMemory_) return true;
-    if (!ensureScheduleMemory()) return false;
-    if (suspendedScheduleRevision_ &&
-        !scheduleMemory_->runtime.restoreCheckpoint(suspendedScheduleRevision_)) {
-      writeError("schedule_restore_failed");
-      lifecycle_ = FlovaLifecycle::Failed;
-      return false;
-    }
-    return true;
-  }
   static bool pauseForHandshake(void* context) {
     FlovaClient& self = *static_cast<FlovaClient*>(context);
     // A live configuration transfer cannot overlap another connection. Keep
     // its verified active generation and abort only the transient workspace.
     if (self.configurationWork_.mode != ConfigurationWorkMode::None) return false;
     self.releaseConfigurationMemory();
-    return self.suspendSchedules();
+    return self.device_.flushPersistence();
   }
-  static bool resumeAfterHandshake(void* context) {
-    FlovaClient& self = *static_cast<FlovaClient*>(context);
-    // Bootstrap still needs the freed workspace for inbound configuration
-    // frames and outbound acknowledgements. Runtime reconnects can restore it
-    // as soon as the handshake is over.
-    if (self.lifecycle_ == FlovaLifecycle::Bootstrapping) return true;
-    return self.resumeSchedules();
-  }
-  FlovaPhaseStorage<ScheduleMemory> scheduleMemory_;
-  uint32_t suspendedScheduleRevision_ = 0;
+  static bool resumeAfterHandshake(void*) { return true; }
 
   struct ConfigurationMemory {
     explicit ConfigurationMemory(FlovaLinkConfigurationStorage& storage)
@@ -2045,7 +1940,10 @@ class FlovaClient {
     flova::config::Installer installer;
     flova::config::Digest digest;
     flova::DeviceConfiguration runtime = {};
-    flova::ConfigurationImage image = {};
+    union {
+      flova::ConfigurationImage image = {};
+      uint8_t validation[kValidationBytes];
+    };
     union {
       FlovaLinkConfigurationRecord record = {};
       flova::config::Unit unit;
@@ -2095,12 +1993,14 @@ class FlovaClient {
   uint32_t bootstrapStartedAt_ = 0;
   uint32_t activeConfigurationGeneration_ = 0;
   uint32_t configurationVerifiedGeneration_ = 0;
+  uint32_t rejectedConfigurationGeneration_ = 0;
   uint8_t activeConfigurationChecksum_[32] = {};
-  bool configurationCommitted_ = false;
+  uint32_t configurationCommittedGeneration_ = 0;
   FlovaLinkConfigurationReport configurationReportWorkspace_ = {};
   uint32_t lastHeartbeatAt_ = 0;
   bool runtimeReported_ = false;
-  bool compilingSchedules_ = false;
+  bool networkSetup_ = false;
+  bool networkSetupDraining_ = false;
   bool managedProvisioning_ = false;
   bool handoffAccepted_ = false;
   bool provisioningDuringNetworkStart_ = false;
@@ -2116,7 +2016,6 @@ class FlovaClient {
   char otaRollbackReason_[FLOVA_LINK_TEXT_BYTES] = {};
   uint32_t otaHealthStartedAt_ = 0;
   size_t validationDatastreamCount_ = 0;
-  size_t validationScheduleCount_ = 0;
   ConfigurationWork configurationWork_ = {};
   FlovaRestartHandler restartHandler_ = nullptr;
   void* restartContext_ = nullptr;

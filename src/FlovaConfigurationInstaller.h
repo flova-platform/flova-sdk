@@ -26,10 +26,8 @@ static_assert(kMaximumRecordBytes <= 448,
 enum class RecordKind : uint8_t {
   Datastream = 0,
   System = 1,
-  Schedule = 2,
   Safety = 3,
-  ScheduleOccurrences = 4
-  ,Parameter = 5
+  Parameter = 5
 };
 
 struct Checksum {
@@ -153,6 +151,14 @@ struct Ack {
 class Digest {
  public:
   Digest() { reset(); }
+
+  static Checksum hash(const uint8_t* bytes, size_t length) {
+    Digest digest;
+    digest.update(bytes, length);
+    Checksum output;
+    digest.finish(output);
+    return output;
+  }
 
   void reset() {
     state_[0] = 0x6a09e667U;
@@ -474,7 +480,8 @@ class Installer {
 
   static bool valid(const Record& record) {
     return record.length != 0 && record.length <= kMaximumRecordBytes &&
-           static_cast<uint8_t>(record.kind) <= static_cast<uint8_t>(RecordKind::Parameter);
+           (record.kind == RecordKind::Datastream || record.kind == RecordKind::System ||
+            record.kind == RecordKind::Safety || record.kind == RecordKind::Parameter);
   }
 
   static bool matches(const GenerationManifest& manifest, const Begin& begin) {
