@@ -16,7 +16,7 @@ Passed during implementation:
 - `pio run -e universal-esp32 -e universal-esp8266` and
   `pio run -e datastream-api-esp32 -e datastream-api-esp8266`.
 - `pio test -e test-esp32 -e test-esp8266 --without-uploading --without-testing`
-  and `pio test -e test-bootstrap-esp8266 --without-uploading --without-testing`.
+  and `pio test -e test-config-rollback-esp8266 --without-uploading --without-testing`.
 - `scripts/check_esp8266_stack_usage.py`.
 - Detached exported-archive PlatformIO compilation on both targets.
 

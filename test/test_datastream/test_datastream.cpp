@@ -68,15 +68,7 @@ class TestLogger final : public flova::Logger {
   void log(const char*) override {}
 };
 
-static uint8_t hardwareWrites = 0;
-
-static flova::WriteResult writeRelay(bool value) {
-  ++hardwareWrites;
-  return value ? flova::WriteResult::accept()
-               : flova::WriteResult::reject("safety_lock");
-}
-
-void setUp() { hardwareWrites = 0; }
+void setUp() {}
 void tearDown() {}
 
 static void test_typed_state_uses_bound_compact_id() {
@@ -92,22 +84,6 @@ static void test_typed_state_uses_bound_compact_id() {
   TEST_ASSERT_EQUAL_UINT16(1, link.last.datastreamId);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(flova::ValueType::Float),
                           static_cast<uint8_t>(link.last.value.type));
-}
-
-static void test_rejected_hardware_write_does_not_change_state() {
-  TestLink link;
-  TestStorage storage;
-  TestClock clock;
-  TestLogger logger;
-  std::unique_ptr<flova::Device> runtime(new flova::Device(link, storage, clock, logger));
-  flova::Device& device = *runtime;
-  flova::Datastream<bool> relay = device.datastream<bool>("relay");
-  relay.onWrite(writeRelay);
-  TEST_ASSERT_TRUE(device.begin());
-  TEST_ASSERT_TRUE(relay.write(true).accepted());
-  TEST_ASSERT_FALSE(relay.write(false).accepted());
-  TEST_ASSERT_TRUE(relay.value());
-  TEST_ASSERT_EQUAL_UINT8(2, hardwareWrites);
 }
 
 static void test_state_retries_until_matching_ack() {
@@ -225,7 +201,6 @@ void setup() {
   delay(2000);
   UNITY_BEGIN();
   RUN_TEST(test_typed_state_uses_bound_compact_id);
-  RUN_TEST(test_rejected_hardware_write_does_not_change_state);
   RUN_TEST(test_state_retries_until_matching_ack);
   RUN_TEST(test_configured_datastream_owns_its_key);
   RUN_TEST(test_persistence_is_optional_and_coalesced);

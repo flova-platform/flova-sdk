@@ -170,8 +170,7 @@ pio run -e universal-esp32 -e universal-esp8266
 pio run -e datastream-api-esp32 -e datastream-api-esp8266
 python3 scripts/check_flova_memory.py universal-esp32 universal-esp8266
 python3 scripts/check_flova_memory.py --stock-dram universal-esp8266
-pio test -e test-esp32 -e test-esp8266 --without-uploading --without-testing
-pio test -e test-bootstrap-esp8266 --without-uploading --without-testing
+pio test -e test-esp32 -e test-esp8266 -e test-config-rollback-esp8266 --without-uploading --without-testing
 git diff --check
 ```
 
