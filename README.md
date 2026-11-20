@@ -20,25 +20,25 @@ configuration, device lifecycle handling, and Flova Link transport adapters.
 
 ## Choose a starting point
 
-| Target | Use | Start here |
-| --- | --- | --- |
-| ESP32/ESP8266, no application code | Flova owns setup, networking, mappings, and lifecycle | [Quick start](https://docs.flova.ir/en/docs/sdk/quickstart) |
-| Browser-based editing, building, and USB upload | Flova IDE in Console | [Flova IDE guide](https://docs.flova.ir/en/docs/sdk/ide) |
-| Existing Arduino application | Your code owns hardware and application behavior | [Custom applications](https://docs.flova.ir/en/docs/sdk/advanced) |
-| Linux or Raspberry Pi | Your process owns the event loop and hardware | [Installation](https://docs.flova.ir/en/docs/sdk/install) |
-| Other C++11 hardware | Your board supplies the SDK service interfaces | [Custom boards](https://docs.flova.ir/en/docs/sdk/advanced) |
+| Target                                          | Use                                                   | Start here                                                        |
+| ----------------------------------------------- | ----------------------------------------------------- | ----------------------------------------------------------------- |
+| ESP32/ESP8266, no application code              | Flova owns setup, networking, mappings, and lifecycle | [Quick start](https://docs.flova.ir/en/docs/sdk/quickstart)       |
+| Browser-based editing, building, and USB upload | Flova IDE in Console                                  | [Flova IDE guide](https://docs.flova.ir/en/docs/sdk/ide)          |
+| Existing Arduino application                    | Your code owns hardware and application behavior      | [Custom applications](https://docs.flova.ir/en/docs/sdk/advanced) |
+| Linux or Raspberry Pi                           | Your process owns the event loop and hardware         | [Installation](https://docs.flova.ir/en/docs/sdk/install)         |
+| Other C++11 hardware                            | Your board supplies the SDK service interfaces        | [Custom boards](https://docs.flova.ir/en/docs/sdk/advanced)       |
 
 ## Install
 
-These examples target the `0.5.0` source tree. If your library manager does
+These examples target the `0.5.1` source tree. If your library manager does
 not offer that version, follow the [source export instructions](https://docs.flova.ir/en/docs/sdk/install#install-from-source).
 
 ### PlatformIO
 
-Once `0.5.0` is available in the registry, add it to `platformio.ini`:
+Add the SDK to `platformio.ini`:
 
 ```ini
-lib_deps = flova-platform/FlovaSDK@^0.5.0
+lib_deps = flova-platform/FlovaSDK@^0.5.1
 ```
 
 Use the packaged ESP8266 profile in

@@ -1,0 +1,13 @@
+{
+  "name": "flova-sdk-dev",
+  "private": true,
+  "scripts": {
+    "prepare": "husky",
+    "test": "cmake -S . -B build/pre-commit && cmake --build build/pre-commit --parallel && ctest --test-dir build/pre-commit --output-on-failure"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.1",
+    "prettier": "^3.10.1"
+  }
+}
