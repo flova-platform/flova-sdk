@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/platformio/platformio-core/develop/platformio/package/schema/library.json",
   "name": "Flova Arduino",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Flova Arduino services and bounded Device Link transport",
   "keywords": ["flova", "iot", "device-link", "websocket"],
   "homepage": "https://github.com/flova-platform/flova-sdk",
@@ -10,14 +10,26 @@
     "url": "https://github.com/flova-platform/flova-sdk.git"
   },
   "authors": [
-    {"name": "Flova", "url": "https://github.com/flova-platform/flova-sdk", "maintainer": true}
+    {
+      "name": "Flova",
+      "url": "https://github.com/flova-platform/flova-sdk",
+      "maintainer": true
+    }
   ],
   "license": "MIT",
   "frameworks": ["arduino"],
-  "platforms": ["atmelavr", "espressif32", "espressif8266", "raspberrypi", "sam", "samd", "teensy"],
+  "platforms": [
+    "atmelavr",
+    "espressif32",
+    "espressif8266",
+    "raspberrypi",
+    "sam",
+    "samd",
+    "teensy"
+  ],
   "headers": ["FlovaArduino.h"],
   "dependencies": {
-    "Flova Embedded SDK": "^0.5.0",
+    "Flova Embedded SDK": "^0.5.1",
     "flova-link": "^1.0.0",
     "ArduinoJson": "^6.21.5",
     "flova-coremqtt": "5.0.2"

@@ -1,3 +1,7 @@
+FlovaSDK 0.5.1 is the first published 0.5.x release. The ESP8266 universal
+PlatformIO build omits unused libc floating-point formatting and scanning to
+fit the existing flash budget. Datastream values and TLS settings are unchanged.
+
 FlovaSDK 0.5.0 makes the standard ESP board classes manage connectivity.
 
 Breaking changes:

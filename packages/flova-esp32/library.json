@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/platformio/platformio-core/develop/platformio/package/schema/library.json",
   "name": "Flova ESP32",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Flova ESP32 board package with plug-in and universal firmware entry points",
   "keywords": ["flova", "iot", "esp32", "arduino"],
   "homepage": "https://github.com/flova-platform/flova-sdk",
@@ -10,14 +10,23 @@
     "url": "https://github.com/flova-platform/flova-sdk.git"
   },
   "authors": [
-    {"name": "Flova", "url": "https://github.com/flova-platform/flova-sdk", "maintainer": true}
+    {
+      "name": "Flova",
+      "url": "https://github.com/flova-platform/flova-sdk",
+      "maintainer": true
+    }
   ],
   "license": "MIT",
   "frameworks": ["arduino"],
   "platforms": ["espressif32"],
-  "headers": ["FlovaEsp32.h", "FlovaEsp32Ble.h", "FlovaUniversalEsp32.h", "FlovaUniversalEsp32Ble.h"],
+  "headers": [
+    "FlovaEsp32.h",
+    "FlovaEsp32Ble.h",
+    "FlovaUniversalEsp32.h",
+    "FlovaUniversalEsp32Ble.h"
+  ],
   "build": { "includeDir": "include" },
   "dependencies": {
-    "Flova Arduino": "^0.5.0"
+    "Flova Arduino": "^0.5.1"
   }
 }
