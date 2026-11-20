@@ -44,8 +44,9 @@ are reported without erasing provisioning.
 For a custom application, include `<FlovaSDK.h>`. It selects the right board
 facade and gives you the shared `FLOVA_*` helpers.
 
-See the [main README](../../README.md#quick-start) for the smallest working
-example.
+See the [SDK installation guide](https://docs.flova.ir/en/docs/sdk/install/)
+for Arduino IDE and PlatformIO setup, or the
+[Flova IDE guide](https://docs.flova.ir/en/docs/sdk/ide/) for browser-based builds.
 
 ## Managed custom applications
 
