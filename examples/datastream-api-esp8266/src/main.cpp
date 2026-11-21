@@ -13,7 +13,7 @@ auto temperature = FLOVA_DATASTREAM(client, float, "temperature");
 auto relay = FLOVA_DATASTREAM(client, bool, "relay");
 auto cookMode = FLOVA_DATASTREAM(client, flova::Text, "cook_mode");
 auto lampColor = FLOVA_DATASTREAM(client, flova::Text, "lamp_color");
-uint32_t lastSampleMs = 0;
+flova::Timer<1> timers;
 
 void writeRelay(bool enabled) { digitalWrite(RELAY_PIN, enabled ? LOW : HIGH); }
 
@@ -35,6 +35,12 @@ flova::WriteResult applyColor(flova::Text value) {
   return flova::accept();
 }
 
+void sampleTemperature() {
+  // report() submits an observation without invoking the write handler.
+  FLOVA_REPORT(temperature, 25.0f);
+  if (FLOVA_READ(temperature) > 30.0f) FLOVA_WRITE(relay, false);
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -48,22 +54,14 @@ void setup() {
   FLOVA_ON_WRITE(cookMode, writeCookMode, nullptr);
   FLOVA_ON_WRITE(lampColor, applyColor);
   if (!client.begin()) Serial.println("[flova] client startup failed");
+  if (!FLOVA_INTERVAL(timers, 1000, sampleTemperature))
+    Serial.println("[flova] could not register sampling timer");
 }
 
 void loop() {
   // This is where queued device commands become hardware writes. Keep it
   // responsive even when the application has other work to perform.
   client.run();
-  if (millis() - lastSampleMs >= 1000) {
-    lastSampleMs = millis();
-
-    // FLOVA_REPORT() publishes an observation and does not invoke
-    // FLOVA_ON_WRITE(). It is
-    // also safe to use while the network is temporarily offline.
-    FLOVA_REPORT(temperature, 25.0f);
-
-    // Local logic uses the same validation path as a remote automation write.
-    if (FLOVA_READ(temperature) > 30.0f) FLOVA_WRITE(relay, false);
-  }
+  timers.run(millis());
   yield();
 }

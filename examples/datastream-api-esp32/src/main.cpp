@@ -16,7 +16,7 @@ auto temperature = FLOVA_DATASTREAM(client, float, "temperature");
 auto relay = FLOVA_DATASTREAM(client, bool, "relay");
 auto cookMode = FLOVA_DATASTREAM(client, flova::Text, "cook_mode");
 auto lampColor = FLOVA_DATASTREAM(client, flova::Text, "lamp_color");
-uint32_t lastSampleMs = 0;
+flova::Timer<1> timers;
 
 void writeRelay(bool enabled) { digitalWrite(RELAY_PIN, enabled ? HIGH : LOW); }
 
@@ -39,6 +39,12 @@ flova::WriteResult applyColor(flova::Text value) {
   return flova::accept();
 }
 
+void sampleTemperature() {
+  // report() submits an observation without invoking the write handler.
+  FLOVA_REPORT(temperature, 25.0f);
+  if (FLOVA_READ(temperature) > 30.0f) FLOVA_WRITE(relay, false);
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -52,22 +58,14 @@ void setup() {
   FLOVA_ON_WRITE(cookMode, writeCookMode, nullptr);
   FLOVA_ON_WRITE(lampColor, applyColor);
   if (!client.begin()) Serial.println("[flova] client startup failed");
+  if (!FLOVA_INTERVAL(timers, 1000, sampleTemperature))
+    Serial.println("[flova] could not register sampling timer");
 }
 
 void loop() {
   // Keep this frequent so Link input, acknowledgements, retries, and remote
   // hardware commands remain responsive.
   client.run();
-  if (millis() - lastSampleMs >= 1000) {
-    lastSampleMs = millis();
-
-    // report() means "the application observed this value". It does not call
-    // FLOVA_ON_WRITE() because a sensor observation is not an actuator command.
-    FLOVA_REPORT(temperature, 25.0f);
-
-    // This is local application logic. The same effect could be configured as
-    // an Engine automation, which would eventually arrive at writeRelay().
-    if (FLOVA_READ(temperature) > 30.0f) FLOVA_WRITE(relay, false);
-  }
+  timers.run(millis());
   yield();
 }

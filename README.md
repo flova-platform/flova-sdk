@@ -126,6 +126,7 @@ production code.
 
 - [SDK overview](https://docs.flova.ir/en/docs/sdk/overview)
 - [Datastreams](https://docs.flova.ir/en/docs/sdk/datastreams)
+- [Firmware timers](https://docs.flova.ir/en/docs/sdk/timers)
 - [Provisioning](https://docs.flova.ir/en/docs/sdk/provisioning)
 - [Configuration](https://docs.flova.ir/en/docs/sdk/configuration)
 - [Transports](https://docs.flova.ir/en/docs/sdk/transports)

@@ -4,6 +4,7 @@
 // Datastream API and its text-based Console keys visible while reducing the
 // amount of C++ syntax beginners need to learn.
 #include "FlovaDevice.h"
+#include "FlovaTimer.h"
 
 #include <stdint.h>
 #include <type_traits>

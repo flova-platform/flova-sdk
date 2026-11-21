@@ -23,6 +23,7 @@
     "FlovaSDK.h",
     "FlovaDevice.h",
     "FlovaCustomCode.h",
+    "FlovaTimer.h",
     "FlovaEsp32.h",
     "FlovaUniversalEsp32.h",
     "FlovaEsp8266.h",

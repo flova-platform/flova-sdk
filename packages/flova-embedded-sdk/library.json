@@ -19,7 +19,7 @@
   "license": "MIT",
   "frameworks": "*",
   "platforms": "*",
-  "headers": ["FlovaDevice.h", "FlovaProvisioning.h", "FlovaCustomCode.h"],
+  "headers": ["FlovaDevice.h", "FlovaProvisioning.h", "FlovaCustomCode.h", "FlovaTimer.h"],
   "build": { "includeDir": "include" },
   "dependencies": { "flova-link": "^1.0.0" }
 }
