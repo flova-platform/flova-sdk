@@ -15,6 +15,7 @@
 
 #include <FlovaDevice.h>
 #include <FlovaLifecycleLog.h>
+#include <FlovaLinkCbor.h>
 #include "FlovaSdkVersion.h"
 #include <FlovaConfiguration.h>
 #include <FlovaClientLink.h>
@@ -248,6 +249,7 @@ class FlovaClient {
     runLifecycle();
     dispatchStatusChanges();
     drainLifecycleLog();
+    drainLogEvent();
   }
 
 #if defined(FLOVA_EXTERNAL_CONFIGURATION_ENABLED)
@@ -580,6 +582,28 @@ class FlovaClient {
     return device_.setting<T>(key, defaultValue);
   }
 
+  // Called from the application loop, not an ISR. Success means queued in RAM.
+  bool logEvent(const char* code, const char* message = "") {
+    if (lifecycle_ == FlovaLifecycle::Idle || lifecycle_ == FlovaLifecycle::Failed ||
+        logEvent_.messageId || !code || !message) return false;
+    const size_t codeLength = strnlen(code, sizeof(logEvent_.code));
+    const size_t messageLength = strnlen(message, sizeof(logEvent_.message));
+    if (!codeLength || codeLength == sizeof(logEvent_.code) ||
+        messageLength == sizeof(logEvent_.message) || code[0] < 'a' || code[0] > 'z') return false;
+    for (size_t i = 1; i < codeLength; ++i) {
+      const char c = code[i];
+      if (!(c >= 'a' && c <= 'z') && !(c >= '0' && c <= '9') && c != '_') return false;
+    }
+    if (!flova::link::detail::validUtf8(reinterpret_cast<const uint8_t*>(message), messageLength))
+      return false;
+    memcpy(logEvent_.code, code, codeLength + 1);
+    memcpy(logEvent_.message, message, messageLength + 1);
+    logEvent_.bootId = lifecycleLog_.bootId();
+    logEvent_.sequence = lifecycleLog_.nextSequence();
+    logEvent_.messageId = nextControlMessageId();
+    return true;
+  }
+
  private:
   void captureStatus(FlovaStatusSnapshot& output) const {
     output.lifecycle = lifecycle_;
@@ -669,10 +693,29 @@ class FlovaClient {
     if (link_.publishLifecycle(*event)) { lifecycleLogSentAt_ = now; lifecycleLogSent_ = true; }
   }
 
+  void drainLogEvent() {
+    if (!logEvent_.messageId) return;
+    if (link_.takeLogEventCompletion(logEvent_.messageId)) {
+      logEvent_.messageId = 0;
+      logEventAttempted_ = false;
+      return;
+    }
+    if (!link_.connected() || link_.applicationPaused()) return;
+    const uint32_t now = millis();
+    if (logEventAttempted_ && now - logEventAttemptedAt_ < 5000UL) return;
+    logEventAttemptedAt_ = now;
+    logEventAttempted_ = true;
+    // A failed send leaves the slot occupied for retry, just like a lost ACK.
+    if (!link_.publishLogEvent(logEvent_)) return;
+  }
+
   flova::LifecycleLog lifecycleLog_;
   uint32_t lifecycleLogSentAt_ = 0, loggedDiagnosticFailures_ = 0;
   uint32_t loggedConnectionAttempts_ = 0, loggedConnectionFailures_ = 0;
   bool lifecycleLogSent_ = false;
+  FlovaLinkLogEvent logEvent_ = {};
+  uint32_t logEventAttemptedAt_ = 0;
+  bool logEventAttempted_ = false;
 
   flova::ConfigurationActivation configurationActivation_;
   bool otaDraining_ = false;

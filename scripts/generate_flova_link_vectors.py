@@ -100,6 +100,8 @@ VECTORS = [
     (0x19, "lifecycle_report", [123456789, 1, 42, 0, 0, 7, 0]),
     (0x2D, "lifecycle_ready", []),
     (0x19, "lifecycle_report_bounds", [0xFFFFFFFFFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 10, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF]),
+    (0x1A, "log_event", [123456789, 2, "temperature_high", "Above 80 °C"]),
+    (0x1A, "log_event_bounds", [0xFFFFFFFFFFFFFFFF, 0xFFFFFFFF, "a" * 32, "é" * 48]),
 ]
 
 

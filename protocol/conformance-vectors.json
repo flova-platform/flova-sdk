@@ -257,5 +257,19 @@
     "message_id": 37,
     "payload_hex": "871bffffffffffffffff1affffffff1bffffffffffffffff0a1affffffff1affffffff1affffffff",
     "frame_hex": "190000280000000000000025871bffffffffffffffff1affffffff1bffffffffffffffff0a1affffffff1affffffff1affffffff"
+  },
+  {
+    "name": "log_event",
+    "message_type": 26,
+    "message_id": 38,
+    "payload_hex": "841a075bcd15027074656d70657261747572655f686967686c41626f766520383020c2b043",
+    "frame_hex": "1a0000250000000000000026841a075bcd15027074656d70657261747572655f686967686c41626f766520383020c2b043"
+  },
+  {
+    "name": "log_event_bounds",
+    "message_type": 26,
+    "message_id": 39,
+    "payload_hex": "841bffffffffffffffff1affffffff782061616161616161616161616161616161616161616161616161616161616161617860c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9",
+    "frame_hex": "1a0000930000000000000027841bffffffffffffffff1affffffff782061616161616161616161616161616161616161616161616161616161616161617860c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9"
   }
 ]

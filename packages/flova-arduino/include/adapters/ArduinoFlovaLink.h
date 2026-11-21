@@ -114,6 +114,17 @@ class ArduinoFlovaLink : public FlovaClientLink {
     return true;
   }
 
+  bool publishLogEvent(const FlovaLinkLogEvent& event) override {
+    if (!transport_.publishLogEvent(event)) return false;
+    logEventPendingId_ = event.messageId;
+    return true;
+  }
+  bool takeLogEventCompletion(uint64_t id) override {
+    if (!id || logEventCompletedId_ != id) return false;
+    logEventCompletedId_ = 0;
+    return true;
+  }
+
   bool publishHeartbeat(const FlovaLinkHeartbeat& heartbeat) override {
     if (!transport_.publishHeartbeat(heartbeat)) return false;
     // Keep the oldest unanswered heartbeat so a later publish cannot extend
@@ -557,6 +568,17 @@ class ArduinoFlovaLink : public FlovaClientLink {
       lifecyclePendingId_ = 0;
       return;
     }
+    if (logEventPendingId_ && inbound.messageId == logEventPendingId_ &&
+        (inbound.type == FlovaLinkMessageType::Acknowledgement ||
+         inbound.type == FlovaLinkMessageType::Rejection ||
+         inbound.type == FlovaLinkMessageType::FlowControl)) {
+      // Log backpressure must not pause telemetry; the log slot retries in 5 s.
+      if (inbound.type != FlovaLinkMessageType::FlowControl) {
+        logEventCompletedId_ = logEventPendingId_;
+        logEventPendingId_ = 0;
+      }
+      return;
+    }
     if (inbound.type == FlovaLinkMessageType::Acknowledgement &&
         pendingHeartbeatId_ &&
         inbound.body.acknowledgement.acknowledgedMessageId ==
@@ -624,6 +646,7 @@ class ArduinoFlovaLink : public FlovaClientLink {
   uint64_t pendingHeartbeatId_ = 0;
   uint64_t lifecyclePendingId_ = 0;
   uint64_t lifecycleAckId_ = 0;
+  uint64_t logEventPendingId_ = 0, logEventCompletedId_ = 0;
   uint32_t pendingHeartbeatAt_ = 0;
   bool heartbeatAckSupported_ = false;
   FlovaOtaStrategy otaStrategy_ = FlovaOtaStrategy::None;

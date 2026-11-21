@@ -90,6 +90,7 @@ static bool encode_ota_desired(zcbor_state_t *state, const struct ota_desired *i
 static bool encode_config_desired(zcbor_state_t *state, const struct config_desired *input);
 static bool encode_ingestion_ack(zcbor_state_t *state, const void *input);
 static bool encode_command(zcbor_state_t *state, const struct command *input);
+static bool encode_log_event(zcbor_state_t *state, const struct log_event *input);
 static bool encode_lifecycle_ready(zcbor_state_t *state, const void *input);
 static bool encode_lifecycle_report(zcbor_state_t *state, const struct lifecycle_report *input);
 static bool encode_config_ack(zcbor_state_t *state, const struct config_ack *input);
@@ -1123,6 +1124,25 @@ static bool encode_command(
 	return res;
 }
 
+static bool encode_log_event(
+		zcbor_state_t *state, const struct log_event *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_encode(state, 4) && ((((zcbor_uint64_encode(state, (&(*input).log_event_event_boot_id))))
+	&& (((((((*input).log_event_event_sequence <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_uint64_encode(state, (&(*input).log_event_event_sequence))))
+	&& (((((*input).log_event_event_code.len >= 1)
+	&& ((*input).log_event_event_code.len <= 32)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_tstr_encode(state, (&(*input).log_event_event_code))))
+	&& (((((((*input).log_event_event_message.len >= 0)
+	&& ((*input).log_event_event_message.len <= 96)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_tstr_encode(state, (&(*input).log_event_event_message))))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_list_end_encode(state, 4))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
 static bool encode_lifecycle_ready(
 		zcbor_state_t *state, const void *input)
 {
@@ -1706,6 +1726,18 @@ int cbor_encode_lifecycle_ready(
 
 	return zcbor_entry_function(payload, payload_len, (void *)input, payload_len_out, states,
 		(zcbor_decoder_t *)encode_lifecycle_ready, sizeof(states) / sizeof(zcbor_state_t), 1);
+}
+
+
+int cbor_encode_log_event(
+		uint8_t *payload, size_t payload_len,
+		const struct log_event *input,
+		size_t *payload_len_out)
+{
+	zcbor_state_t states[3];
+
+	return zcbor_entry_function(payload, payload_len, (void *)input, payload_len_out, states,
+		(zcbor_decoder_t *)encode_log_event, sizeof(states) / sizeof(zcbor_state_t), 1);
 }
 
 

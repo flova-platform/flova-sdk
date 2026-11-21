@@ -116,6 +116,9 @@ config-ack = [ack-generation: generation, ack-sequence: sequence, ack-status: 0.
 ; error=6, maintenance=7, diagnostic-counter-total=8, connection-attempt-count=9,
 ; connection-failure-count=10. Boot detail is the platform reset reason.
 lifecycle-report = [log-boot-id: uint64, log-sequence: uint32, log-uptime-ms: uint64, log-code: 0..10, log-detail: uint32, log-generation: generation, log-dropped: uint32]
+
+; 0x1a application-defined event; code is ASCII [a-z][a-z0-9_]{0,31}.
+log-event = [event-boot-id: uint64, event-sequence: uint32, event-code: tstr .size (1..32), event-message: short-text]
 ; 0x2d opt-in advertisement in response to PING with reserved message ID
 ; UINT64_MAX. Ordinary pings receive only PONG, keeping old firmware compatible.
 ; New SDKs never upload logs to an Engine that did not advertise support.

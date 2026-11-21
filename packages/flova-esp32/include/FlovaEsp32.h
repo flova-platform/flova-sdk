@@ -52,6 +52,9 @@ class ManagedEsp32 {
 
  public:
   bool begin() { return client_.begin(true); }
+  bool logEvent(const char* code, const char* message = "") {
+    return client_.logEvent(code, message);
+  }
   void run() {
     client_.run();
     recovery_.restartIfDue(millis());

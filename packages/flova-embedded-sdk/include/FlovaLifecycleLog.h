@@ -9,6 +9,9 @@ class LifecycleLog {
  public:
   static const size_t capacity = 16;
   void begin(uint64_t bootId) { bootId_ = bootId; }
+  uint64_t bootId() const { return bootId_; }
+  // Both log streams use Engine's (device, boot, sequence) deduplication key.
+  uint32_t nextSequence() { return ++sequence_; }
   bool append(uint8_t code, uint32_t detail, uint32_t generation, uint64_t uptime) {
     // Internal stage, ready/link duplication and connection attempt counters
     // belong to local status callbacks, not the production operational log.
@@ -19,7 +22,7 @@ class LifecycleLog {
       warningSeen_[code == 10] = true;
       warningAt_[code == 10] = static_cast<uint32_t>(uptime);
     }
-    const uint32_t sequence = ++sequence_;
+    const uint32_t sequence = nextSequence();
     if (count_ == capacity) { if (dropped_ != UINT32_MAX) ++dropped_; return false; }
     FlovaLinkLifecycleReport& event = entries_[(head_ + count_) % capacity];
     event = FlovaLinkLifecycleReport();

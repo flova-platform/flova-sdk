@@ -1,6 +1,7 @@
 #define F(value) value
 #define print println
 #include <FlovaArduino.h>
+#include <FlovaCustomCode.h>
 #undef print
 #undef F
 
@@ -155,6 +156,15 @@ class TestLink final : public FlovaClientLink {
     logAck = 0;
     return true;
   }
+  bool publishLogEvent(const FlovaLinkLogEvent& event) override {
+    customReports.push_back(event);
+    return true;
+  }
+  bool takeLogEventCompletion(uint64_t id) override {
+    if (!id || id != customAck) return false;
+    customAck = 0;
+    return true;
+  }
   bool takeOtaOffer(FlovaLinkOtaOffer&) override { return false; }
   bool publishOtaReport(const FlovaLinkOtaReport&) override { return true; }
   flova::OtaInstallResult installOta(const FlovaLinkOtaOffer&) override {
@@ -208,6 +218,8 @@ class TestLink final : public FlovaClientLink {
   bool hasScheduler = false;
   bool logSupport = false;
   uint64_t logAck = 0;
+  uint64_t customAck = 0;
+  std::vector<FlovaLinkLogEvent> customReports;
   std::vector<FlovaLinkLifecycleReport> logReports;
   bool maintenance = false;
   bool maintenanceReadyNow = false;
@@ -532,29 +544,55 @@ void verifyOfflineLifecycleReplay() {
   TestHardware hardware;
   FlovaClient client(link, provisioning, network, tlsClock, identity, storage,
                      clock, logger, entropy, hardware);
+  assert(!client.logEvent("before_begin"));
+  client.run();
+  assert(!client.logEvent("still_before_begin"));
   assert(client.begin());
+  assert(!client.logEvent("Not_a_code"));
+  assert(!client.logEvent("bad_utf8", "\xC3"));
+  assert(!client.logEvent("too_long", std::string(97, 'x').c_str()));
+  char message[] = "Above 80 C";
+  assert(FLOVA_LOG_EVENT(client, "temperature_high", message));
+  message[0] = 'x';
+  assert(!FLOVA_LOG_EVENT(client, "another_event"));
   client.run(); // no listener, network, clock, or server required for capture
   assert(link.logReports.empty());
+  assert(link.customReports.empty());
   link.online = true;
   client.run(); // older Engine: no capability advertisement
   assert(link.logReports.empty());
+  assert(link.customReports.size() == 1);
+  const auto custom = link.customReports[0];
+  assert(strcmp(custom.code, "temperature_high") == 0);
+  assert(strcmp(custom.message, "Above 80 C") == 0);
   link.logSupport = true;
   client.run();
   assert(link.logReports.size() == 1 && link.logReports[0].code == 0);
   const auto boot = link.logReports[0];
   assert(boot.sequence == 1 && boot.uptimeMs == 1 && boot.messageId);
+  assert(custom.bootId == boot.bootId && custom.sequence == 2 && custom.messageId != boot.messageId);
   testNow += 4999;
   client.run();
   assert(link.logReports.size() == 1);
+  assert(link.customReports.size() == 1);
   testNow += 1;
+  link.online = false;
+  client.run();
+  assert(link.customReports.size() == 1);
+  link.online = true;
   client.run();
   assert(link.logReports.size() == 2 && link.logReports.back().messageId == boot.messageId);
   assert(link.logReports.back().sequence == boot.sequence);
+  assert(link.customReports.size() == 2 && link.customReports.back().messageId == custom.messageId);
   link.logAck = boot.messageId;
+  link.customAck = custom.messageId;
   client.run();
   client.run();
   // Internal stage/ready/link transitions do not create operational noise.
   assert(link.logReports.size() == 2);
+  assert(FLOVA_LOG_EVENT(client, "another_event"));
+  client.run();
+  assert(link.customReports.size() == 3 && link.customReports.back().message[0] == '\0');
   testNow = 1;
 }
 

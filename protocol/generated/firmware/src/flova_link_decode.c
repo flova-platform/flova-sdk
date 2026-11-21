@@ -90,6 +90,7 @@ static bool decode_ota_desired(zcbor_state_t *state, struct ota_desired *result)
 static bool decode_config_desired(zcbor_state_t *state, struct config_desired *result);
 static bool decode_ingestion_ack(zcbor_state_t *state, void *result);
 static bool decode_command(zcbor_state_t *state, struct command *result);
+static bool decode_log_event(zcbor_state_t *state, struct log_event *result);
 static bool decode_lifecycle_ready(zcbor_state_t *state, void *result);
 static bool decode_lifecycle_report(zcbor_state_t *state, struct lifecycle_report *result);
 static bool decode_config_ack(zcbor_state_t *state, struct config_ack *result);
@@ -1229,6 +1230,25 @@ static bool decode_command(
 	return res;
 }
 
+static bool decode_log_event(
+		zcbor_state_t *state, struct log_event *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_decode(state) && ((((zcbor_uint64_decode(state, (&(*result).log_event_event_boot_id))))
+	&& ((zcbor_uint64_decode(state, (&(*result).log_event_event_sequence)))
+	&& ((((((*result).log_event_event_sequence <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((zcbor_tstr_decode(state, (&(*result).log_event_event_code)))
+	&& ((((*result).log_event_event_code.len >= 1)
+	&& ((*result).log_event_event_code.len <= 32)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((zcbor_tstr_decode(state, (&(*result).log_event_event_message)))
+	&& ((((((*result).log_event_event_message.len >= 0)
+	&& ((*result).log_event_event_message.len <= 96)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
 static bool decode_lifecycle_ready(
 		zcbor_state_t *state, void *result)
 {
@@ -1818,6 +1838,18 @@ int cbor_decode_lifecycle_ready(
 
 	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
 		(zcbor_decoder_t *)decode_lifecycle_ready, sizeof(states) / sizeof(zcbor_state_t), 1);
+}
+
+
+int cbor_decode_log_event(
+		const uint8_t *payload, size_t payload_len,
+		struct log_event *result,
+		size_t *payload_len_out)
+{
+	zcbor_state_t states[3];
+
+	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
+		(zcbor_decoder_t *)decode_log_event, sizeof(states) / sizeof(zcbor_state_t), 1);
 }
 
 

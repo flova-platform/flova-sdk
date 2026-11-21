@@ -38,6 +38,16 @@ review of the CDDL, vectors, generated codecs, and native tests.
 
 ## Runtime boundary
 
+### Application events
+
+`LOG_EVENT` (0x1a) sends `[boot ID, sequence, code, message]` after authenticated
+binding. It shares the boot/sequence identity with `LIFECYCLE_REPORT`, but
+uses a separate one-entry RAM slot. `INGESTION_ACK` confirms storage (or a
+duplicate), `MESSAGE_REJECTED` frees the slot, and `FLOW_CONTROL` leaves it
+pending for retry after five seconds. There is no capability probe for this
+message. The maximum complete frame is 159 bytes. Sequence gaps in a view
+filtered to one kind of log are not necessarily losses.
+
 ### Scheduling
 
 Platform schedules are cloud-only and use the existing command message with

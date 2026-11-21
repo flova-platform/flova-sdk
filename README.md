@@ -18,6 +18,26 @@ FlovaSDK is the official embedded C++ SDK for connecting ESP32, ESP8266, Linux,
 and custom C++ devices to Flova. It provides typed datastreams, provisioning,
 configuration, device lifecycle handling, and Flova Link transport adapters.
 
+## Log an event from Arduino firmware
+
+After `device.begin()`, use `logEvent` from the application loop to send a
+custom event to **Monitor → Custom events** in Flova Console. There is no
+Device Type registration step.
+
+```cpp
+device.logEvent("temperature_high");
+FLOVA_LOG_EVENT(device, "temperature_high", "Temperature exceeded 80 C");
+```
+
+Codes are 1–32 ASCII bytes: start with a lowercase letter, then use lowercase
+letters, digits, or underscores. The optional message is at most 96 UTF-8 bytes.
+Never include credentials, secrets, or sensitive data. Log transitions, not every
+sample. The SDK holds one pending event in RAM even when offline; `false` means
+the input was invalid, the client has not started, or the slot is occupied.
+`true` means queued, not stored. The SDK retries until Engine acknowledges or
+rejects the event; restarting the device discards any unacknowledged event.
+Deploy the matching Engine release before using this API in firmware.
+
 ## Choose a starting point
 
 | Target                                          | Use                                                   | Start here                                                        |

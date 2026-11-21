@@ -133,6 +133,24 @@ static void authenticate(Broker& broker, ArduinoDeviceLink& link) {
 
 int main() {
   Entropy entropy;
+  {
+    Broker broker;
+    ArduinoDeviceLink link(broker, entropy);
+    FlovaLinkLogEvent event = {73, 42, 2, "temperature_high", "Above 80 C"};
+    assert(!link.publishLogEvent(event));
+    authenticate(broker, link);
+    assert(link.publishLogEvent(event));
+    const auto frame = broker.lastFrame(0x1a);
+    struct log_event encoded = {};
+    size_t consumed = 0;
+    assert(cbor_decode_log_event(frame.payload, frame.payloadLength, &encoded, &consumed) == 0);
+    assert(frame.messageId == 73 && consumed == frame.payloadLength);
+    assert(encoded.log_event_event_boot_id == 42 && encoded.log_event_event_sequence == 2);
+    assert(encoded.log_event_event_code.len == strlen(event.code));
+    assert(!memcmp(encoded.log_event_event_code.value, event.code, strlen(event.code)));
+    assert(encoded.log_event_event_message.len == strlen(event.message));
+    assert(!memcmp(encoded.log_event_event_message.value, event.message, strlen(event.message)));
+  }
   for (uint32_t generation = 6; generation <= 8; ++generation) {
     Broker broker; ArduinoDeviceLink link(broker, entropy);
     link.setConfigurationGeneration(7); link.setCallback(received); commands = 0;

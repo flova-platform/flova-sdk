@@ -48,6 +48,13 @@ struct time_request {
 	uint64_t time_request_monotonic_ms;
 };
 
+struct log_event {
+	uint64_t log_event_event_boot_id;
+	uint64_t log_event_event_sequence;
+	struct zcbor_string log_event_event_code;
+	struct zcbor_string log_event_event_message;
+};
+
 struct ota_desired_ota_target {
 	struct zcbor_string ota_desired_ota_target;
 };
