@@ -28,6 +28,9 @@ class FlovaEsp32Ble final {
   }
 
   bool begin() { return client_.begin(true); }
+  bool logEvent(const char* code, const char* message = "") {
+    return client_.logEvent(code, message);
+  }
   void run() { client_.run(); }
   bool provisioning() const { return client_.provisioning(); }
   FlovaLifecycle lifecycle() const { return client_.lifecycle(); }

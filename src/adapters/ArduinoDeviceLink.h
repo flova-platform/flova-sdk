@@ -326,6 +326,16 @@ class ArduinoDeviceLink final {
     return sendEncoded(0x19, message.messageId, value, cbor_encode_lifecycle_report);
   }
 
+  bool publishLogEvent(const FlovaLinkLogEvent& event) {
+    if (!connected() || bootstrap_) return false;
+    struct log_event value = {};
+    value.log_event_event_boot_id = event.bootId;
+    value.log_event_event_sequence = event.sequence;
+    if (!setText(value.log_event_event_code, event.code, sizeof(event.code)) ||
+        !setText(value.log_event_event_message, event.message, sizeof(event.message))) return false;
+    return sendEncoded(0x1a, event.messageId, value, cbor_encode_log_event);
+  }
+
   bool publishHeartbeat(const FlovaLinkHeartbeat& message) {
     if (!connected()) return false;
     struct heartbeat value = {};
@@ -457,7 +467,10 @@ class ArduinoDeviceLink final {
         transportOpening_ = false;
       }
       if (!mqtt_ || !mqtt_->poll()) {
-        if (bootstrap_) setBootstrapError("mqtt_handshake_failed");
+        if (bootstrap_)
+          setBootstrapError(mqtt_ && mqtt_->credentialsRejected()
+                                ? "mqtt_bootstrap_not_authorized"
+                                : "mqtt_handshake_failed");
         connectionAttemptFailed_ = true;
         disconnect();
         return;

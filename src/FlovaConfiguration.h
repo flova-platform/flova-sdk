@@ -171,7 +171,8 @@ inline bool terminalProvisioningError(const char* code) {
 }
 
 inline bool provisioningFailureNeedsSetup(const char* code) {
-  return terminalProvisioningError(code);
+  return terminalProvisioningError(code) ||
+         (code && !strcmp(code, "mqtt_bootstrap_not_authorized"));
 }
 
 template <size_t N>

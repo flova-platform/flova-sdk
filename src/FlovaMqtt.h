@@ -106,6 +106,11 @@ class FlovaMqtt final {
 
   bool connected() const { return connected_ && !failed_; }
   MQTTStatus_t lastStatus() const { return lastStatus_; }
+  bool credentialsRejected() const {
+    return lastStatus_ == MQTTServerRefused &&
+           (rx_[1] == MQTT_REASON_CONNACK_BAD_USER_NAME_OR_PASSWORD ||
+            rx_[1] == MQTT_REASON_CONNACK_NOT_AUTHORIZED);
+  }
   bool ready() const { return connected() && subscribed_; }
   bool busy() const {
     if (txLength_ || platform_.linkWriteBusy()) return true;
@@ -113,6 +118,7 @@ class FlovaMqtt final {
     return true;
   }
   void reset() {
+    lastStatus_ = MQTTSuccess;
     connected_ = subscribed_ = failed_ = awaitingConnack_ = false;
     connackTypeSeen_ = connackLengthComplete_ = false;
     connackLengthBytes_ = 0;

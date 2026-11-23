@@ -148,6 +148,12 @@ int cbor_encode_lifecycle_ready(
 		size_t *payload_len_out);
 
 
+int cbor_encode_log_event(
+		uint8_t *payload, size_t payload_len,
+		const struct log_event *input,
+		size_t *payload_len_out);
+
+
 int cbor_encode_command(
 		uint8_t *payload, size_t payload_len,
 		const struct command *input,

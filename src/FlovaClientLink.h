@@ -42,6 +42,8 @@ class FlovaClientLink : public flova::Link {
   virtual bool lifecycleLogsSupported() const { return false; }
   virtual bool publishLifecycle(const FlovaLinkLifecycleReport&) { return false; }
   virtual bool takeLifecycleAck(uint64_t) { return false; }
+  virtual bool publishLogEvent(const FlovaLinkLogEvent&) { return false; }
+  virtual bool takeLogEventCompletion(uint64_t) { return false; }
   virtual uint32_t connectionAttempts() const { return 0; }
   virtual uint32_t connectionFailures() const { return 0; }
   virtual bool takeOtaOffer(FlovaLinkOtaOffer& offer) = 0;

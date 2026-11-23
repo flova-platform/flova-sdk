@@ -34,6 +34,14 @@ struct FlovaLinkLifecycleReport {
   uint8_t code;
 };
 
+struct FlovaLinkLogEvent {
+  uint64_t messageId;
+  uint64_t bootId;
+  uint32_t sequence;
+  char code[33];
+  char message[97];
+};
+
 enum class FlovaLinkMessageType : uint8_t {
   State,
   Command,

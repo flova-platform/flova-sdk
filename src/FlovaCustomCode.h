@@ -4,6 +4,7 @@
 // Datastream API and its text-based Console keys visible while reducing the
 // amount of C++ syntax beginners need to learn.
 #include "FlovaDevice.h"
+#include "FlovaTimer.h"
 
 #include <stdint.h>
 #include <type_traits>
@@ -251,3 +252,4 @@ class FlovaDatastream {
 #define FLOVA_ON_WRITE(stream, ...) ((stream).onWrite(__VA_ARGS__))
 #define FLOVA_HAS_VALUE(stream) ((stream).hasValue())
 #define FLOVA_SETTING(client, type, key, default_value) ((client).setting<type>(key, default_value))
+#define FLOVA_LOG_EVENT(client, ...) ((client).logEvent(__VA_ARGS__))

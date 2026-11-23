@@ -47,6 +47,9 @@ class FlovaEsp32Ethernet final {
     }
   }
 
+  bool logEvent(const char* code, const char* message = "") {
+    return client_.logEvent(code, message);
+  }
   FlovaLifecycle lifecycle() const { return client_.lifecycle(); }
   bool connected() const { return client_.connected(); }
   bool ready() const { return client_.ready(); }
