@@ -50,7 +50,7 @@ Deploy the matching Engine release before using this API in firmware.
 
 ## Install
 
-These examples target the `0.5.1` source tree. If your library manager does
+These examples target the `0.5.2` source tree. If your library manager does
 not offer that version, follow the [source export instructions](https://docs.flova.ir/en/docs/sdk/install#install-from-source).
 
 ### PlatformIO
@@ -58,7 +58,7 @@ not offer that version, follow the [source export instructions](https://docs.flo
 Add the SDK to `platformio.ini`:
 
 ```ini
-lib_deps = flova-platform/FlovaSDK@^0.5.1
+lib_deps = flova-platform/FlovaSDK@^0.5.2
 ```
 
 Use the packaged ESP8266 profile in

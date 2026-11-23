@@ -9,7 +9,7 @@ FlovaSDK کیت توسعهٔ C++ برای اتصال دستگاه‌های ESP32
 
 ## نصب و انتخاب ابزار
 
-این نمونه‌ها برای سورس `0.5.1` هستند. اگر مدیر کتابخانه این نسخه را ارائه
+این نمونه‌ها برای سورس `0.5.2` هستند. اگر مدیر کتابخانه این نسخه را ارائه
 نمی‌دهد، [راهنمای نصب از سورس](https://docs.flova.ir/fa/docs/sdk/install) را دنبال کنید.
 
 - **Arduino IDE:** بستهٔ برد را در **Boards Manager** و `FlovaSDK` را در
@@ -25,7 +25,7 @@ FlovaSDK کیت توسعهٔ C++ برای اتصال دستگاه‌های ESP32
   `Flova::Linux` پیوند دهید. مراحل در [راهنمای نصب](https://docs.flova.ir/fa/docs/sdk/install) آمده است.
 
 ```ini
-lib_deps = flova-platform/FlovaSDK@^0.5.1
+lib_deps = flova-platform/FlovaSDK@^0.5.2
 ```
 
 ## شروع سریع

@@ -63,10 +63,6 @@ temporary_root.mkdir(exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='flova-console-sdk-', dir=temporary_root) as temporary:
     exported = Path(temporary) / 'FlovaSDK'
     subprocess.run(['sh', str(sdk / 'scripts/export_sdk_release.sh'), str(exported)], check=True)
-    manifest = json.loads((exported / 'library.json').read_text())
-    version = catalog['sdkVersion'] + '-flova.' + catalog['sdkRevision'][:12]
-    manifest['version'] = version
-    (exported / 'library.json').write_text(json.dumps(manifest, sort_keys=True) + '\n')
     archive_buffer = io.BytesIO()
     with tarfile.open(fileobj=archive_buffer, mode='w', format=tarfile.GNU_FORMAT) as archive:
         for file in sorted(exported.rglob('*')):
@@ -91,7 +87,7 @@ dependencies = json.loads(dependencies_path.read_text())
 dependencies = [entry for entry in dependencies if not entry.get('bundled')]
 for entry in dependencies:
     entry['default'] = entry['spec'].startswith('bblanchon/ArduinoJson@')
-dependencies.insert(0, {'spec': 'flova-platform/FlovaSDK@' + version,
+dependencies.insert(0, {'spec': 'flova-platform/FlovaSDK@' + catalog['sdkVersion'],
                        'sha256': hashlib.sha256(bundle).hexdigest(),
                        'bundled': 'FlovaSDK.tar.gz', 'default': True})
 dependency_text = json.dumps(dependencies, indent=2) + '\n'

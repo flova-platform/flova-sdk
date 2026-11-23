@@ -467,7 +467,10 @@ class ArduinoDeviceLink final {
         transportOpening_ = false;
       }
       if (!mqtt_ || !mqtt_->poll()) {
-        if (bootstrap_) setBootstrapError("mqtt_handshake_failed");
+        if (bootstrap_)
+          setBootstrapError(mqtt_ && mqtt_->credentialsRejected()
+                                ? "mqtt_bootstrap_not_authorized"
+                                : "mqtt_handshake_failed");
         connectionAttemptFailed_ = true;
         disconnect();
         return;

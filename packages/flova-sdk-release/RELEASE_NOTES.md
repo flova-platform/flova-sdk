@@ -1,3 +1,10 @@
+FlovaSDK 0.5.2 returns to local setup after the MQTT broker rejects
+bootstrap credentials, so an expired setup session can be replaced.
+Temporary connection failures continue to retry with backoff.
+
+This release also includes cooperative firmware timers and custom device
+log events. Custom log events require a compatible Engine release.
+
 FlovaSDK 0.5.1 is the first published 0.5.x release. The ESP8266 universal
 PlatformIO build omits unused libc floating-point formatting and scanning to
 fit the existing flash budget. Datastream values and TLS settings are unchanged.

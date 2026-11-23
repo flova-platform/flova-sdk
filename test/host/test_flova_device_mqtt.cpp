@@ -20,6 +20,7 @@ class Broker final : public FlovaArduinoPlatform {
  public:
   bool open = true, failOpen = false, failWrite = false;
   bool slowAcks = false;
+  uint8_t connackReason = 0;
   unsigned writeTicks = 0;
   uint16_t nextDownlinkId = 22;
   std::deque<uint8_t> incoming;
@@ -65,7 +66,7 @@ class Broker final : public FlovaArduinoPlatform {
       } while (byte & 128);
       if (length > wire.size() - offset) return;
       uint8_t* body = wire.data() + offset;
-      if (wire[0] == 0x10) feed({0x20, 3, 0, 0, 0});
+      if (wire[0] == 0x10) feed({0x20, 3, 0, connackReason, 0});
       else if (wire[0] == 0x82) {
         assert(length >= 6 && body[2] == 0);
         const size_t topicLength = body[3] * 256 + body[4];
@@ -227,6 +228,26 @@ int main() {
     assert(link.publishConfigurationReport(report)); tick(link);
     assert(broker.lastFrame(0x18).messageId == 17);
     link.beginDrain(); tick(link); assert(link.drainComplete() && !link.drainFailed());
+  }
+  for (const auto reason : {MQTT_REASON_CONNACK_NOT_AUTHORIZED,
+                            MQTT_REASON_CONNACK_BAD_USER_NAME_OR_PASSWORD,
+                            MQTT_REASON_CONNACK_SERVER_BUSY}) {
+    Broker broker;
+    ArduinoDeviceLink link(broker, entropy);
+    broker.connackReason = static_cast<uint8_t>(reason);
+    char error[48] = {};
+    if (!link.configure("mqtts://mqtt.example:8883") ||
+        !link.connectBootstrap("ttttttttttttttttttttttttttttttttttttttttttt",
+                               "test-board", "universal_esp32",
+                               "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))
+      return 1;
+    tick(link);
+    const char* expected = reason == MQTT_REASON_CONNACK_SERVER_BUSY
+                               ? "mqtt_handshake_failed"
+                               : "mqtt_bootstrap_not_authorized";
+    if (!link.takeBootstrapError(error, sizeof(error)) ||
+        strcmp(error, expected) != 0 || !broker.frames.empty())
+      return 1;
   }
   {
     Broker broker; ArduinoFlovaLink link(broker, entropy);

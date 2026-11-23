@@ -132,7 +132,13 @@ class TestLink final : public FlovaClientLink {
   bool takeBootstrapCommitted(FlovaLinkBootstrapCommitted&) override {
     return false;
   }
-  bool takeBootstrapError(char*, size_t) override { return false; }
+  bool takeBootstrapError(char* output, size_t capacity) override {
+    if (!bootstrapError || strlen(bootstrapError) >= capacity) return false;
+    strcpy(output, bootstrapError);
+    bootstrapError = nullptr;
+    return true;
+  }
+  const char* bootstrapError = nullptr;
   bool takeConfigurationRecord(FlovaLinkConfigurationRecord& output) override {
     if (!configurationPending) return false;
     output = configuration;
@@ -384,6 +390,44 @@ void verifyFreshSetup() {
   assert(managed.lifecycle() == FlovaLifecycle::Setup);
   assert(provisioning.started);
   assert(!managed.beginNetworkSetup());
+}
+
+bool verifyBootstrapRecovery() {
+  for (bool rejected : {false, true}) {
+    TestStorage storage;
+    TestLink link; TestClock clock; TestLogger logger; TestEntropy entropy;
+    TestIdentity identity; TestNetwork network; TestTlsClock tlsClock;
+    TestProvisioning provisioning; TestHardware hardware;
+    FlovaClient client(link, provisioning, network, tlsClock, identity, storage,
+                       clock, logger, entropy, hardware);
+    network.online = true;
+    tlsClock.clockReady = true;
+    if (!client.begin(true) ||
+        client.provision(flova::ProvisioningHandoff("mqtts://broker.test", "old-token")) !=
+            FlovaProvisioningResponse::Accepted)
+      return false;
+
+    client.run();  // Accept the staged handoff from setup.
+    client.run();  // Start bootstrap once network and clock are ready.
+    if (client.lifecycle() != FlovaLifecycle::Bootstrapping) return false;
+    link.bootstrapError = rejected ? "mqtt_bootstrap_not_authorized" : "mqtt_handshake_failed";
+    client.run();
+    if (!rejected) {
+      if (client.lifecycle() != FlovaLifecycle::Backoff || !storage.records.count("prov_pending"))
+        return false;
+      continue;
+    }
+
+    if (client.lifecycle() != FlovaLifecycle::Setup || storage.records.count("prov_pending"))
+      return false;
+    if (client.provision(flova::ProvisioningHandoff("mqtts://broker.test", "new-token")) !=
+        FlovaProvisioningResponse::Accepted)
+      return false;
+    client.run();  // Accept the staged handoff from setup.
+    client.run();  // Start bootstrap once network and clock are ready.
+    if (client.lifecycle() != FlovaLifecycle::Bootstrapping) return false;
+  }
+  return true;
 }
 
 void verifyNetworkSetup() {
@@ -699,6 +743,7 @@ int main() {
   assert(client.prepareForPowerDown() == FlovaPowerDownStatus::Busy);
   verifyPowerDownPreparation();
   verifyFreshSetup();
+  if (!verifyBootstrapRecovery()) return 1;
   verifyNetworkSetup();
   return 0;
 }
