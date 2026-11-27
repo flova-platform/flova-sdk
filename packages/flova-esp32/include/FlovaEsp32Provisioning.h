@@ -5,6 +5,7 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <FlovaConfiguration.h>
+#include <FlovaManagedClaim.h>
 #include <FlovaProvisioningAdapter.h>
 #include <FlovaProvisioningSecurity.h>
 #include <FlovaSoftApPortal.h>
@@ -134,17 +135,13 @@ class FlovaEsp32ProvisioningBase : public FlovaProvisioningAdapter {
       setup_->server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_handoff\"}");
       return;
     }
-    if (!storage_.write("wifi", &setup_->wifi, sizeof(setup_->wifi))) {
-      setup_->server.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
-      return;
-    }
-    const FlovaProvisioningResponse result = handler_(context_, setup_->input);
-    if (result == FlovaProvisioningResponse::Accepted) {
+    using Claim = flova::detail::ManagedClaim;
+    const auto result = Claim::submit(storage_, setup_->wifi, setup_->input, handler_, context_);
+    if (result == Claim::Submission::Accepted) {
       setup_->server.send(202, "application/json", "{\"ok\":true,\"status\":\"accepted\"}");
-    } else if (result == FlovaProvisioningResponse::StorageFailed) {
+    } else if (result != Claim::Submission::Invalid) {
       setup_->server.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
     } else {
-      storage_.remove("wifi");
       setup_->server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_handoff\"}");
     }
   }

@@ -175,6 +175,25 @@ struct OfflineGuardrail {
   Value inputMinimum;
   Value inputMaximum;
 };
+
+namespace detail {
+// Shared by generation verification and live installation. Each phase walks
+// its existing bounded records; neither needs a second copy of the registry.
+struct GuardrailAdmission {
+  static bool conflicts(DatastreamId output, DatastreamId input,
+                        DatastreamId otherOutput, DatastreamId otherInput) {
+    return output == otherOutput || output == otherInput || input == otherOutput;
+  }
+
+  static constexpr size_t textCapacity() { return 2 * kMaxText; }
+
+  // Both callers start used at zero and only charge text after this check.
+  static bool fits(size_t count, size_t used, size_t needed) {
+    return count < FLOVA_OFFLINE_GUARDRAIL_CAPACITY &&
+           needed <= textCapacity() - used;
+  }
+};
+}  // namespace detail
 #endif
 
 struct Message {
@@ -493,20 +512,11 @@ class Device {
   }
 
   bool commandResultsPending() const {
-    for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i)
-      if (pendingResults_[i].active) return true;
-    return false;
+    return commandOutcomes_.pending();
   }
 
   bool commandResultPending(const char* commandId) const {
-    if (!commandId || !commandId[0]) return false;
-    for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {
-      if (!pendingResults_[i].active) continue;
-      char key[16]; snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(i));
-      if (!storage_.read(key, &resultWorkspace_, sizeof(resultWorkspace_))) return true;
-      if (strcmp(resultWorkspace_.message.commandId, commandId) == 0) return true;
-    }
-    return false;
+    return commandOutcomes_.pending(storage_, commandId);
   }
 
   template <typename T> Datastream<T> datastream(const char* key);
@@ -557,7 +567,9 @@ class Device {
     return output + (record.guardId ? configurationTextBytes(record.minimum) : 0);
   }
 
-  static constexpr size_t offlineGuardrailTextCapacity() { return 2 * kMaxText; }
+  static constexpr size_t offlineGuardrailTextCapacity() {
+    return detail::GuardrailAdmission::textCapacity();
+  }
 
   bool validateOfflineGuardrailStream(const config::Safety& record,
                                       const config::Datastream& stream,
@@ -574,14 +586,9 @@ class Device {
     if (!output) {
       return mapped ? stream.mapping.kind == config::MappingKind::DigitalInput ||
                           stream.mapping.kind == config::MappingKind::AnalogInput
-                    : !current || current->mode != Mode::Event;
+                    : !current || guardrailInputEligible(*current);
     }
-    if (current && (current->mode == Mode::Sample || current->mode == Mode::Event ||
-                    current->persistence != PersistencePolicy::None ||
-                    current->offline != OfflinePolicy::KeepLatest)) return false;
-#if FLOVA_ACTUATOR_CONTROL
-    if (current && current->actuatorControl) return false;
-#endif
+    if (current && !guardrailOutputEligible(*current)) return false;
     if (!mapped) return current && hasResultWriter(*current) &&
                         current->writeKind != WriteHandlerKind::ConfigurationValueResult;
     if (stream.mapping.kind != config::MappingKind::DigitalOutput &&
@@ -605,25 +612,26 @@ class Device {
   // verification. Does not itself persist or acknowledge the configuration.
   bool installOfflineGuardrail(DatastreamId id, const OfflineGuardrail& policy) {
     State* output = stateForId(id);
-    if (!output || guardrail(*output) || output->mode == Mode::Sample ||
-        output->mode == Mode::Event || output->persistence != PersistencePolicy::None ||
-        output->offline != OfflinePolicy::KeepLatest || !hasResultWriter(*output) ||
+    if (!output || !guardrailOutputEligible(*output) || !hasResultWriter(*output) ||
         policy.safeValue.type != output->valueType || !validValue(policy.safeValue) ||
         !safe(*output, policy.safeValue) || policy.maximumRunMs > kGuardrailMaximumMs ||
         (policy.finishOnDisconnect && !policy.maximumRunMs) ||
         (policy.automaticRecovery && (policy.finishOnDisconnect || !policy.maximumRunMs))) return false;
-#if FLOVA_ACTUATOR_CONTROL
-    if (output->actuatorControl) return false;
-#endif
     State* input = policy.inputId ? stateForId(policy.inputId) : nullptr;
-    if (policy.inputId && (!input || input == output || guardrail(*input) || input->mode == Mode::Event ||
+    if (policy.inputId && (!input || input == output || !guardrailInputEligible(*input) ||
         !policy.maximumInputAgeMs || policy.maximumInputAgeMs > kGuardrailMaximumMs ||
         !validGuardrailComparison(*input, policy))) return false;
-    for (const auto& entry : guardrails_)
-      if (entry.input == output) return false;
+    size_t count = 0;
+    for (const auto& entry : guardrails_) {
+      if (!entry.output) continue;
+      const auto inputId = entry.input ? entry.input->id : FLOVA_INVALID_DATASTREAM_ID;
+      if (detail::GuardrailAdmission::conflicts(id, policy.inputId, entry.output->id, inputId))
+        return false;
+      ++count;
+    }
     const size_t textNeeded = guardrailTextSize(policy.safeValue) +
                               (input ? guardrailTextSize(policy.inputMinimum) : 0);
-    if (textNeeded > sizeof(guardrailText_) - guardrailTextUsed_) return false;
+    if (!detail::GuardrailAdmission::fits(count, guardrailTextUsed_, textNeeded)) return false;
     for (auto& entry : guardrails_) {
       if (entry.output) continue;
       entry = Guardrail{};
@@ -1135,6 +1143,18 @@ class Device {
   };
 #if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
   static constexpr uint32_t kGuardrailMaximumMs = 3600000;
+  static bool guardrailOutputEligible(const State& state) {
+#if FLOVA_ACTUATOR_CONTROL
+    if (state.actuatorControl) return false;
+#endif
+    return state.mode != Mode::Sample && state.mode != Mode::Event &&
+           state.persistence == PersistencePolicy::None &&
+           state.offline == OfflinePolicy::KeepLatest;
+  }
+
+  static bool guardrailInputEligible(const State& state) {
+    return state.mode != Mode::Event;
+  }
   static bool isGuardrailPolicy(config::SafetyPolicy policy) {
     return policy >= config::SafetyPolicy::GuardrailStop &&
            policy <= config::SafetyPolicy::GuardrailAutoRecover;
@@ -1420,13 +1440,180 @@ class Device {
     else state.payload.scalar = value.scalar;
   }
 
-  struct PendingResult { uint32_t magic; bool active; uint64_t sentAt; Message message; PendingResult() : magic(0x43524554UL), active(false), sentAt(0) {} };
-  struct ResultIndex {
-    uint64_t messageId = 0;
-    uint64_t sentAt = 0;
-    uint64_t sequence = 0;
-    uint32_t fingerprint = 0;
-    bool active = false;
+  // The ledger owns the exact persisted record, its volatile index, and all
+  // slot transitions. Device supplies command effects and delivery timing.
+  class CommandOutcomes {
+    static constexpr uint32_t kMagic = 0x43524554UL;
+    static constexpr size_t kCapacity = FLOVA_COMMAND_DEDUP_CAPACITY;
+    struct Record {
+      uint32_t magic = kMagic;
+      bool active = false;
+      uint64_t sentAt = 0;  // Existing disk field; contains the durable sequence.
+      Message message;
+    };
+    struct Index {
+      uint64_t messageId = 0;
+      uint64_t sentAt = 0;
+      uint64_t sequence = 0;
+      uint32_t fingerprint = 0;
+      bool active = false;
+    };
+
+   public:
+    enum class Lookup { Missing, Found, StorageFailed };
+
+    Lookup lookup(Storage& storage, const char* commandId, size_t& slot) {
+      if (!commandId || !commandId[0] || strnlen(commandId, kMaxText) == kMaxText)
+        return Lookup::Missing;
+      const uint32_t hash = fingerprint(commandId);
+      for (size_t i = 0; i < kCapacity; ++i) {
+        if (!slots_[i].messageId || slots_[i].fingerprint != hash) continue;
+        char key[16]; formatKey(key, i);
+        if (!storage.read(key, &workspace_, sizeof(workspace_)) || !valid(workspace_))
+          return Lookup::StorageFailed;
+        if (strcmp(workspace_.message.commandId, commandId) != 0) continue;
+        slot = i;
+        return Lookup::Found;
+      }
+      return Lookup::Missing;
+    }
+
+    size_t availableSlot() const {
+      size_t slot = kCapacity;
+      for (size_t i = 0; i < kCapacity; ++i) {
+        if (slots_[i].active) continue;
+        if (!slots_[i].messageId) return i;
+        if (slot == kCapacity || slots_[i].sequence < slots_[slot].sequence) slot = i;
+      }
+      return slot;
+    }
+
+    bool reserve(Storage& storage, size_t slot, const Message& intent) {
+      return store(storage, slot, intent, ++sequence_);
+    }
+
+    bool complete(Storage& storage, size_t slot, const Message& result) {
+      return store(storage, slot, result, slots_[slot].sequence);
+    }
+
+    const Message& loaded() const { return workspace_.message; }
+    bool pending() const {
+      for (const auto& slot : slots_)
+        if (slot.active) return true;
+      return false;
+    }
+
+    bool pending(Storage& storage, const char* commandId) const {
+      if (!commandId || !commandId[0]) return false;
+      for (size_t i = 0; i < kCapacity; ++i) {
+        if (!slots_[i].active) continue;
+        char key[16]; formatKey(key, i);
+        if (!storage.read(key, &workspace_, sizeof(workspace_))) return true;
+        if (strcmp(workspace_.message.commandId, commandId) == 0) return true;
+      }
+      return false;
+    }
+
+    void send(Storage& storage, Link& link, size_t slot, uint64_t now, Diagnostics& diagnostics) {
+      Index& entry = slots_[slot];
+      if (entry.sentAt && now - entry.sentAt < 5000) return;
+      entry.sentAt = now ? now : 1;
+      char key[16]; formatKey(key, slot);
+      if (!storage.read(key, &workspace_, sizeof(workspace_)) ||
+          workspace_.magic != kMagic || workspace_.message.messageId != entry.messageId) {
+        ++diagnostics.storageFailures;
+        return;
+      }
+      link.send(workspace_.message);
+    }
+
+    bool active(size_t slot) const { return slots_[slot].active; }
+
+    template <typename Observe>
+    void restore(Storage& storage, Observe observe) {
+      for (size_t i = 0; i < kCapacity; ++i) {
+        char key[16]; formatKey(key, i);
+        if (!storage.read(key, &workspace_, sizeof(workspace_)) || !valid(workspace_)) continue;
+        index(i);
+        if (workspace_.sentAt > sequence_) sequence_ = workspace_.sentAt;
+        observe(workspace_.message);
+      }
+    }
+
+    bool settle(Storage& storage, uint64_t messageId, bool rejected, Diagnostics& diagnostics) {
+      for (size_t i = 0; i < kCapacity; ++i) {
+        if (!slots_[i].active || slots_[i].messageId != messageId) continue;
+        char key[16]; formatKey(key, i);
+        if (!storage.read(key, &workspace_, sizeof(workspace_)) || !valid(workspace_)) {
+          ++diagnostics.storageFailures;
+          return true;
+        }
+        // Retain the original outcome for deduplication; release the retry
+        // slot only after the terminal response is persisted and verified.
+        workspace_.active = false;
+        if (!storage.write(key, &workspace_, sizeof(workspace_)) ||
+            !storage.read(key, &workspace_, sizeof(workspace_)) ||
+            !valid(workspace_) || workspace_.active) {
+          ++diagnostics.storageFailures;
+          return true;
+        }
+        slots_[i].active = false;
+        if (rejected) ++diagnostics.rejectedDeliveries;
+        return true;
+      }
+      return false;
+    }
+
+   private:
+    static void formatKey(char (&key)[16], size_t slot) {
+      snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(slot));
+    }
+
+    static uint32_t fingerprint(const char* commandId) {
+      uint32_t hash = 2166136261UL;
+      for (size_t i = 0; i < kMaxText && commandId[i]; ++i)
+        hash = (hash ^ static_cast<uint8_t>(commandId[i])) * 16777619UL;
+      return hash;
+    }
+
+    static bool valid(const Record& record) {
+      return record.magic == kMagic && record.message.messageId &&
+             strnlen(record.message.commandId, kMaxText) < kMaxText &&
+             strnlen(record.message.correlationId, kMaxText) < kMaxText &&
+             strnlen(record.message.reason, kMaxText) < kMaxText &&
+             validValue(record.message.value) &&
+             (record.message.kind == MessageKind::Acknowledgement ||
+              record.message.kind == MessageKind::Error);
+    }
+
+    void index(size_t slot) {
+      Index& entry = slots_[slot];
+      entry.messageId = workspace_.message.messageId;
+      entry.sentAt = 0;
+      entry.sequence = workspace_.sentAt;
+      entry.fingerprint = fingerprint(workspace_.message.commandId);
+      entry.active = workspace_.active;
+    }
+
+    bool store(Storage& storage, size_t slot, const Message& message, uint64_t sequence) {
+      workspace_.magic = kMagic;
+      workspace_.active = true;
+      workspace_.sentAt = sequence;
+      // Preserve the existing ABI-local record and exact byte verification.
+      memcpy(&workspace_.message, &message, sizeof(message));
+      char key[16]; formatKey(key, slot);
+      if (!storage.write(key, &workspace_, sizeof(workspace_)) ||
+          !storage.read(key, &workspace_, sizeof(workspace_)) ||
+          workspace_.magic != kMagic || !workspace_.active ||
+          workspace_.sentAt != sequence ||
+          memcmp(&workspace_.message, &message, sizeof(message)) != 0) return false;
+      index(slot);
+      return true;
+    }
+
+    uint64_t sequence_ = 0;
+    Index slots_[kCapacity];
+    mutable Record workspace_;
   };
   struct Persisted { uint32_t magic; DatastreamId datastreamId; Value value; uint32_t revision; };
   struct HistoryRecord { DatastreamId datastreamId; Value value; uint64_t messageId; uint64_t timestamp; uint64_t monotonic; uint64_t expiresAt; Origin origin; uint32_t revision; };
@@ -1522,15 +1709,17 @@ class Device {
     }
     if (message.kind != MessageKind::WriteRequest &&
         message.kind != MessageKind::GuardrailRearm) return;
-    const int prior = resultForCommand(message.commandId);
-    if (prior >= 0) {
+    size_t prior;
+    const auto lookup = commandOutcomes_.lookup(storage_, message.commandId, prior);
+    if (lookup == CommandOutcomes::Lookup::Found) {
       ++diagnostics_.duplicateCommands;
       // Replay the original outcome, never convert a rejection to success.
       if (!retryNotBefore_ || clock_.milliseconds() >= retryNotBefore_)
-        link_.send(resultWorkspace_.message);
+        link_.send(commandOutcomes_.loaded());
       return;
     }
-    if (prior == -2 || !reserveCommand(message)) {
+    if (lookup == CommandOutcomes::Lookup::StorageFailed) ++diagnostics_.storageFailures;
+    if (lookup == CommandOutcomes::Lookup::StorageFailed || !reserveCommand(message)) {
       replyStorageUnavailable(message);
       return;
     }
@@ -1592,65 +1781,6 @@ class Device {
     acknowledge(message, result, current);
   }
 
-  static uint32_t commandFingerprint(const char* commandId) {
-    uint32_t hash = 2166136261UL;
-    for (size_t i = 0; commandId && i < kMaxText && commandId[i]; ++i)
-      hash = (hash ^ static_cast<uint8_t>(commandId[i])) * 16777619UL;
-    return hash;
-  }
-
-  int resultForCommand(const char* commandId) {
-    if (!commandId || !commandId[0] || strnlen(commandId, kMaxText) == kMaxText) return -1;
-    const uint32_t fingerprint = commandFingerprint(commandId);
-    for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {
-      if (!pendingResults_[i].messageId || pendingResults_[i].fingerprint != fingerprint) continue;
-      char key[16]; snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(i));
-      if (!storage_.read(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
-          !validResult(resultWorkspace_)) {
-        ++diagnostics_.storageFailures;
-        return -2;
-      }
-      if (!strcmp(resultWorkspace_.message.commandId, commandId)) return static_cast<int>(i);
-    }
-    return -1;
-  }
-
-  static bool validResult(const PendingResult& result) {
-    return result.magic == 0x43524554UL && result.message.messageId &&
-           strnlen(result.message.commandId, kMaxText) < kMaxText &&
-           strnlen(result.message.correlationId, kMaxText) < kMaxText &&
-           strnlen(result.message.reason, kMaxText) < kMaxText &&
-           validValue(result.message.value) &&
-           (result.message.kind == MessageKind::Acknowledgement || result.message.kind == MessageKind::Error);
-  }
-
-  bool storeResult(size_t slot, const Message& message, uint64_t sequence) {
-    resultWorkspace_.magic = 0x43524554UL;
-    resultWorkspace_.active = true;
-    // The old persisted sentAt field is now the durable ledger sequence.
-    // Retry timing remains volatile in ResultIndex.
-    resultWorkspace_.sentAt = sequence;
-    // Preserve the complete object representation for exact read-back checking,
-    // including padding in this existing ABI-local persisted record format.
-    memcpy(&resultWorkspace_.message, &message, sizeof(message));
-    char key[16]; snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(slot));
-    if (!storage_.write(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
-        !storage_.read(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
-        resultWorkspace_.magic != 0x43524554UL || !resultWorkspace_.active ||
-        resultWorkspace_.sentAt != sequence ||
-        memcmp(&resultWorkspace_.message, &message, sizeof(message)) != 0) {
-      ++diagnostics_.storageFailures;
-      return false;
-    }
-    ResultIndex& index = pendingResults_[slot];
-    index.messageId = message.messageId;
-    index.sequence = sequence;
-    index.fingerprint = commandFingerprint(message.commandId);
-    index.sentAt = 0;
-    index.active = true;
-    return true;
-  }
-
   // Keep full Message temporaries out of receive's frame. Otherwise GCC keeps
   // that frame live while acknowledge() builds a second reply, exhausting the
   // ESP8266 continuation stack during a durable command completion.
@@ -1668,18 +1798,15 @@ class Device {
 #endif
   bool reserveCommand(const Message& request) {
     if (!request.commandId[0] || strnlen(request.commandId, kMaxText) == kMaxText) return false;
-    size_t slot = FLOVA_COMMAND_DEDUP_CAPACITY;
-    for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {
-      if (pendingResults_[i].active) continue;
-      if (!pendingResults_[i].messageId) { slot = i; break; }
-      if (slot == FLOVA_COMMAND_DEDUP_CAPACITY || pendingResults_[i].sequence < pendingResults_[slot].sequence) slot = i;
-    }
+    const size_t slot = commandOutcomes_.availableSlot();
     if (slot == FLOVA_COMMAND_DEDUP_CAPACITY) { ++diagnostics_.queueOverflow; return false; }
     // Persist an indeterminate outcome BEFORE touching hardware. A reset in
     // the hardware/result gap must never silently execute the operation again.
     Message intent;
     fillReply(intent, request, WriteResult::failure("command_outcome_unknown"), nullptr);
-    return storeResult(slot, intent, ++resultSequence_);
+    if (commandOutcomes_.reserve(storage_, slot, intent)) return true;
+    ++diagnostics_.storageFailures;
+    return false;
   }
 
   WriteResult apply(State& state, const Value& value, Origin origin) {
@@ -2023,31 +2150,24 @@ class Device {
   }
 
   void queueResult(const Message& message) {
-    const int slot = resultForCommand(message.commandId);
-    if (slot >= 0 && storeResult(static_cast<size_t>(slot), message, pendingResults_[slot].sequence))
-      sendResult(static_cast<size_t>(slot));
+    size_t slot;
+    const auto lookup = commandOutcomes_.lookup(storage_, message.commandId, slot);
+    if (lookup == CommandOutcomes::Lookup::Missing) return;
+    if (lookup == CommandOutcomes::Lookup::Found && commandOutcomes_.complete(storage_, slot, message))
+      sendResult(slot);
+    else
+      ++diagnostics_.storageFailures;
     // If completion cannot be committed, retain the intent and fail closed.
   }
 
   void sendResult(size_t slot) {
     if (retryNotBefore_ && clock_.milliseconds() < retryNotBefore_) return;
-    ResultIndex& result = pendingResults_[slot];
-    const uint64_t now = clock_.milliseconds();
-    if (result.sentAt && now - result.sentAt < 5000) return;
-    result.sentAt = now ? now : 1;
-    char key[16]; snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(slot));
-    if (!storage_.read(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
-        resultWorkspace_.magic != 0x43524554UL ||
-        resultWorkspace_.message.messageId != result.messageId) {
-      ++diagnostics_.storageFailures;
-      return;
-    }
-    link_.send(resultWorkspace_.message);
+    commandOutcomes_.send(storage_, link_, slot, clock_.milliseconds(), diagnostics_);
   }
 
   void flushResults() {
     for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i)
-      if (pendingResults_[i].active) sendResult(i);
+      if (commandOutcomes_.active(i)) sendResult(i);
   }
 
   bool persist(const State& state) {
@@ -2251,23 +2371,12 @@ class Device {
     }
   }
   void restoreResults() {
-    for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {
-      char key[16]; snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(i));
-      PendingResult& restored = resultWorkspace_;
-      if (storage_.read(key, &restored, sizeof(restored)) &&
-          validResult(restored)) {
-        pendingResults_[i].active = restored.active;
-        pendingResults_[i].messageId = restored.message.messageId;
-        pendingResults_[i].sentAt = 0;
-        pendingResults_[i].fingerprint = commandFingerprint(restored.message.commandId);
-        pendingResults_[i].sequence = restored.sentAt;
-        if (restored.sentAt > resultSequence_) resultSequence_ = restored.sentAt;
-        State* state = stateForId(restored.message.datastreamId);
-        if (state && restored.message.kind == MessageKind::Acknowledgement &&
-            restored.message.revision > state->lastCloudRevision)
-          state->lastCloudRevision = restored.message.revision;
-      }
-    }
+    commandOutcomes_.restore(storage_, [this](const Message& result) {
+      State* state = stateForId(result.datastreamId);
+      if (state && result.kind == MessageKind::Acknowledgement &&
+          result.revision > state->lastCloudRevision)
+        state->lastCloudRevision = result.revision;
+    });
   }
   void syncTime() {
     uint64_t now = clock_.milliseconds();
@@ -2280,31 +2389,8 @@ class Device {
     uint64_t received = clock_.milliseconds(); uint64_t uncertainty = (received - timeRequestStarted_) / 2; clock_.setUtc(response.timestamp + uncertainty, uncertainty); timeRequestStarted_ = 0;
   }
 
-  // Keep the original outcome for deduplication, but release its retry slot
-  // after either terminal Engine response. Persist before changing RAM state.
-  bool finishResult(uint64_t messageId, bool rejected) {
-    for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {
-      if (!pendingResults_[i].active || pendingResults_[i].messageId != messageId)
-        continue;
-      char key[16]; snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(i));
-      if (!storage_.read(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
-          !validResult(resultWorkspace_)) { ++diagnostics_.storageFailures; return true; }
-      resultWorkspace_.active = false;
-      if (!storage_.write(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
-          !storage_.read(key, &resultWorkspace_, sizeof(resultWorkspace_)) ||
-          !validResult(resultWorkspace_) || resultWorkspace_.active) {
-        ++diagnostics_.storageFailures;
-        return true;
-      }
-      pendingResults_[i].active = false;
-      if (rejected) ++diagnostics_.rejectedDeliveries;
-      return true;
-    }
-    return false;
-  }
-
   void settleDelivery(uint64_t messageId, bool rejected) {
-    if (!messageId || finishResult(messageId, rejected)) return;
+    if (!messageId || commandOutcomes_.settle(storage_, messageId, rejected, diagnostics_)) return;
     if (finishDelivery(messageId, rejected)) return;
     if (historyCount_ && ensureHistoryHead() && historyHeadMessageId_ == messageId) {
       dropOldest(false, rejected);
@@ -2316,7 +2402,7 @@ class Device {
   Link& link_; Storage& storage_; Clock& clock_; Logger& logger_; State states_[kMaxDatastreams]; size_t count_;
 #if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
   Guardrail guardrails_[FLOVA_OFFLINE_GUARDRAIL_CAPACITY];
-  char guardrailText_[2 * kMaxText] = {};
+  char guardrailText_[detail::GuardrailAdmission::textCapacity()] = {};
   size_t guardrailTextUsed_ = 0;
   uint32_t guardrailSequence_ = 0;
 #endif
@@ -2342,9 +2428,7 @@ class Device {
   uint64_t batchDueAt_ = 0;
   uint32_t batchFlushMs_ = 50;
   bool batchWaiting_ = false;
-  uint64_t resultSequence_ = 0;
-  ResultIndex pendingResults_[FLOVA_COMMAND_DEDUP_CAPACITY];
-  mutable PendingResult resultWorkspace_;
+  CommandOutcomes commandOutcomes_;
   HistoryRecord historyWorkspace_; size_t historyHead_, historyCount_;
   uint64_t lastTimeRequest_, timeRequestStarted_; uint32_t timeSequence_; uint64_t nextMessageId_; uint64_t retryNotBefore_; uint64_t historyLastSentAt_; char pendingTimeId_[kMaxText]; Diagnostics diagnostics_;
   FactoryResetHandler factoryResetHandler_; void* factoryResetContext_;

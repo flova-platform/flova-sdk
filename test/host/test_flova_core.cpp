@@ -573,6 +573,33 @@ static void verifyCommandLedger() {
   assert(writes == saturated && failedLink.lastResult.kind == flova::MessageKind::Error);
 }
 
+static bool verifyLegacyCommandRecord() {
+  // The ledger must read records written by the pre-refactor Device.
+  struct LegacyRecord { uint32_t magic; bool active; uint64_t sentAt; flova::Message message; };
+  LegacyRecord record = {0x43524554UL, true, 42, flova::Message()};
+  record.message.kind = flova::MessageKind::Acknowledgement;
+  record.message.datastreamId = 1;
+  record.message.messageId = 73;
+  record.message.revision = 8;
+  strcpy(record.message.commandId, "legacy-command");
+  TestStorage storage; TestLink link; TestClock clock; TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  device.datastream<bool>("relay").onWrite(writeRelay);
+  if (!storage.write("cmd:0", &record, sizeof(record)) || !device.begin() ||
+      !device.commandResultPending("legacy-command")) return false;
+  flova::Message retry;
+  retry.kind = flova::MessageKind::WriteRequest;
+  retry.datastreamId = 1;
+  retry.value = flova::Value::from(true);
+  strcpy(retry.commandId, "legacy-command");
+  const int before = writes;
+  link.inject(retry);
+  if (writes != before || link.lastResult.messageId != 73) return false;
+  link.acknowledge(73);
+  return !device.commandResultsPending() && storage.read("cmd:0", &record, sizeof(record)) &&
+         !record.active && record.sentAt == 42 && record.message.messageId == 73;
+}
+
 class InterruptedResultStorage : public TestStorage {
  public:
   bool write(const char* key, const void* value, size_t size) override {
@@ -1079,7 +1106,43 @@ static void verifyAutomaticGuardrailRecovery() {
   assert(!writer.energized && !device.clearOfflineGuardrailsForConfiguration());
 }
 
-int main() {
+static bool verifyGuardrailAdmissionLimits() {
+  TestStorage storage; TestLink link; TestClock clock; TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  const auto acceptText = +[](flova::Text) { return flova::WriteResult::accept(); };
+  const auto acceptBool = +[](bool) { return flova::WriteResult::accept(); };
+  for (const char* key : {"out-a", "out-b", "out-c"})
+    device.datastream<flova::Text>(key).onWrite(acceptText);
+  for (const char* key : {"input", "out-d", "out-e", "out-f"})
+    device.datastream<bool>(key).onWrite(acceptBool);
+  if (!device.begin()) return false;
+
+  char text[flova::kMaxText];
+  memset(text, 'a', sizeof(text) - 1);
+  text[sizeof(text) - 1] = '\0';
+  flova::OfflineGuardrail policy;
+  policy.safeValue = flova::Value::from(text);
+  policy.inputId = 4;
+  policy.maximumInputAgeMs = 100;
+  policy.inputMinimum = flova::Value::from(true);
+  if (!device.installOfflineGuardrail(1, policy) || !device.installOfflineGuardrail(2, policy) ||
+      device.installOfflineGuardrail(3, policy)) return false;  // Text pool exactly full.
+
+  policy.safeValue = flova::Value::from(false);
+  policy.inputId = FLOVA_INVALID_DATASTREAM_ID;
+  if (device.installOfflineGuardrail(4, policy) ||  // Already a guard input.
+      !device.installOfflineGuardrail(5, policy)) return false;
+  policy.inputId = 5;
+  if (device.installOfflineGuardrail(6, policy)) return false;  // Already a guard output.
+  policy.inputId = FLOVA_INVALID_DATASTREAM_ID;
+  return device.installOfflineGuardrail(6, policy) && !device.installOfflineGuardrail(7, policy);
+}
+
+int main(int argc, char** argv) {
+  if (argc == 2 && strcmp(argv[1], "--admission-limits") == 0)
+    return verifyGuardrailAdmissionLimits() ? 0 : 1;
+  if (argc == 2 && strcmp(argv[1], "--legacy-command-record") == 0)
+    return verifyLegacyCommandRecord() ? 0 : 1;
   verifyAutomaticGuardrailRecovery();
   verifyDatastreamGuardrail(false);
   verifyDatastreamGuardrail(true);

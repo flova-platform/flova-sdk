@@ -27,6 +27,7 @@ namespace {
 class TestStorage final : public flova::Storage {
  public:
   bool read(const char* key, void* output, size_t length) override {
+    if (failedReadKey && strcmp(key, failedReadKey) == 0) return false;
     if (strstr(key, "_r_")) ++recordReads;
     auto found = records.find(key);
     if (found == records.end() || found->second.size() != length) return false;
@@ -34,7 +35,7 @@ class TestStorage final : public flova::Storage {
     return true;
   }
   bool write(const char* key, const void* input, size_t length) override {
-    if (failWrites) return false;
+    if (failWrites || (failedWriteKey && strcmp(key, failedWriteKey) == 0)) return false;
     const auto* bytes = static_cast<const uint8_t*>(input);
     records[key] = std::vector<uint8_t>(bytes, bytes + length);
     return true;
@@ -49,6 +50,8 @@ class TestStorage final : public flova::Storage {
   std::map<std::string, std::vector<uint8_t>> records;
   unsigned recordReads = 0;
   bool failWrites = false;
+  const char* failedWriteKey = nullptr;
+  const char* failedReadKey = nullptr;
 };
 
 class TestClock final : public flova::Clock {
@@ -91,9 +94,22 @@ class TestTlsClock final : public FlovaTlsClockBootstrap {
 
 class TestProvisioning final : public FlovaProvisioningAdapter {
  public:
-  bool begin(FlovaProvisioningHandler, void*) override { return true; }
+  bool begin(FlovaProvisioningHandler handler, void* context) override {
+    handler_ = handler;
+    context_ = context;
+    return true;
+  }
+  void clearHandler() override { handler_ = nullptr; context_ = nullptr; }
   bool startProvisioning() override { started = true; return true; }
+  flova::detail::ManagedClaim::Submission submit(TestStorage& storage) {
+    const flova::WifiRuntimeData wifi = {"test-network", "test-password"};
+    const flova::ProvisioningHandoff handoff("mqtts://broker.test", "claim-token");
+    return flova::detail::ManagedClaim::submit(storage, wifi, handoff, handler_, context_);
+  }
   bool started = false;
+ private:
+  FlovaProvisioningHandler handler_ = nullptr;
+  void* context_ = nullptr;
 };
 
 class TestHardware final : public flova::Hardware {
@@ -452,6 +468,36 @@ bool verifyBootstrapRecovery() {
   return true;
 }
 
+bool verifyManagedClaimAfterReset() {
+  using Submission = flova::detail::ManagedClaim::Submission;
+  for (int stage = 0; stage < 4; ++stage) {
+    TestStorage storage;
+    TestLink link; TestClock clock; TestLogger logger; TestEntropy entropy;
+    TestIdentity identity; TestNetwork network; TestTlsClock tlsClock;
+    TestProvisioning provisioning; TestHardware hardware;
+    {
+      FlovaClient client(link, provisioning, network, tlsClock, identity, storage,
+                         clock, logger, entropy, hardware);
+      if (!client.begin(true) || client.lifecycle() != FlovaLifecycle::Setup) return false;
+      if (stage == 0) storage.failedWriteKey = "wifi";
+      if (stage == 1) storage.failedWriteKey = "prov_pending";
+      if (stage == 2) storage.failedReadKey = "prov_pending";
+      const auto result = provisioning.submit(storage);
+      const auto expected = stage == 0 ? Submission::WifiWriteFailed :
+                            stage < 3 ? Submission::HandoffWriteFailed : Submission::Accepted;
+      if (result != expected || (storage.records.count("wifi") != 0) != (stage > 0) ||
+          (storage.records.count("prov_pending") != 0) != (stage >= 2)) return false;
+      // Power loss before run() starts network association.
+    }
+    storage.failedWriteKey = storage.failedReadKey = nullptr;
+    FlovaClient reboot(link, provisioning, network, tlsClock, identity, storage,
+                       clock, logger, entropy, hardware);
+    const auto expected = stage >= 2 ? FlovaLifecycle::WaitingForNetwork : FlovaLifecycle::Setup;
+    if (!reboot.begin(true) || reboot.lifecycle() != expected) return false;
+  }
+  return true;
+}
+
 void verifyNetworkSetup() {
   TestStorage storage;
   seedRuntimeConfiguration(storage);
@@ -760,7 +806,9 @@ void verifyOfflineLifecycleReplay() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 2 && strcmp(argv[1], "--claim-recovery") == 0)
+    return verifyManagedClaimAfterReset() ? 0 : 1;
   verifyLinkReuse();
   verifyApplyRollback(false);
   verifyApplyRollback(true);

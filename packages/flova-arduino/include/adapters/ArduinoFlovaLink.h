@@ -28,10 +28,9 @@ class ArduinoFlovaLink : public FlovaClientLink {
     ++connectionAttempts_;
     if (!transport_.configure(url)) return false;
     if (!ensureTransport()) return false;
-    if (!enterHandshake()) return false;
-    const bool started = transport_.connectBootstrap(token, hardwareId, firmwareTarget, secret);
-    if (!started) { ++connectionFailures_; transport_.takeConnectionAttemptFailure(); leaveHandshake(); }
-    return started;
+    return startSession(Attempt::Bootstrap, [&] {
+      return transport_.connectBootstrap(token, hardwareId, firmwareTarget, secret);
+    });
   }
 
   void pollBootstrap() { serviceTransport(); }
@@ -46,10 +45,7 @@ class ArduinoFlovaLink : public FlovaClientLink {
   bool maintenanceReady() override {
     transport_.loop();
     if (!transport_.drainComplete()) return false;
-    pendingRecords_.reset();
-    bootstrapCommittedPending_ = otaPending_ = false;
-    configurationPendingHead_ = configurationPendingTail_ =
-        configurationPendingCount_ = 0;
+    resetPendingRecords();
     return true;
   }
   void endMaintenance() override { maintenance_ = false; }
@@ -309,11 +305,7 @@ class ArduinoFlovaLink : public FlovaClientLink {
         static_cast<int32_t>(millis() - nextReconnectAt_) >= 0) {
       bound_ = false;
       ++connectionAttempts_;
-      if (!enterHandshake() || !transport_.connect()) {
-        ++connectionFailures_;
-        transport_.takeConnectionAttemptFailure();
-        leaveHandshake();
-      }
+      startSession(Attempt::Reconnect, [this] { return transport_.connect(); });
       nextReconnectAt_ = millis() + reconnectBackoff_.next(static_cast<uint8_t>(messageNonce_));
     }
   }
@@ -403,13 +395,35 @@ class ArduinoFlovaLink : public FlovaClientLink {
     flova::Message inboundMessage_;
   };
   FlovaPhaseStorage<PendingRecords> pendingRecords_;
+
+  enum class Attempt { Bootstrap, Reconnect };
+  template <typename Connect>
+  bool startSession(Attempt attempt, Connect connect) {
+    if (!enterHandshake()) {
+      if (attempt == Attempt::Reconnect) noteFailedAttempt();
+      return false;
+    }
+    if (connect()) return true;
+    noteFailedAttempt();
+    return false;
+  }
+
+  void noteFailedAttempt() {
+    ++connectionFailures_;
+    transport_.takeConnectionAttemptFailure();
+    leaveHandshake();
+  }
+
+  void resetPendingRecords() {
+    pendingRecords_.reset();
+    bootstrapCommittedPending_ = otaPending_ = false;
+    configurationPendingHead_ = configurationPendingTail_ = configurationPendingCount_ = 0;
+  }
+
   bool enterHandshake() {
     if (handshakePaused_) return true;
     if (enterHandshake_ && !enterHandshake_(handshakeContext_)) return false;
-    pendingRecords_.reset();
-    bootstrapCommittedPending_ = otaPending_ = false;
-    configurationPendingHead_ = configurationPendingTail_ =
-        configurationPendingCount_ = 0;
+    resetPendingRecords();
     handshakePaused_ = true;
     return true;
   }
@@ -423,17 +437,16 @@ class ArduinoFlovaLink : public FlovaClientLink {
     }
   }
   void serviceTransport() {
-    transport_.loop();
+    auto phase = ArduinoDeviceLink::WorkspacePhase::Idle;
+    if (handshakePaused_) phase = transport_.pollWorkspacePhase();
+    else transport_.loop();
     if (transport_.takeConnectionAttemptFailure()) ++connectionFailures_;
-    if (handshakePaused_ && !transport_.tlsOpening()) {
-      if (transport_.connectionInProgress() || transport_.connected()) {
-        if (!pendingRecords_.create()) {
-          resourceUnavailable_ = true;
-          transport_.disconnect();
-        }
-      }
-      leaveHandshake();
+    if (!handshakePaused_ || phase == ArduinoDeviceLink::WorkspacePhase::TlsOpening) return;
+    if (phase == ArduinoDeviceLink::WorkspacePhase::LinkWork && !pendingRecords_.create()) {
+      resourceUnavailable_ = true;
+      transport_.disconnect();
     }
+    leaveHandshake();
   }
   bool (*enterHandshake_)(void*) = nullptr;
   bool (*leaveHandshake_)(void*) = nullptr;

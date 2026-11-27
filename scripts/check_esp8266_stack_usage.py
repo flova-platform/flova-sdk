@@ -8,7 +8,8 @@ from pathlib import Path
 
 ESP8266_LIMITS = (
     ("setup", re.compile(r"\bvoid setup\(\)$"), 128),
-    ("acceptProvisioning", re.compile(r"acceptProvisioning\("), 384),
+    ("ManagedClaim::accept", re.compile(r"ManagedClaim::accept\("), 384),
+    ("startManagedClaim", re.compile(r"FlovaClient::startManagedClaim\("), 128),
     ("completeBootstrap", re.compile(r"completeBootstrap\("), 384),
     ("drainConfiguration", re.compile(r"drainConfiguration\("), 384),
     ("startConfigurationRestore", re.compile(r"startConfigurationRestore\("), 256),
@@ -30,7 +31,7 @@ ESP8266_LIMITS = (
     ("ArduinoFlovaLink::accept", re.compile(r"ArduinoFlovaLink::accept\("), 64),
     ("Device::reserveCommand", re.compile(r"Device::reserveCommand\("), 384),
     ("Device::replyStorageUnavailable", re.compile(r"Device::replyStorageUnavailable\("), 384),
-    ("Device::storeResult", re.compile(r"Device::storeResult\("), 128),
+    ("CommandOutcomes::store", re.compile(r"CommandOutcomes::store\("), 128),
     ("Device::publishBatch", re.compile(r"Device::publishBatch\("), 128),
     ("ArduinoFlovaLink::sendStateBatch", re.compile(r"ArduinoFlovaLink::sendStateBatch\("), 512),
     ("ArduinoDeviceLink::publishState", re.compile(r"ArduinoDeviceLink::publishState\("), 384),

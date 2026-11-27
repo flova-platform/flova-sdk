@@ -1,5 +1,6 @@
 #include <adapters/ArduinoFlovaLink.h>
 #include <assert.h>
+#include <stdlib.h>
 #include <deque>
 #include <string>
 #include <vector>
@@ -19,6 +20,7 @@ class Entropy final : public FlovaEntropySource {
 class Broker final : public FlovaArduinoPlatform {
  public:
   bool open = true, failOpen = false, failWrite = false;
+  bool slowOpen = false;
   bool slowAcks = false;
   uint8_t connackReason = 0;
   unsigned writeTicks = 0;
@@ -36,7 +38,8 @@ class Broker final : public FlovaArduinoPlatform {
   bool linkClosed() const override { return !open; }
   bool startLink(const char*, uint16_t) override { open = true; return true; }
   FlovaLinkOpenStatus pollLink() override {
-    return failOpen ? FlovaLinkOpenStatus::Failed : FlovaLinkOpenStatus::Connected;
+    if (failOpen) return FlovaLinkOpenStatus::Failed;
+    return slowOpen ? FlovaLinkOpenStatus::InProgress : FlovaLinkOpenStatus::Connected;
   }
   const char* linkError() const override { return "insufficient_tls_heap"; }
   void closeLink() override { open = false; }
@@ -77,7 +80,8 @@ class Broker final : public FlovaArduinoPlatform {
         MQTTPacketInfo_t packet = {};
         packet.type = wire[0]; packet.remainingLength = length; packet.pRemainingData = body;
         MQTTPublishInfo_t message = {}; MQTTPropBuilder_t properties = {}; uint16_t id = 0;
-        assert(MQTT_DeserializePublish(&packet, &id, &message, &properties, 640, 0) == MQTTSuccess);
+        if (MQTT_DeserializePublish(&packet, &id, &message, &properties, 640, 0) != MQTTSuccess)
+          abort();
         const uint8_t* frame = static_cast<const uint8_t*>(message.pPayload);
         frames.push_back(std::vector<uint8_t>(frame, frame + message.payloadLength));
         feed({0x40, 4, static_cast<uint8_t>(id >> 8), static_cast<uint8_t>(id), 0, 0});
@@ -88,8 +92,8 @@ class Broker final : public FlovaArduinoPlatform {
   template <typename T, typename Encoder>
   void sendFrame(uint8_t type, uint64_t id, const T& value, Encoder encode) {
     uint8_t frame[512] = {}; size_t length = 0;
-    assert(encode(frame + 12, 500, &value, &length) == 0);
-    assert(flova::link::encodeFrameHeader(frame, sizeof(frame), type, 0, id, length));
+    if (encode(frame + 12, 500, &value, &length) != 0 ||
+        !flova::link::encodeFrameHeader(frame, sizeof(frame), type, 0, id, length)) abort();
     length += 12;
     const size_t remaining = 2 + down.size() + 2 + 1 + length;
     incoming.push_back(0x32);
@@ -132,8 +136,52 @@ static void authenticate(Broker& broker, ArduinoDeviceLink& link) {
   tick(link);
 }
 
-int main() {
+static bool verifyComposedBootstrapPhases(Entropy& entropy) {
+  Broker broker;
+  ArduinoFlovaLink link(broker, entropy);
+  struct Hooks { unsigned pause = 0, resume = 0; } hooks;
+  link.setHandshakeHandlers(
+      [](void* context) { ++static_cast<Hooks*>(context)->pause; return true; },
+      [](void* context) { ++static_cast<Hooks*>(context)->resume; return true; }, &hooks);
+  const auto start = [&] {
+    return link.beginBootstrap("mqtts://mqtt.example:8883",
+                               "ttttttttttttttttttttttttttttttttttttttttttt",
+                               "test-board", "universal_esp32",
+                               "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+  };
+  broker.slowOpen = true;
+  if (!start()) return false;
+  link.pollBootstrap();
+  if (!link.applicationPaused() || hooks.pause != 1 || hooks.resume || !broker.frames.empty())
+    return false;
+  link.disconnect();
+  if (link.applicationPaused() || hooks.resume != 1 || !broker.linkClosed()) return false;
+
+  if (!start()) return false;
+  broker.failOpen = true;
+  link.pollBootstrap();
+  char error[48] = {};
+  if (link.applicationPaused() || hooks.resume != 2 || !broker.linkClosed() ||
+      !link.takeBootstrapError(error, sizeof(error))) return false;
+
+  broker.failOpen = broker.slowOpen = false;
+  if (!start()) return false;
+  for (unsigned i = 0; i < 32 && broker.frames.empty(); ++i) link.pollBootstrap();
+  if (broker.frames.empty() || link.applicationPaused() || hooks.pause != 3 || hooks.resume != 3)
+    return false;
+  const uint8_t deviceId[16] = {1};
+  const struct bootstrap_committed committed = {{deviceId, sizeof(deviceId)}, 7, 1700000000000ULL};
+  broker.sendFrame(0x07, 1, committed, cbor_encode_bootstrap_committed);
+  for (unsigned i = 0; i < 32; ++i) link.pollBootstrap();
+  FlovaLinkBootstrapCommitted result = {};
+  return link.takeBootstrapCommitted(result) && result.generation == 7 &&
+         !link.takeBootstrapCommitted(result);
+}
+
+int main(int argc, char** argv) {
   Entropy entropy;
+  if (argc == 2 && strcmp(argv[1], "--session-phases") == 0)
+    return verifyComposedBootstrapPhases(entropy) ? 0 : 1;
   {
     Broker broker;
     ArduinoDeviceLink link(broker, entropy);
