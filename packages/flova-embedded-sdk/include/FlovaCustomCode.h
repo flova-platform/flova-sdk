@@ -145,6 +145,13 @@ class FlovaDatastream {
     resolve().offline(value);
     return *this;
   }
+#if FLOVA_ACTUATOR_CONTROL
+  bool setActuatorControl(flova::ActuatorControl& control) {
+    return resolve().setActuatorControl(control);
+  }
+  bool authorizeCloudControl() { return resolve().authorizeCloudControl(); }
+  bool cloudControlsActuator() { return resolve().cloudControlsActuator(); }
+#endif
   FlovaDatastream& scheduling(flova::Scheduling value) {
     resolve().scheduling(value);
     return *this;

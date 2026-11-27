@@ -27,6 +27,17 @@
       "board": "esp32",
       "static_dram": 76800,
       "image": 1056768
+    },
+    "universal-esp32-guardrails": {
+      "board": "esp32",
+      "static_dram": 76800,
+      "image": 1056768
+    },
+    "universal-esp8266-guardrails": {
+      "board": "esp8266",
+      "tls_profile": "bounded",
+      "static_dram": 49200,
+      "image": 581632
     }
   },
   "esp8266_phase_workspaces": {

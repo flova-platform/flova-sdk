@@ -14,6 +14,13 @@ class TestLink : public flova::Link {
   bool online = true; int sends = 0, stateSends = 0, errorSends = 0; double stateValues[64]; flova::Message last, lastError, lastResult; flova::MessageReceiver receiver = 0; void* context = 0;
   bool begin() override { return true; }
   bool connected() const override { return online; }
+  uint32_t epoch = 1;
+  uint32_t connectionEpoch() const override { return epoch; }
+  flova::GuardrailStatus reportedGuardrail = flova::GuardrailStatus::Unsupported;
+  bool sendGuardrailStatus(DatastreamId, flova::GuardrailStatus status, uint64_t, uint64_t) override {
+    reportedGuardrail = status;
+    return online;
+  }
   bool send(const flova::Message& message) override { sends++; last = message; if (message.kind == flova::MessageKind::Acknowledgement || message.kind == flova::MessageKind::Error) lastResult = message; if (message.kind == flova::MessageKind::StateUpdate) { if (message.value.type == flova::ValueType::Float) stateValues[stateSends] = message.value.scalar.floating; stateSends++; } if (message.kind == flova::MessageKind::Error) { errorSends++; lastError = message; } return online; }
   bool bindDatastreams(const char* const*, size_t count, DatastreamId* ids) override { boundCount = count; for (size_t i = 0; i < count; ++i) ids[i] = static_cast<DatastreamId>(i + 1); return count <= FLOVA_MAX_ACTIVE_DATASTREAMS; }
   void poll() override {}
@@ -763,7 +770,206 @@ static void verifyBatchRetryIdentity() {
   assert(!a.snapshot().dirty && !b.snapshot().dirty);
 }
 
+static void verifyOfflineActuatorOwnership() {
+  TestStorage storage;
+  TestLink link;
+  TestClock clock;
+  clock.utc = 200000;
+  TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  auto relay = device.datastream<bool>("relay");
+  relay.onWrite(+[](bool) { return flova::WriteResult::accept(); });
+  struct Local {
+    flova::Datastream<bool> relay;
+    unsigned entries;
+  } local{relay, 0};
+  flova::ActuatorControl owner(+[](void* context) {
+    Local& local = *static_cast<Local*>(context);
+    ++local.entries;
+    return local.relay.write(false).accepted();
+  }, &local);
+  assert(relay.setActuatorControl(owner));
+  assert(device.begin());
+  assert(!relay.authorizeCloudControl());
+  device.run();
+  assert(local.entries == 1 && !relay.value());
+  assert(relay.authorizeCloudControl());
+
+  flova::Message request;
+  request.kind = flova::MessageKind::WriteRequest;
+  request.datastreamId = 1;
+  request.value = flova::Value::from(true);
+  flova::Value::copy(request.commandId, "old-desired-value");
+  link.inject(request);
+  assert(!relay.value());
+  assert(strcmp(link.lastResult.reason, "actuator_deadline_required") == 0);
+
+  request.expiresAtUtcMs = clock.utcMilliseconds() + 15000;
+  flova::Value::copy(request.commandId, "cloud-on");
+  link.inject(request);
+  assert(relay.value());
+
+  link.online = false;
+  device.run();
+  assert(local.entries == 2 && !relay.value());
+  assert(!relay.authorizeCloudControl());
+  link.online = true;
+  ++link.epoch;
+  device.run();
+  flova::Value::copy(request.commandId, "reconnect-replay");
+  link.inject(request);
+  assert(!relay.value() && !relay.cloudControlsActuator());
+  assert(strcmp(link.lastResult.reason, "actuator_local_control") == 0);
+
+  assert(relay.authorizeCloudControl());
+  flova::Value::copy(request.commandId, "fresh-cloud-on");
+  link.inject(request);
+  assert(relay.value());
+
+  // An authenticated rebind can replace the session between loop iterations.
+  ++link.epoch;
+  flova::Value::copy(request.commandId, "replaced-session");
+  link.inject(request);
+  assert(!relay.cloudControlsActuator());
+  device.run();
+  assert(local.entries == 3 && !relay.value());
+}
+
+static void verifyDatastreamGuardrail(bool finishOnDisconnect) {
+  struct Writer {
+    double applied = 100;
+    unsigned calls = 0;
+    bool fail = false;
+    bool reject = false;
+  } writer;
+  TestStorage storage;
+  TestLink link;
+  TestClock clock;
+  clock.now = UINT32_MAX - 300;
+  clock.utc = 200000;
+  TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  auto output = device.datastream<double>("speed");
+  auto input = device.datastream<int64_t>("pressure");
+  assert(output.tryOnWrite(+[](void* context, double value) {
+    auto& writer = *static_cast<Writer*>(context);
+    ++writer.calls;
+    if (writer.reject) return flova::WriteResult::reject("driver_rejected");
+    if (writer.fail) return flova::WriteResult::failure("driver_error");
+    writer.applied = value;
+    return flova::WriteResult::accept();
+  }, &writer));
+  assert(device.begin());
+  const int64_t exactMinimum = 9007199254740993LL;
+  flova::config::Unit policy = {};
+  policy.kind = flova::config::UnitKind::Safety;
+  auto& record = policy.data.safety;
+  record.datastreamId = 1;
+  record.policy = finishOnDisconnect ? flova::config::SafetyPolicy::GuardrailFinish
+                                    : flova::config::SafetyPolicy::GuardrailStop;
+  record.hasSafeValue = record.hasTimeoutMs = record.hasMinimum = record.hasMaximum = true;
+  record.safeValue.kind = flova::config::ValueKind::Float64;
+  record.safeValue.data.float64 = 4.0;
+  record.timeoutMs = 1000;
+  record.guardId = 2;
+  record.guardMaxAgeMs = 1500;
+  record.minimum.kind = record.maximum.kind = flova::config::ValueKind::Int64;
+  record.minimum.data.integer = exactMinimum;
+  record.maximum.data.integer = exactMinimum + 1;
+  assert(device.validateConfigurationUnit(policy));
+  assert(device.applyConfigurationUnit(policy));
+  assert(!device.applyConfigurationUnit(policy));
+  assert(!output.write(10).accepted());
+  device.run();
+  assert(writer.applied == 4.0);
+  assert(link.reportedGuardrail == flova::GuardrailStatus::Disarmed);
+  uint64_t latch = 0;
+  assert(device.offlineGuardrailStatus(1, latch) == flova::GuardrailStatus::Disarmed);
+  const auto rearm = [&](const char* commandId, uint64_t token, uint32_t epoch) {
+    flova::Message request;
+    request.kind = flova::MessageKind::GuardrailRearm;
+    request.datastreamId = 1;
+    request.expiresAtUtcMs = clock.utcMilliseconds() + 10000;
+    request.monotonic = token;
+    request.timestamp = epoch;
+    flova::Value::copy(request.commandId, commandId);
+    link.inject(request);
+    return link.lastResult.kind == flova::MessageKind::Acknowledgement;
+  };
+  assert(!rearm("rearm-no-input", latch, link.epoch));
+  assert(input.report(exactMinimum - 1).accepted());
+  assert(!rearm("rearm-invalid-input", latch, link.epoch));
+  assert(input.report(exactMinimum).accepted());
+  assert(!rearm("rearm-invalid-session", latch, link.epoch + 1));
+  const unsigned callsBeforeRearm = writer.calls;
+  assert(rearm("rearm-current-latch", latch, link.epoch));
+  device.run();
+  assert(writer.calls == callsBeforeRearm && link.reportedGuardrail == flova::GuardrailStatus::Armed);
+  const auto cloudWrite = [&](const char* commandId, uint64_t revision, double value) {
+    flova::Message request;
+    request.kind = flova::MessageKind::WriteRequest;
+    request.datastreamId = 1;
+    request.revision = revision;
+    request.value = flova::Value::from(value);
+    request.expiresAtUtcMs = clock.utcMilliseconds() + 10000;
+    flova::Value::copy(request.commandId, commandId);
+    link.inject(request);
+    assert(link.lastResult.kind == flova::MessageKind::Acknowledgement);
+  };
+  writer.reject = true;
+  assert(output.write(10).status == flova::WriteStatus::Rejected);
+  assert(device.offlineGuardrailStatus(1, latch) == flova::GuardrailStatus::Armed);
+  writer.reject = false;
+  cloudWrite("start-newer", 5, 10);
+  cloudWrite("stop-older", 4, 4);
+  assert(writer.applied == 4);
+  cloudWrite("start-stale", 4, 30);
+  assert(writer.applied == 4);
+  assert(output.write(10).accepted());
+  clock.now += 600;
+  writer.reject = true;
+  assert(output.write(30).status == flova::WriteStatus::Rejected);
+  assert(writer.applied == 10);
+  assert(device.offlineGuardrailStatus(1, latch) == flova::GuardrailStatus::Running);
+  writer.reject = false;
+  assert(output.write(20).accepted());
+  link.online = false;
+  device.run();
+  assert(writer.applied == (finishOnDisconnect ? 20 : 4));
+  assert(!output.write(30).accepted());
+  link.online = true;
+  ++link.epoch;
+  assert(!output.write(30).accepted());
+  clock.now += 400;
+  device.run();
+  assert(writer.applied == 4);
+  uint64_t tripped = 0;
+  assert(device.offlineGuardrailStatus(1, tripped) == flova::GuardrailStatus::Tripped);
+  assert(latch != tripped && !rearm("rearm-stale-latch", latch, link.epoch));
+  assert(rearm("rearm-after-trip", tripped, link.epoch));
+  assert(writer.applied == 4 && output.write(70).accepted());
+  writer.fail = true;
+  clock.now += 500;
+  device.run();  // Input is now stale, before the run deadline.
+  assert(writer.applied == 70 && output.value() == 70);
+  assert(device.offlineGuardrailStatus(1, tripped) == flova::GuardrailStatus::SafeWriteFailed);
+  assert(input.report(exactMinimum).accepted());
+  assert(!rearm("rearm-safe-write-failed", tripped, link.epoch));
+  const unsigned attempts = writer.calls;
+  writer.fail = false;
+  clock.now += 249;
+  device.run();
+  assert(writer.calls == attempts);
+  ++clock.now;
+  device.run();
+  assert(writer.applied == 4 && output.value() == 4);
+  assert(device.offlineGuardrailStatus(1, tripped) == flova::GuardrailStatus::Tripped);
+}
+
 int main() {
+  verifyDatastreamGuardrail(false);
+  verifyDatastreamGuardrail(true);
+  verifyOfflineActuatorOwnership();
   verifyMixedNumericSafety();
   verifyCommandLedger();
   verifyInterruptedCommand();

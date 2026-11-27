@@ -62,6 +62,7 @@ void verifyVector(const FlovaLinkVector& vector) {
     case 0x18: VERIFY_SCHEMA(config_ack, cbor_decode_config_ack, cbor_encode_config_ack); break;
     case 0x19: VERIFY_SCHEMA(lifecycle_report, cbor_decode_lifecycle_report, cbor_encode_lifecycle_report); break;
     case 0x1a: VERIFY_SCHEMA(log_event, cbor_decode_log_event, cbor_encode_log_event); break;
+    case 0x1b: VERIFY_SCHEMA(guardrail_report, cbor_decode_guardrail_report, cbor_encode_guardrail_report); break;
     case 0x20: VERIFY_SCHEMA(command, cbor_decode_command, cbor_encode_command); break;
     case 0x21: verifyEmpty(frame.payload, frame.payloadLength, cbor_decode_ingestion_ack, cbor_encode_ingestion_ack); break;
     case 0x22: VERIFY_SCHEMA(config_desired, cbor_decode_config_desired, cbor_encode_config_desired); break;

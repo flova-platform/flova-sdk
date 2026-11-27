@@ -39,6 +39,11 @@ class TestStorage final : public flova::Storage {
     records[key] = std::vector<uint8_t>(bytes, bytes + length);
     return true;
   }
+  flova::StorageInfo info() const override {
+    flova::StorageInfo info;
+    info.persistent = true;
+    return info;
+  }
   bool remove(const char* key) override { records.erase(key); return true; }
   bool clear() override { records.clear(); return true; }
   std::map<std::string, std::vector<uint8_t>> records;
@@ -179,6 +184,22 @@ class TestLink final : public FlovaClientLink {
   bool decodeStoredConfigurationUnit(
       const uint8_t* payload, size_t length, flova::config::Unit& output) override {
     assert(length == 16);
+    if (guardrailFixture) {
+      if (payload[0] == 0) {
+        output.kind = flova::config::UnitKind::Datastream;
+        output.data.datastream.id = 1;
+        output.data.datastream.valueType = 0;
+        return flova::copyBounded("relay", output.data.datastream.key, true);
+      }
+      output.kind = flova::config::UnitKind::Safety;
+      auto& safety = output.data.safety;
+      safety.policy = flova::config::SafetyPolicy::GuardrailStop;
+      safety.datastreamId = 1;
+      safety.hasSafeValue = true;
+      safety.safeValue.kind = flova::config::ValueKind::Boolean;
+      safety.safeValue.data.boolean = false;
+      return true;
+    }
     if (!configurationKeys.empty()) {
       const size_t index = payload[0];
       assert(index < configurationKeys.size());
@@ -235,6 +256,7 @@ class TestLink final : public FlovaClientLink {
   unsigned maintenanceEnds = 0;
   bool configurationPending = false;
   bool decoderAllowed = true;
+  bool guardrailFixture = false;
   unsigned reports = 0;
   FlovaLinkConfigurationRecord configuration = {};
   FlovaLinkConfigurationReport lastReport = {};
@@ -575,6 +597,102 @@ void verifyConfigurationKeyIndex() {
   verifyIndexedRestore({"costarring", "liquid", "costarring"}, false);
 }
 
+void verifyGuardrailConfiguration(bool writerAvailable, bool duplicate,
+                                  bool interrupted) {
+  TestStorage storage;
+  seedRuntimeConfiguration(storage);
+  TestLink link; TestClock clock; TestLogger logger; TestEntropy entropy;
+  TestIdentity identity; TestNetwork network; TestTlsClock tlsClock;
+  TestProvisioning provisioning; TestHardware hardware;
+  link.guardrailFixture = true;
+  link.online = network.online = tlsClock.clockReady = true;
+  const unsigned count = duplicate ? 3 : 2;
+  const uint32_t expectedGeneration = writerAvailable && !duplicate && !interrupted ? 2 : 1;
+  bool applied = true;
+
+  const auto registerWriter = [&](FlovaClient& client) {
+    if (!writerAvailable) return;
+    assert(client.device().datastream<bool>("relay").tryOnWrite(+[](void* context, bool value) {
+      *static_cast<bool*>(context) = value;
+      return flova::WriteResult::accept();
+    }, &applied));
+  };
+
+  {
+    FlovaClient client(link, provisioning, network, tlsClock, identity, storage,
+                       clock, logger, entropy, hardware);
+    registerWriter(client);
+    assert(client.begin());
+    for (unsigned i = 0; i < 128 && !client.runtimeReady(); ++i) client.run();
+    assert(client.runtimeReady());
+
+    flova::config::Digest digest;
+    flova::config::Record records[3];
+    for (unsigned i = 0; i < count; ++i) {
+      auto& record = records[i];
+      record.generation = 2;
+      record.sequence = i;
+      record.kind = i ? flova::config::RecordKind::Safety : flova::config::RecordKind::Datastream;
+      record.length = 16;
+      record.body[0] = i;
+      digest.addRecord(record);
+    }
+    flova::config::Checksum checksum;
+    digest.finish(checksum);
+    auto& frame = link.configuration;
+    frame.generation = 2;
+    frame.recordCount = count;
+    frame.schemaVersion = 1;
+    frame.maximumRecordBytes = flova::config::kMaximumRecordBytes;
+    memcpy(frame.checksum, checksum.bytes, sizeof(frame.checksum));
+
+    const auto send = [&](FlovaLinkConfigurationPhase phase) {
+      frame.phase = phase;
+      ++frame.messageId;
+      link.configurationPending = true;
+      client.run();
+      assert(!link.configurationPending);
+    };
+
+    send(FlovaLinkConfigurationPhase::Begin);
+    assert(link.lastReport.status == FlovaLinkResultStatus::Ok);
+    for (unsigned i = 0; i < count; ++i) {
+      frame.sequence = i;
+      frame.recordType = static_cast<uint8_t>(records[i].kind);
+      frame.recordLength = records[i].length;
+      memcpy(frame.record, records[i].body, frame.recordLength);
+      send(FlovaLinkConfigurationPhase::Record);
+      assert(link.lastReport.status == FlovaLinkResultStatus::Ok);
+    }
+    send(FlovaLinkConfigurationPhase::End);
+    if (!interrupted) {
+      for (unsigned i = 0; i < 128 && !client.restartRequired(); ++i) {
+        ++testNow;
+        client.run();
+      }
+      if (expectedGeneration == 1) assert(link.lastReport.status == FlovaLinkResultStatus::Error);
+    }
+
+    FlovaLinkConfigurationStorage banks(storage, 64);
+    uint32_t active = 0, previous = 0;
+    banks.generations(active, previous);
+    assert(active == expectedGeneration);
+  }
+
+  link.online = network.online = false;
+  FlovaClient reboot(link, provisioning, network, tlsClock, identity, storage,
+                     clock, logger, entropy, hardware);
+  registerWriter(reboot);
+  assert(reboot.begin());
+  for (unsigned i = 0; i < 128 && !reboot.runtimeReady(); ++i) reboot.run();
+  assert(link.configurationGeneration() == expectedGeneration);
+  if (expectedGeneration == 2) {
+    uint64_t latch = 0;
+    assert(!applied);
+    assert(reboot.device().offlineGuardrailStatus(1, latch) == flova::GuardrailStatus::Disarmed);
+  }
+}
+
 void verifyOfflineLifecycleReplay() {
   TestStorage storage;
   TestLink link;
@@ -648,6 +766,10 @@ int main() {
   verifyApplyRollback(true);
   verifyOfflineLifecycleReplay();
   verifyConfigurationKeyIndex();
+  verifyGuardrailConfiguration(true, false, false);
+  verifyGuardrailConfiguration(false, false, false);
+  verifyGuardrailConfiguration(true, true, false);
+  verifyGuardrailConfiguration(true, false, true);
   TestLink link;
   TestStorage storage;
   TestClock clock;

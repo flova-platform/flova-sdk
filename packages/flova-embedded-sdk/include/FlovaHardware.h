@@ -36,6 +36,7 @@ class Hardware {
   virtual void resetConfiguration() {}
   virtual void failSafe() {}
   virtual void run() = 0;
+  virtual void serviceActuators(bool) {}
   virtual void setConnected(bool connected) = 0;
   virtual const char* configurationError() const { return ""; }
 };

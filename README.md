@@ -38,6 +38,39 @@ the input was invalid, the client has not started, or the slot is occupied.
 rejects the event; restarting the device discards any unacknowledged event.
 Deploy the matching Engine release before using this API in firmware.
 
+
+### Offline actuator ownership
+
+Custom builds can enable `FLOVA_ACTUATOR_CONTROL=1` and attach an
+`ActuatorControl` to a writable datastream with `setActuatorControl()` before
+startup. Keep the control object and its callback context alive for the Device
+lifetime. The callback runs at startup and when cloud ownership is lost. It
+should apply the firmware’s safe state or start the application’s bounded
+local control. Return success only after the application has taken control.
+Disable stream-value persistence for the actuator and configure safe hardware
+startup before networking.
+
+When ready, a trusted application action can call `authorizeCloudControl()`.
+Authorization is held in RAM and expires on disconnect or authenticated
+rebind. While local control owns the actuator, the SDK rejects remote writes.
+Remote writes also require a valid command deadline. The application can
+publish `cloudControlsActuator()` alongside actuator feedback.
+
+Console-authored offline guardrails use the shared datastream writer for
+relay, PWM, and custom outputs. Writable state streams need a result-returning
+local writer, and the device must report any required input locally.
+
+The standard `universal-esp32` and `universal-esp8266` profiles compile out the
+shared guardrail evaluator and its storage. Choose `universal-esp32-guardrails`
+or `universal-esp8266-guardrails` to enable two slots. These builds advertise
+their slots after persistent storage initializes. Numeric and Boolean values
+are stored inline.
+Text policies share a bounded pool of twice the profile's SDK text capacity.
+Custom builds can set `FLOVA_OFFLINE_GUARDRAIL_CAPACITY` and validate firmware
+memory and control-loop timing on their hardware.
+Deploy the matching Engine before enabling a firmware profile that advertises
+guardrail support.
+
 ## Choose a starting point
 
 | Target                                          | Use                                                   | Start here                                                        |

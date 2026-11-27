@@ -62,7 +62,7 @@ enum class FlovaLinkMessageType : uint8_t {
   FlowControl
 };
 
-enum class FlovaLinkResultStatus : uint8_t { Ok = 0, Accepted = 1, Duplicate = 2, Error = 3 };
+enum class FlovaLinkResultStatus : uint8_t { Ok = 0, Accepted = 1, Duplicate = 2, Error = 3, Rejected = 4 };
 enum class FlovaLinkConfigurationPhase : uint8_t { Begin, Record, End };
 enum class FlovaOtaStrategy : uint8_t { None = 0, Ab = 1, AbRecovery = 2 };
 enum class FlovaOtaBootState : uint8_t { Stable = 0, Candidate = 1, RolledBack = 2 };
@@ -110,6 +110,9 @@ struct FlovaLinkCommand {
   // Zero means no expiry protection. A non-zero deadline requires a valid UTC
   // clock and is rejected before the application write handler is called.
   uint64_t expiresAtUtcMs;
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+  uint64_t guardrailLatch;
+#endif
   FlovaLinkValue value;
 };
 

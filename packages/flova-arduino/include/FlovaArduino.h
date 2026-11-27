@@ -162,6 +162,9 @@ class FlovaClient {
       lifecycle_ = FlovaLifecycle::Failed;
       return false;
     }
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    link_.setDurableGuardrails(storage_.info().persistent);
+#endif
     if (!restoreRejectedConfiguration()) {
       hardware_.failSafe();
       writeError("configuration_recovery_failed");
@@ -246,6 +249,10 @@ class FlovaClient {
   }
 
   void run() {
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    device_.serviceOfflineGuardrails();
+#endif
+    hardware_.serviceActuators(link_.connected() && network_.connected() && !link_.applicationPaused());
     runLifecycle();
     dispatchStatusChanges();
     drainLifecycleLog();
@@ -428,6 +435,7 @@ class FlovaClient {
       if (!link_.applicationPaused()) hardware_.run();
       if (lifecycle_ != FlovaLifecycle::Runtime) return;
       device_.run();
+      hardware_.serviceActuators(link_.connected() && !link_.applicationPaused());
       if (factoryResetRequestedAt_ &&
           (!device_.commandResultPending(factoryResetCommandId_) ||
            millis() - factoryResetRequestedAt_ >= kFactoryResetAckGraceMs)) {
@@ -771,6 +779,17 @@ class FlovaClient {
     uint16_t statusLedPin = UINT16_MAX;
     bool systemSeen = false;
     bool bootstrapping = false;
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    struct GuardrailReference {
+      DatastreamId output;
+      DatastreamId input;
+    };
+    GuardrailReference guardrails[FLOVA_OFFLINE_GUARDRAIL_CAPACITY] = {};
+    size_t guardrailCount = 0;
+    size_t guardrailTextBytes = 0;
+    bool guardrailOutputFound = false;
+    bool guardrailInputFound = false;
+#endif
   };
 
   static FlovaProvisioningResponse handleProvisioning(
@@ -1130,6 +1149,12 @@ class FlovaClient {
         stepConfigurationReferences();
         return;
       case ConfigurationWorkPhase::ApplyInit:
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+        if (!device_.clearOfflineGuardrailsForConfiguration()) {
+          failConfigurationWork(false);
+          return;
+        }
+#endif
         hardware_.resetConfiguration();
         configurationWork_.sequence = 0;
         configurationWork_.phase = ConfigurationWorkPhase::Apply;
@@ -1199,12 +1224,19 @@ class FlovaClient {
     configurationWork_.outputMappingCount = 0;
     configurationWork_.statusLedPin = UINT16_MAX;
     configurationWork_.systemSeen = false;
-    memset(&configurationMemory_->image, 0,
-           sizeof(configurationMemory_->image));
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    configurationWork_.guardrailCount = 0;
+    configurationWork_.guardrailTextBytes = 0;
+#endif
+    memset(validationWorkspace(), 0, kValidationBytes);
     configurationWork_.phase = ConfigurationWorkPhase::Semantic;
   }
 
   bool validateConfigurationUnit(flova::config::Unit& unit) {
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    if (unit.kind == flova::config::UnitKind::Safety &&
+        static_cast<uint8_t>(unit.data.safety.policy) >= 7 && !storage_.info().persistent) return false;
+#endif
     if (!hardware_.resolve(unit) || !device_.validateConfigurationUnit(unit) || !hardware_.validate(unit))
       return false;
     const flova::HardwareCapabilities capabilities = hardware_.capabilities();
@@ -1277,6 +1309,7 @@ class FlovaClient {
   void stepConfigurationSemantic() {
     if (configurationWork_.sequence >= configurationWork_.manifest.recordCount) {
       configurationWork_.sequence = 0;
+      configurationWork_.priorSequence = 0;
       configurationWork_.phase = ConfigurationWorkPhase::References;
       return;
     }
@@ -1341,12 +1374,72 @@ class FlovaClient {
     }
     const flova::config::Unit& unit = configurationMemory_->unit;
     if (unit.kind == flova::config::UnitKind::Safety &&
-        !hasValidatedDatastream(unit.data.safety.datastreamId)) {
+        (!hasValidatedDatastream(unit.data.safety.datastreamId) ||
+         (unit.data.safety.guardId && !hasValidatedDatastream(unit.data.safety.guardId)))) {
       failConfigurationWork(true);
       return;
     }
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    if (unit.kind == flova::config::UnitKind::Safety &&
+        device_.isOfflineGuardrailRecord(unit.data.safety.policy) &&
+        !stepGuardrailReferences(unit.data.safety)) return;
+#endif
     ++configurationWork_.sequence;
   }
+
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+  bool stepGuardrailReferences(const flova::config::Safety& safety) {
+    auto& work = configurationWork_;
+    if (!work.priorSequence) {
+      const size_t textBytes = device_.offlineGuardrailTextBytes(safety);
+      if (work.guardrailCount >= FLOVA_OFFLINE_GUARDRAIL_CAPACITY ||
+          work.guardrailTextBytes + textBytes > device_.offlineGuardrailTextCapacity()) {
+        failConfigurationWork(true);
+        return false;
+      }
+      for (size_t i = 0; i < work.guardrailCount; ++i) {
+        const auto& existing = work.guardrails[i];
+        if (existing.output == safety.datastreamId || existing.output == safety.guardId ||
+            existing.input == safety.datastreamId) {
+          failConfigurationWork(true);
+          return false;
+        }
+      }
+      work.guardrails[work.guardrailCount++] = {safety.datastreamId, safety.guardId};
+      work.guardrailTextBytes += textBytes;
+      work.guardrailOutputFound = false;
+      work.guardrailInputFound = !safety.guardId;
+    }
+
+    // The application step requires both streams to have been registered first.
+    // Read at most one additional record per loop to preserve control-loop time.
+    while (work.priorSequence < work.sequence && !validationKeyHash(work.priorSequence))
+      ++work.priorSequence;
+    if (work.priorSequence < work.sequence) {
+      const auto policy = safety;
+      if (!decodeGenerationUnit(work.generation, work.priorSequence++)) {
+        failConfigurationWork(true);
+        return false;
+      }
+      const auto& stream = configurationMemory_->unit.data.datastream;
+      if (stream.id == policy.datastreamId || stream.id == policy.guardId) {
+        if (!device_.validateOfflineGuardrailStream(
+                policy, stream, stream.hasMapping && hardware_.capabilities().automaticMapping)) {
+          failConfigurationWork(true);
+          return false;
+        }
+        if (stream.id == policy.datastreamId) work.guardrailOutputFound = true;
+        else work.guardrailInputFound = true;
+      }
+    }
+    if (!work.guardrailOutputFound || !work.guardrailInputFound) {
+      if (work.priorSequence >= work.sequence) failConfigurationWork(true);
+      return false;
+    }
+    work.priorSequence = 0;
+    return true;
+  }
+#endif
 
   void stepConfigurationApply() {
     if (configurationWork_.sequence >= configurationWork_.manifest.recordCount) {
@@ -1635,6 +1728,14 @@ class FlovaClient {
       otaResultPending_ = true;
       return;
     }
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    if (!device_.quiesceOfflineGuardrails()) {
+      otaResult_.status = FlovaLinkResultStatus::Error;
+      copy(otaResult_.errorCode, "guardrail_safe_write_failed");
+      otaResultPending_ = true;
+      return;
+    }
+#endif
     otaPendingRecord_ = {};
     otaPendingRecord_.magic = kOtaPendingMagic;
     otaPendingRecord_.installId = offer.installId;
@@ -1906,6 +2007,13 @@ class FlovaClient {
   }
 
   void requestRestart(FlovaRestartReason reason) {
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    if (!device_.quiesceOfflineGuardrails()) {
+      setLastError("guardrail_safe_write_failed");
+      lifecycle_ = FlovaLifecycle::Failed;
+      return;
+    }
+#endif
     restartReason_ = reason;
     if (!restartHandler_) {
       lifecycle_ = FlovaLifecycle::RestartRequired;

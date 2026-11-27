@@ -40,7 +40,8 @@ enum class MessageKind : uint8_t {
   Heartbeat,
   Configuration,
   TimeRequest,
-  TimeResponse
+  TimeResponse,
+  GuardrailRearm
 };
 
 struct WriteResult {
@@ -154,6 +155,25 @@ inline bool operator==(const Value& a, const Value& b) {
   return strcmp(a.text, b.text) == 0;
 }
 
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+enum class GuardrailStatus : uint8_t {
+  Unsupported, Disarmed, Armed, Running, Finishing, Tripped, SafeWriteFailed
+};
+
+enum class GuardrailComparison : uint8_t { Equal, InclusiveRange };
+
+struct OfflineGuardrail {
+  Value safeValue;
+  uint32_t maximumRunMs = 0;
+  bool finishOnDisconnect = false;
+  DatastreamId inputId = FLOVA_INVALID_DATASTREAM_ID;
+  uint32_t maximumInputAgeMs = 0;
+  GuardrailComparison comparison = GuardrailComparison::Equal;
+  Value inputMinimum;
+  Value inputMaximum;
+};
+#endif
+
 struct Message {
   MessageKind kind;
   DatastreamId datastreamId;
@@ -189,6 +209,27 @@ typedef bool (*StateUpdateReader)(void*, size_t, DatastreamId&, uint32_t&, Value
 
 typedef void (*MessageReceiver)(void* context, const Message& message);
 
+#if FLOVA_ACTUATOR_CONTROL
+// Keep this record alive for as long as the attached Device. The application
+// enters its configured safe state or starts bounded local control here.
+class ActuatorControl {
+ public:
+  typedef bool (*EnterLocal)(void*);
+  ActuatorControl(EnterLocal enterLocal, void* context)
+      : enterLocal_(enterLocal), context_(context) {}
+  ActuatorControl(const ActuatorControl&) = delete;
+  ActuatorControl& operator=(const ActuatorControl&) = delete;
+
+ private:
+  friend class Device;
+  template <typename T> friend class Datastream;
+  EnterLocal enterLocal_;
+  void* context_;
+  uint32_t authorizedEpoch_ = 0;
+  bool localEntered_ = false;
+};
+#endif
+
 class Link {
  public:
   virtual ~Link() {}
@@ -196,6 +237,14 @@ class Link {
   // owns the point at which queued messages may invoke application hardware.
   virtual bool begin() = 0;
   virtual bool connected() const = 0;
+#if FLOVA_ACTUATOR_CONTROL || FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+  // Return a distinct nonzero epoch for each authenticated binding. Zero
+  // disables cloud handback on adapters that cannot identify a connection.
+  virtual uint32_t connectionEpoch() const { return 0; }
+#endif
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+  virtual bool sendGuardrailStatus(DatastreamId, GuardrailStatus, uint64_t, uint64_t) { return false; }
+#endif
   virtual bool applicationPaused() const { return false; }
   virtual bool send(const Message& message) = 0;
   // Optional bounded aggregation. Return the accepted prefix; every reading in
@@ -286,6 +335,16 @@ class Device {
     if (started_) return false;
     if (!link_.messageNonce()) return false;
     for (size_t i = 0; i < count_; ++i) {
+#if FLOVA_ACTUATOR_CONTROL
+      if (states_[i].actuatorControl) {
+        if (states_[i].persistence != PersistencePolicy::None ||
+            states_[i].offline == OfflinePolicy::Reject ||
+            states_[i].mode == Mode::Sample || states_[i].mode == Mode::Event)
+          return false;
+        states_[i].actuatorControl->authorizedEpoch_ = 0;
+        states_[i].actuatorControl->localEntered_ = false;
+      }
+#endif
       if (states_[i].scheduling != Scheduling::Disabled &&
           (states_[i].mode == Mode::Sample || states_[i].mode == Mode::Event))
         return false;
@@ -334,7 +393,19 @@ class Device {
   // Call from the board loop. Hardware handlers and queued remote commands
   // are applied only through this lifecycle boundary.
   void run() {
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    serviceOfflineGuardrails();
+#endif
+#if FLOVA_ACTUATOR_CONTROL
+    serviceActuators();
+#endif
     link_.poll();
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    serviceOfflineGuardrails();
+#endif
+#if FLOVA_ACTUATOR_CONTROL
+    serviceActuators();
+#endif
     if (link_.applicationPaused()) return;
     if (bindingPending_) {
       if (link_.bindingReady()) {
@@ -355,6 +426,9 @@ class Device {
     flushDuePersistence();
     if (!started_ || bindingPending_ || bindingFailed_ || !link_.connected()) return;
     if (retryNotBefore_ && clock_.milliseconds() < retryNotBefore_) return;
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    publishGuardrailStatuses();
+#endif
     flushResults();
     syncTime();
     // Start after the last selected stream so a busy producer cannot starve peers.
@@ -381,6 +455,14 @@ class Device {
     for (size_t i = 0; i < count_; ++i)
       if (states_[i].persistenceDirty) ok = savePersistence(states_[i]) && ok;
     return ok;
+  }
+  bool reportMappedOutputOff(DatastreamId id) {
+    State* current = stateForId(id);
+    if (!current || current->valueType != ValueType::Boolean || current->safetyPolicy < 5)
+      return false;
+    update(*current, Value::from(false), Origin::Internal);
+    current->dirty = true;
+    return true;
   }
   size_t datastreamCount() const { return count_; }
   // Universal firmware may explicitly delegate cloud scheduling for mapped
@@ -425,11 +507,12 @@ class Device {
   template <typename T> Setting<T> setting(const char* key, const T& defaultValue);
 
   bool setWriteHandler(DatastreamId id, ValueWriteHandler handler,
-                       void* context) {
+                       void* context, bool configurationOwned = false) {
     State* current = stateForId(id);
     if (!current || !handler) return false;
     current->writeHandler.valueResult = handler;
-    current->writeKind = WriteHandlerKind::ValueResult;
+    current->writeKind = configurationOwned
+        ? WriteHandlerKind::ConfigurationValueResult : WriteHandlerKind::ValueResult;
     current->writeContext = context;
     return true;
   }
@@ -437,7 +520,8 @@ class Device {
   bool clearWriteHandler(DatastreamId id, ValueWriteHandler handler,
                          void* context) {
     State* current = stateForId(id);
-    if (!current || current->writeKind != WriteHandlerKind::ValueResult ||
+    if (!current || (current->writeKind != WriteHandlerKind::ValueResult &&
+                     current->writeKind != WriteHandlerKind::ConfigurationValueResult) ||
         current->writeHandler.valueResult != handler ||
         current->writeContext != context)
       return false;
@@ -453,6 +537,168 @@ class Device {
     return current ? apply(*current, value, origin)
                    : WriteResult::failure("unknown_datastream");
   }
+
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+  static bool isOfflineGuardrailRecord(config::SafetyPolicy policy) {
+    return policy >= config::SafetyPolicy::StopOnDisconnect &&
+           policy <= config::SafetyPolicy::GuardrailFinish;
+  }
+
+  static size_t offlineGuardrailTextBytes(const config::Safety& record) {
+    if (!isGuardrailPolicy(record.policy)) return 0;
+    const size_t output = configurationTextBytes(record.safeValue);
+    return output + (record.guardId ? configurationTextBytes(record.minimum) : 0);
+  }
+
+  static constexpr size_t offlineGuardrailTextCapacity() { return 2 * kMaxText; }
+
+  bool validateOfflineGuardrailStream(const config::Safety& record,
+                                      const config::Datastream& stream,
+                                      bool mapped) {
+    const bool output = record.datastreamId == stream.id;
+    const bool legacy = !isGuardrailPolicy(record.policy);
+    ValueType type;
+    if (!configurationValueType(stream.valueType, type)) return false;
+    if (legacy ? type != ValueType::Boolean :
+        !config::valueTypeMatches(output ? record.safeValue : record.minimum, stream.valueType))
+      return false;
+
+    State* current = find(stream.key, type);
+    if (!output) {
+      return mapped ? stream.mapping.kind == config::MappingKind::DigitalInput ||
+                          stream.mapping.kind == config::MappingKind::AnalogInput
+                    : !current || current->mode != Mode::Event;
+    }
+    if (current && (current->mode == Mode::Sample || current->mode == Mode::Event ||
+                    current->persistence != PersistencePolicy::None ||
+                    current->offline != OfflinePolicy::KeepLatest)) return false;
+#if FLOVA_ACTUATOR_CONTROL
+    if (current && current->actuatorControl) return false;
+#endif
+    if (!mapped) return current && hasResultWriter(*current) &&
+                        current->writeKind != WriteHandlerKind::ConfigurationValueResult;
+    if (stream.mapping.kind != config::MappingKind::DigitalOutput &&
+        stream.mapping.kind != config::MappingKind::PwmOutput) return false;
+    Value safeValue = Value::from(false);
+    if (!legacy && !configurationValue(record.safeValue, safeValue)) return false;
+    Value initial;
+    if (stream.hasDefault && (!configurationValue(stream.defaultValue, initial) ||
+                              !(initial == safeValue))) return false;
+    if (stream.mapping.kind == config::MappingKind::PwmOutput) {
+      NumericBound minimum, maximum;
+      maximum.value.integer = 100;
+      if ((stream.hasMinimum && !minimum.assign(stream.minimum)) ||
+          (stream.hasMaximum && !maximum.assign(stream.maximum))) return false;
+      return minimum.compare(safeValue) >= 0 && maximum.compare(safeValue) <= 0;
+    }
+    return true;
+  }
+
+  // Called by the configuration installer after stream registration and
+  // verification. Does not itself persist or acknowledge the configuration.
+  bool installOfflineGuardrail(DatastreamId id, const OfflineGuardrail& policy) {
+    State* output = stateForId(id);
+    if (!output || guardrail(*output) || output->mode == Mode::Sample ||
+        output->mode == Mode::Event || output->persistence != PersistencePolicy::None ||
+        output->offline != OfflinePolicy::KeepLatest || !hasResultWriter(*output) ||
+        policy.safeValue.type != output->valueType || !validValue(policy.safeValue) ||
+        !safe(*output, policy.safeValue) || policy.maximumRunMs > kGuardrailMaximumMs ||
+        (policy.finishOnDisconnect && !policy.maximumRunMs)) return false;
+#if FLOVA_ACTUATOR_CONTROL
+    if (output->actuatorControl) return false;
+#endif
+    State* input = policy.inputId ? stateForId(policy.inputId) : nullptr;
+    if (policy.inputId && (!input || input == output || guardrail(*input) || input->mode == Mode::Event ||
+        !policy.maximumInputAgeMs || policy.maximumInputAgeMs > kGuardrailMaximumMs ||
+        !validGuardrailComparison(*input, policy))) return false;
+    for (const auto& entry : guardrails_)
+      if (entry.input == output) return false;
+    const size_t textNeeded = guardrailTextSize(policy.safeValue) +
+                              (input ? guardrailTextSize(policy.inputMinimum) : 0);
+    if (textNeeded > sizeof(guardrailText_) - guardrailTextUsed_) return false;
+    for (auto& entry : guardrails_) {
+      if (entry.output) continue;
+      entry.output = output;
+      entry.input = input;
+      entry.safeValue = storeGuardrailValue(policy.safeValue);
+      entry.maximumRunMs = policy.maximumRunMs;
+      entry.finishOnDisconnect = policy.finishOnDisconnect;
+      entry.maximumInputAgeMs = policy.maximumInputAgeMs;
+      entry.comparison = policy.comparison;
+      if (input) {
+        entry.inputMinimum = storeGuardrailValue(policy.inputMinimum);
+        if (policy.comparison == GuardrailComparison::InclusiveRange)
+          entry.inputMaximum = storeGuardrailValue(policy.inputMaximum);
+      }
+      entry.safeApplied = false;
+      entry.reportedEpoch = 0;
+      output->restorePending = false;
+      // Force the safe write even if the remembered/default value is identical.
+      latchGuardrail(entry, GuardrailStatus::Disarmed);
+      return true;
+    }
+    return false;
+  }
+
+  GuardrailStatus offlineGuardrailStatus(DatastreamId id, uint64_t& latch) {
+    State* output = stateForId(id);
+    Guardrail* entry = output ? guardrail(*output) : nullptr;
+    latch = entry ? entry->latch : 0;
+    return entry ? entry->status : GuardrailStatus::Unsupported;
+  }
+
+  // Board loops may service this before networking and during maintenance.
+  void serviceOfflineGuardrails() {
+    const uint32_t now = static_cast<uint32_t>(clock_.milliseconds());
+    for (auto& entry : guardrails_) {
+      if (!entry.output || entry.writing) continue;
+      evaluateGuardrail(entry, now);
+      if (!entry.safeApplied &&
+          (entry.status == GuardrailStatus::Disarmed || entry.status == GuardrailStatus::Tripped ||
+           entry.status == GuardrailStatus::SafeWriteFailed) &&
+          now - entry.lastAttemptAt >= entry.retryMs) applyGuardrailSafe(entry, now);
+    }
+  }
+
+  bool applyingGuardrailSafeValue(DatastreamId id) {
+    State* output = stateForId(id);
+    Guardrail* entry = output ? guardrail(*output) : nullptr;
+    return entry && entry->writingSafe;
+  }
+
+  bool quiesceOfflineGuardrails() {
+    bool allSafe = true;
+    for (auto& entry : guardrails_) {
+      if (!entry.output) continue;
+      if (entry.status == GuardrailStatus::Armed || entry.status == GuardrailStatus::Running ||
+          entry.status == GuardrailStatus::Finishing)
+        latchGuardrail(entry, GuardrailStatus::Tripped);
+    }
+    serviceOfflineGuardrails();
+    for (const auto& entry : guardrails_)
+      if (entry.output && !entry.safeApplied) allSafe = false;
+    return allSafe;
+  }
+
+  // Reset writers only after all protected outputs have accepted safe values.
+  bool clearOfflineGuardrailsForConfiguration() {
+    if (!quiesceOfflineGuardrails()) return false;
+    for (auto& entry : guardrails_) entry.output = entry.input = nullptr;
+    guardrailTextUsed_ = 0;
+    return true;
+  }
+
+  // Used when a local sampler actually read an unchanged value. This does not
+  // create an outbound state update or refresh a cached cloud value.
+  void refreshOfflineGuardrailInput(DatastreamId id) {
+    for (auto& entry : guardrails_)
+      if (entry.input && entry.input->id == id && entry.input->hasValue &&
+          entry.input->origin == Origin::PhysicalInput && entry.input->quality == Quality::Good) {
+        entry.input->updatedAt = clock_.milliseconds();
+        return;
+      }
+  }
+#endif
 
   WriteResult report(DatastreamId id, const Value& value,
                      Origin origin = Origin::SensorRead) {
@@ -486,8 +732,36 @@ class Device {
       return true;
     }
     if (unit.kind == config::UnitKind::Safety) {
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+      if (isGuardrailPolicy(unit.data.safety.policy)) {
+        const config::Safety& record = unit.data.safety;
+        OfflineGuardrail policy;
+        if (!decodeOfflineGuardrail(record, policy)) return false;
+        return installOfflineGuardrail(record.datastreamId, policy);
+      }
+#endif
       State* current = stateForId(unit.data.safety.datastreamId);
       if (!current) return false;
+      if (unit.data.safety.policy == config::SafetyPolicy::StopOnDisconnect ||
+          unit.data.safety.policy == config::SafetyPolicy::FinishBoundedRun) {
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+        // Old durable records are decoded into the same runtime contract.
+        if (!validateConfigurationUnit(unit)) return false;
+        OfflineGuardrail policy;
+        policy.safeValue = Value::from(false);
+        policy.maximumRunMs = unit.data.safety.timeoutMs;
+        policy.finishOnDisconnect = unit.data.safety.policy == config::SafetyPolicy::FinishBoundedRun;
+        policy.inputId = unit.data.safety.guardId;
+        policy.maximumInputAgeMs = 5000;
+        policy.inputMinimum = Value::from(true);
+        return installOfflineGuardrail(unit.data.safety.datastreamId, policy);
+#else
+        if (!validateConfigurationUnit(unit) || current->valueType != ValueType::Boolean ||
+            current->persistence != PersistencePolicy::None) return false;
+        current->safetyPolicy = static_cast<uint8_t>(unit.data.safety.policy);
+        return true;
+#endif
+      }
       Descriptor descriptor;
       const size_t slot = static_cast<size_t>(current - states_);
       if (!readDescriptor(slot, descriptor)) return false;
@@ -547,7 +821,22 @@ class Device {
       return true;
     }
     if (unit.kind == config::UnitKind::Safety) {
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+      if (isGuardrailPolicy(unit.data.safety.policy)) {
+        OfflineGuardrail policy;
+        return decodeOfflineGuardrail(unit.data.safety, policy);
+      }
+#endif
+      if (unit.data.safety.hasSafeValue || unit.data.safety.guardMaxAgeMs) return false;
       const uint8_t policy = static_cast<uint8_t>(unit.data.safety.policy);
+      if (policy == 5 || policy == 6)
+        return flovaValidDatastreamId(unit.data.safety.datastreamId) &&
+               unit.data.safety.hasTimeoutMs && unit.data.safety.timeoutMs >= 1000 &&
+               unit.data.safety.timeoutMs <= 3600000 && !unit.data.safety.hasMinimum &&
+               !unit.data.safety.hasMaximum &&
+               (!unit.data.safety.guardId ||
+                (flovaValidDatastreamId(unit.data.safety.guardId) &&
+                 unit.data.safety.guardId != unit.data.safety.datastreamId));
       NumericBound ignored;
       return flovaValidDatastreamId(unit.data.safety.datastreamId) &&
              policy <= 4 &&
@@ -581,7 +870,7 @@ class Device {
     DoubleResultContext, TextResultContext,
     BoolVoid, Int64Void, FloatVoid, DoubleVoid, TextVoid,
     BoolVoidContext, Int64VoidContext, FloatVoidContext,
-    DoubleVoidContext, TextVoidContext
+    DoubleVoidContext, TextVoidContext, ConfigurationValueResult
   };
 
   union WriteHandler {
@@ -798,6 +1087,9 @@ class Device {
     DatastreamId id = FLOVA_INVALID_DATASTREAM_ID;
     ValueType valueType : 3;
     Mode mode : 2;
+#if FLOVA_ACTUATOR_CONTROL
+    ActuatorControl* actuatorControl = nullptr;
+#endif
     OfflinePolicy offline : 2;
     PersistencePolicy persistence : 2;
     Origin origin : 3;
@@ -817,6 +1109,249 @@ class Device {
         persistenceStored(false), writeKind(WriteHandlerKind::None),
         safetyPolicy(0) {}
   };
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+  static constexpr uint32_t kGuardrailMaximumMs = 3600000;
+  static bool isGuardrailPolicy(config::SafetyPolicy policy) {
+    return policy == config::SafetyPolicy::GuardrailStop || policy == config::SafetyPolicy::GuardrailFinish;
+  }
+
+  static bool decodeOfflineGuardrail(const config::Safety& record, OfflineGuardrail& policy) {
+    if (!flovaValidDatastreamId(record.datastreamId) || !record.hasSafeValue ||
+        !configurationValue(record.safeValue, policy.safeValue) || !validValue(policy.safeValue)) return false;
+    policy.maximumRunMs = record.hasTimeoutMs ? record.timeoutMs : 0;
+    policy.finishOnDisconnect = record.policy == config::SafetyPolicy::GuardrailFinish;
+    if (policy.maximumRunMs > kGuardrailMaximumMs || (policy.finishOnDisconnect && !policy.maximumRunMs)) return false;
+    if (!record.guardId) return !record.hasMinimum && !record.hasMaximum && !record.guardMaxAgeMs;
+    if (!flovaValidDatastreamId(record.guardId) || record.guardId == record.datastreamId ||
+        !record.guardMaxAgeMs || record.guardMaxAgeMs > kGuardrailMaximumMs || !record.hasMinimum ||
+        !configurationValue(record.minimum, policy.inputMinimum) || !validValue(policy.inputMinimum)) return false;
+    policy.inputId = record.guardId;
+    policy.maximumInputAgeMs = record.guardMaxAgeMs;
+    if (!record.hasMaximum) return true;
+    policy.comparison = GuardrailComparison::InclusiveRange;
+    return configurationValue(record.maximum, policy.inputMaximum) && validValue(policy.inputMaximum) &&
+           withinRange(policy.inputMinimum, policy.inputMinimum, policy.inputMaximum);
+  }
+
+  static bool configurationValue(const config::Value& input, Value& value) {
+    switch (input.kind) {
+      case config::ValueKind::Boolean: value = Value::from(input.data.boolean); return true;
+      case config::ValueKind::Int64: value = Value::from(input.data.integer); return true;
+      case config::ValueKind::Float32: value = Value::from(input.data.float32); return true;
+      case config::ValueKind::Float64: value = Value::from(input.data.float64); return true;
+      case config::ValueKind::Text:
+        if (strnlen(input.data.text, sizeof(input.data.text)) >= kMaxText) return false;
+        value = Value::from(input.data.text);
+        return true;
+    }
+    return false;
+  }
+  union GuardrailValue {
+    int64_t integer;
+    double number;
+    float floating;
+    bool boolean;
+    size_t textOffset;
+  };
+
+  static size_t configurationTextBytes(const config::Value& value) {
+    return value.kind == config::ValueKind::Text
+        ? strnlen(value.data.text, sizeof(value.data.text)) + 1 : 0;
+  }
+
+  static size_t guardrailTextSize(const Value& value) {
+    return value.type == ValueType::Text ? strlen(value.text) + 1 : 0;
+  }
+
+  GuardrailValue storeGuardrailValue(const Value& value) {
+    GuardrailValue stored{};
+    switch (value.type) {
+      case ValueType::Boolean: stored.boolean = value.scalar.boolean; break;
+      case ValueType::Int64: stored.integer = value.scalar.integer; break;
+      case ValueType::Float: stored.floating = value.scalar.floating; break;
+      case ValueType::Double: stored.number = value.scalar.number; break;
+      case ValueType::Text: {
+        const size_t length = guardrailTextSize(value);
+        stored.textOffset = guardrailTextUsed_;
+        memcpy(guardrailText_ + guardrailTextUsed_, value.text, length);
+        guardrailTextUsed_ += length;
+        break;
+      }
+    }
+    return stored;
+  }
+
+  Value guardrailValue(ValueType type, const GuardrailValue& stored) const {
+    switch (type) {
+      case ValueType::Boolean: return Value::from(stored.boolean);
+      case ValueType::Int64: return Value::from(stored.integer);
+      case ValueType::Float: return Value::from(stored.floating);
+      case ValueType::Double: return Value::from(stored.number);
+      case ValueType::Text: return Value::from(guardrailText_ + stored.textOffset);
+    }
+    return Value();
+  }
+
+  bool matchesGuardrailValue(const Value& value, ValueType type,
+                             const GuardrailValue& stored) const {
+    if (value.type != type) return false;
+    switch (type) {
+      case ValueType::Boolean: return value.scalar.boolean == stored.boolean;
+      case ValueType::Int64: return value.scalar.integer == stored.integer;
+      case ValueType::Float: return value.scalar.floating == stored.floating;
+      case ValueType::Double: return value.scalar.number == stored.number;
+      case ValueType::Text: return strncmp(value.text, guardrailText_ + stored.textOffset, kMaxText) == 0;
+    }
+    return false;
+  }
+
+  struct Guardrail {
+    State* output = nullptr;
+    State* input = nullptr;
+    GuardrailValue safeValue{};
+    GuardrailValue inputMinimum{};
+    GuardrailValue inputMaximum{};
+    uint32_t maximumRunMs = 0;
+    uint32_t maximumInputAgeMs = 0;
+    GuardrailComparison comparison = GuardrailComparison::Equal;
+    bool finishOnDisconnect = false;
+    GuardrailStatus status = GuardrailStatus::Disarmed;
+    GuardrailStatus stoppedStatus = GuardrailStatus::Disarmed;
+    uint64_t latch = 0;
+    uint32_t epoch = 0;
+    uint32_t startedAt = 0;
+    uint32_t lastAttemptAt = 0;
+    uint32_t retryMs = 0;
+    uint32_t reportedEpoch = 0;
+    uint32_t reportedAt = 0;
+    uint64_t reportedLatch = 0;
+    GuardrailStatus reportedStatus = GuardrailStatus::Unsupported;
+    bool safeApplied = false;
+    bool writing = false;
+    bool writingSafe = false;
+  };
+
+  Guardrail* guardrail(const State& output) {
+    for (auto& entry : guardrails_)
+      if (entry.output == &output) return &entry;
+    return nullptr;
+  }
+
+  // Only the authenticated Link command path can rearm.
+  bool rearmOfflineGuardrail(State& output, uint64_t latch, uint64_t epoch) {
+    if (!ready() || link_.applicationPaused() || !epoch || epoch != link_.connectionEpoch())
+      return false;
+    serviceOfflineGuardrails();
+    Guardrail* entry = guardrail(output);
+    if (!entry || !latch || latch != entry->latch || !entry->safeApplied ||
+        (entry->status != GuardrailStatus::Disarmed && entry->status != GuardrailStatus::Tripped) ||
+        !guardrailInputReady(*entry)) return false;
+    entry->epoch = static_cast<uint32_t>(epoch);
+    entry->status = GuardrailStatus::Armed;
+    return true;
+  }
+
+  void publishGuardrailStatuses() {
+    const uint32_t epoch = link_.connectionEpoch();
+    if (!epoch) return;
+    const uint32_t now = static_cast<uint32_t>(clock_.milliseconds());
+    for (auto& entry : guardrails_) {
+      if (!entry.output || (entry.reportedEpoch == epoch && entry.reportedLatch == entry.latch &&
+          entry.reportedStatus == entry.status && now - entry.reportedAt < 5000)) continue;
+      if (!link_.sendGuardrailStatus(entry.output->id, entry.status, entry.latch, originateMessageId())) return;
+      entry.reportedEpoch = epoch;
+      entry.reportedAt = now;
+      entry.reportedLatch = entry.latch;
+      entry.reportedStatus = entry.status;
+    }
+  }
+
+  static bool hasResultWriter(const State& output) {
+    return output.writeKind == WriteHandlerKind::ConfigurationValueResult ||
+           (output.writeKind >= WriteHandlerKind::ValueResult &&
+            output.writeKind <= WriteHandlerKind::TextResultContext);
+  }
+
+  static bool withinRange(const Value& value, const Value& low, const Value& high) {
+    if (value.type != low.type || value.type != high.type) return false;
+    switch (value.type) {
+      case ValueType::Int64: return low.scalar.integer <= value.scalar.integer && value.scalar.integer <= high.scalar.integer;
+      case ValueType::Float: return low.scalar.floating <= value.scalar.floating && value.scalar.floating <= high.scalar.floating;
+      case ValueType::Double: return low.scalar.number <= value.scalar.number && value.scalar.number <= high.scalar.number;
+      default: return false;
+    }
+  }
+
+  static bool validGuardrailComparison(const State& input, const OfflineGuardrail& policy) {
+    if (input.valueType != policy.inputMinimum.type || !validValue(policy.inputMinimum))
+      return false;
+    return policy.comparison == GuardrailComparison::Equal ||
+           (policy.comparison == GuardrailComparison::InclusiveRange && validValue(policy.inputMaximum) &&
+            withinRange(policy.inputMinimum, policy.inputMinimum, policy.inputMaximum));
+  }
+
+  bool guardrailInputReady(const Guardrail& entry) {
+    const State* input = entry.input;
+    if (!input) return true;
+    if (!input->hasValue || input->quality != Quality::Good ||
+        (input->origin != Origin::SensorRead && input->origin != Origin::PhysicalInput) ||
+        clock_.milliseconds() - input->updatedAt >= entry.maximumInputAgeMs) return false;
+    const Value value = readValue(*input);
+    if (entry.comparison == GuardrailComparison::Equal)
+      return matchesGuardrailValue(value, input->valueType, entry.inputMinimum);
+    return withinRange(value, guardrailValue(input->valueType, entry.inputMinimum),
+                       guardrailValue(input->valueType, entry.inputMaximum));
+  }
+
+  void latchGuardrail(Guardrail& entry, GuardrailStatus stoppedStatus) {
+    entry.latch = (static_cast<uint64_t>(link_.messageNonce()) << 32) | ++guardrailSequence_;
+    entry.epoch = 0;
+    entry.status = entry.stoppedStatus = stoppedStatus;
+    entry.retryMs = 0;
+    // A successfully applied safe value stays authoritative when disarming
+    // an idle output. Never trust a cached value on initial installation.
+  }
+
+  void evaluateGuardrail(Guardrail& entry, uint32_t now) {
+    const bool connected = ready() && !link_.applicationPaused() &&
+                           entry.epoch && entry.epoch == link_.connectionEpoch();
+    if (entry.status == GuardrailStatus::Armed && !connected) {
+      latchGuardrail(entry, GuardrailStatus::Tripped);
+      return;
+    }
+    if (entry.status != GuardrailStatus::Running && entry.status != GuardrailStatus::Finishing)
+      return;
+    if ((entry.maximumRunMs && now - entry.startedAt >= entry.maximumRunMs) ||
+        !guardrailInputReady(entry) || link_.applicationPaused() ||
+        (!connected && !entry.finishOnDisconnect)) {
+      latchGuardrail(entry, GuardrailStatus::Tripped);
+    } else if (!connected) {
+      entry.status = GuardrailStatus::Finishing;
+    }
+  }
+
+  WriteResult applyGuardrailSafe(Guardrail& entry, uint32_t now) {
+    entry.writing = entry.writingSafe = true;
+    const WriteResult result = hasResultWriter(*entry.output)
+        ? applyToWriter(*entry.output, guardrailValue(entry.output->valueType, entry.safeValue), Origin::Internal)
+        : WriteResult::failure("guardrail_writer_missing");
+    entry.writing = entry.writingSafe = false;
+    if (result.accepted()) {
+      entry.safeApplied = true;
+      entry.retryMs = 0;
+      if (entry.status == GuardrailStatus::Running) entry.status = GuardrailStatus::Armed;
+      if (entry.status == GuardrailStatus::Finishing) latchGuardrail(entry, GuardrailStatus::Tripped);
+      if (entry.status == GuardrailStatus::SafeWriteFailed) entry.status = entry.stoppedStatus;
+    } else {
+      if (entry.status != GuardrailStatus::SafeWriteFailed) latchGuardrail(entry, GuardrailStatus::Tripped);
+      entry.safeApplied = false;
+      entry.status = GuardrailStatus::SafeWriteFailed;
+      entry.lastAttemptAt = now;
+      entry.retryMs = entry.retryMs ? (entry.retryMs < 4000 ? entry.retryMs * 2 : 4000) : 250;
+    }
+    return result;
+  }
+#endif
   static bool readScheduling(void* context, size_t index, uint16_t& id,
                              Scheduling& mode) {
     Device& device = *static_cast<Device*>(context);
@@ -907,6 +1442,23 @@ class Device {
     }
     return true;
   }
+#if FLOVA_ACTUATOR_CONTROL
+  bool cloudOwns(const ActuatorControl& control) const {
+    return control.authorizedEpoch_ && ready() && !link_.applicationPaused() &&
+           control.authorizedEpoch_ == link_.connectionEpoch();
+  }
+
+  void serviceActuators() {
+    if (!started_) return;
+    for (size_t i = 0; i < count_; ++i) {
+      ActuatorControl* control = states_[i].actuatorControl;
+      if (!control || cloudOwns(*control)) continue;
+      control->authorizedEpoch_ = 0;
+      if (!control->localEntered_ && !link_.applicationPaused())
+        control->localEntered_ = control->enterLocal_(control->context_);
+    }
+  }
+#endif
   void receive(const Message& message) {
     if (message.kind == MessageKind::TimeResponse) return acceptTime(message);
     if (message.kind == MessageKind::Acknowledgement) {
@@ -921,7 +1473,8 @@ class Device {
       settleDelivery(message.messageId, true);
       return;
     }
-    if (message.kind != MessageKind::WriteRequest) return;
+    if (message.kind != MessageKind::WriteRequest &&
+        message.kind != MessageKind::GuardrailRearm) return;
     const int prior = resultForCommand(message.commandId);
     if (prior >= 0) {
       ++diagnostics_.duplicateCommands;
@@ -933,6 +1486,18 @@ class Device {
     if (prior == -2 || !reserveCommand(message)) {
       replyStorageUnavailable(message);
       return;
+    }
+    if (message.kind == MessageKind::GuardrailRearm) {
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+      State* output = stateForId(message.datastreamId);
+      const bool armed = output && message.expiresAtUtcMs && clock_.utcValid() &&
+          clock_.utcMilliseconds() < message.expiresAtUtcMs && !message.revision &&
+          rearmOfflineGuardrail(*output, message.monotonic, message.timestamp);
+      return acknowledge(message, armed ? WriteResult::accept()
+                                        : WriteResult::reject("guardrail_rearm_rejected"), output);
+#else
+      return acknowledge(message, WriteResult::reject("guardrail_unsupported"), nullptr);
+#endif
     }
     if (message.datastreamId == FLOVA_FACTORY_RESET_DATASTREAM_ID) {
       if (message.expiresAtUtcMs &&
@@ -948,8 +1513,27 @@ class Device {
     }
     State* current = stateForId(message.datastreamId);
     if (!current) return acknowledge(message, WriteResult::reject("unknown_datastream"), 0);
+#if FLOVA_ACTUATOR_CONTROL
+    if (current->actuatorControl) {
+      if (!cloudOwns(*current->actuatorControl))
+        return acknowledge(message, WriteResult::reject("actuator_local_control"), current);
+      if (!message.expiresAtUtcMs)
+        return acknowledge(message, WriteResult::reject("actuator_deadline_required"), current);
+    }
+#endif
     if (message.expiresAtUtcMs && (!clock_.utcValid() || clock_.utcMilliseconds() >= message.expiresAtUtcMs)) return acknowledge(message, WriteResult::reject(clock_.utcValid() ? "command_expired" : "utc_time_required"), current);
     bool stale = message.revision && message.revision <= current->lastCloudRevision;
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    if (const Guardrail* entry = guardrail(*current)) {
+      const bool safeWrite = matchesGuardrailValue(message.value, current->valueType, entry->safeValue);
+      if (safeWrite) stale = false;
+      if (!safeWrite && !message.expiresAtUtcMs)
+        return acknowledge(message, WriteResult::reject("guardrail_deadline_required"), current);
+    }
+#endif
+    if (current->safetyPolicy >= 5 && message.value.type == ValueType::Boolean &&
+        message.value.scalar.boolean && !message.expiresAtUtcMs)
+      return acknowledge(message, WriteResult::reject("actuator_deadline_required"), current);
     WriteResult result = stale
         ? current->hasValue ? WriteResult::noChange() : WriteResult::reject("state_unavailable")
         : apply(*current, message.value, message.origin);
@@ -1048,11 +1632,43 @@ class Device {
   }
 
   WriteResult apply(State& state, const Value& value, Origin origin) {
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    Guardrail* entry = guardrail(state);
+    if (!entry && link_.applicationPaused()) return WriteResult::failure("maintenance");
+#else
     if (link_.applicationPaused()) return WriteResult::failure("maintenance");
+#endif
     if (state.valueType != value.type) return WriteResult::reject("type_mismatch");
     if (!validValue(value)) return WriteResult::reject("invalid_value");
     if ((state.mode == Mode::Sample || state.mode == Mode::Event)) return WriteResult::reject("not_writable");
     if (!safe(state, value)) return WriteResult::reject(state.safetyPolicy == 1 || state.safetyPolicy == 3 ? "safety_minimum" : "safety_maximum");
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    if (entry) {
+      if (entry->writing) return WriteResult::reject("guardrail_write_in_progress");
+      const uint32_t now = static_cast<uint32_t>(clock_.milliseconds());
+      evaluateGuardrail(*entry, now);
+      if (matchesGuardrailValue(value, state.valueType, entry->safeValue)) return applyGuardrailSafe(*entry, now);
+      if (entry->status != GuardrailStatus::Armed && entry->status != GuardrailStatus::Running)
+        return WriteResult::reject("guardrail_disarmed");
+      if (!guardrailInputReady(*entry)) return WriteResult::reject("guardrail_input_unavailable");
+      if (!hasResultWriter(state)) return WriteResult::failure("guardrail_writer_missing");
+      entry->writing = true;
+      const WriteResult result = applyToWriter(state, value, origin);
+      entry->writing = false;
+      if (result.status == WriteStatus::Rejected) return result;
+
+      entry->safeApplied = false;
+      if (!result.accepted()) {
+        // The hardware may have moved despite the failed write.
+        latchGuardrail(*entry, GuardrailStatus::Tripped);
+        applyGuardrailSafe(*entry, now);
+      } else if (entry->status == GuardrailStatus::Armed) {
+        entry->startedAt = now;
+        entry->status = GuardrailStatus::Running;
+      }
+      return result;
+    }
+#endif
     if (!link_.connected() && state.offline == OfflinePolicy::Reject)
       return WriteResult::reject("offline_delivery_required");
     if (state.hasValue && readValue(state) == value) {
@@ -1064,6 +1680,10 @@ class Device {
       }
       return result;
     }
+    return applyToWriter(state, value, origin);
+  }
+
+  WriteResult applyToWriter(State& state, const Value& value, Origin origin) {
     WriteResult result = invoke(state, value);
     // A rejected hardware write is authoritative: do not update cache,
     // persistence, revision, or outbound state until the handler accepts it.
@@ -1072,9 +1692,22 @@ class Device {
   }
 
   WriteResult report(State& state, const Value& value, Origin origin) {
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    if (guardrail(state)) return WriteResult::reject("guardrail_output_requires_write");
+#endif
     if (link_.applicationPaused()) return WriteResult::failure("maintenance");
     if (state.valueType != value.type) return WriteResult::reject("type_mismatch");
-    if (!validValue(value)) return WriteResult::reject("invalid_value");
+    if (!validValue(value)) {
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+      if (origin == Origin::SensorRead || origin == Origin::PhysicalInput)
+        for (const auto& entry : guardrails_)
+          if (entry.input == &state) {
+            state.quality = Quality::Invalid;
+            break;
+          }
+#endif
+      return WriteResult::reject("invalid_value");
+    }
     if (!link_.connected() && state.offline == OfflinePolicy::Reject)
       return WriteResult::reject("offline_delivery_required");
     update(state, value, origin);
@@ -1083,6 +1716,7 @@ class Device {
 
   WriteResult invoke(State& s, const Value& v) {
     switch (s.writeKind) {
+      case WriteHandlerKind::ConfigurationValueResult:
       case WriteHandlerKind::ValueResult: return s.writeHandler.valueResult(s.writeContext, v);
       case WriteHandlerKind::BoolResult: return s.writeHandler.boolResult(v.scalar.boolean);
       case WriteHandlerKind::Int64Result: return s.writeHandler.int64Result(v.scalar.integer);
@@ -1120,7 +1754,7 @@ class Device {
   }
 
   bool safe(const State& state, const Value& value) {
-    if (!state.safetyPolicy || state.safetyPolicy == 4 || value.type == ValueType::Text) return true;
+    if (!state.safetyPolicy || state.safetyPolicy >= 4 || value.type == ValueType::Text) return true;
     if (value.type == ValueType::Boolean) return false;
     const Descriptor* descriptor = descriptorFor(static_cast<size_t>(&state - states_));
     if (!descriptor) return false;
@@ -1332,7 +1966,7 @@ class Device {
     Value::copy(reply.correlationId, request.correlationId);
     Value::copy(reply.reason, result.reason);
     reply.revision = request.revision;
-    reply.resultStatus = accepted ? 0 : 3;
+    reply.resultStatus = accepted ? 0 : result.status == WriteStatus::Rejected ? 4 : 3;
     if (result.status == WriteStatus::NoChange) reply.resultStatus = 2;
     if (state && state->hasValue) reply.value = readValue(*state);
   }
@@ -1629,6 +2263,12 @@ class Device {
   }
 
   Link& link_; Storage& storage_; Clock& clock_; Logger& logger_; State states_[kMaxDatastreams]; size_t count_;
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+  Guardrail guardrails_[FLOVA_OFFLINE_GUARDRAIL_CAPACITY];
+  char guardrailText_[2 * kMaxText] = {};
+  size_t guardrailTextUsed_ = 0;
+  uint32_t guardrailSequence_ = 0;
+#endif
   size_t persistenceCursor_ = 0;
   uint64_t restoreRetryAt_ = 0;
   uint64_t historyHeadMessageId_ = 0;
@@ -1708,6 +2348,9 @@ template <typename T> class Datastream {
     Device::State* current = state();
     if (!current || static_cast<uint8_t>(value) > static_cast<uint8_t>(Mode::Event))
       return false;
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    if (device_->guardrail(*current) && (value == Mode::Sample || value == Mode::Event)) return false;
+#endif
     current->mode = value;
     return true;
   }
@@ -1718,10 +2361,43 @@ template <typename T> class Datastream {
     else state()->scheduling = value;
     return *this;
   }
+#if FLOVA_ACTUATOR_CONTROL
+  bool setActuatorControl(ActuatorControl& control) {
+    Device::State* current = state();
+    if (!current || device_->started_ || !control.enterLocal_) return false;
+    for (size_t i = 0; i < device_->count_; ++i)
+      if (device_->states_[i].actuatorControl == &control) return false;
+    current->actuatorControl = &control;
+    return true;
+  }
+
+  // Call from fresh trusted application authorization after the link is ready.
+  bool authorizeCloudControl() {
+    Device::State* current = state();
+    if (!current || !current->actuatorControl || !device_->ready() ||
+        device_->link_.applicationPaused() || !device_->link_.connectionEpoch())
+      return false;
+    ActuatorControl& control = *current->actuatorControl;
+    if (device_->cloudOwns(control)) return true;
+    if (!control.localEntered_ || control.authorizedEpoch_) return false;
+    control.authorizedEpoch_ = device_->link_.connectionEpoch();
+    control.localEntered_ = false;
+    return true;
+  }
+
+  bool cloudControlsActuator() const {
+    const Device::State* current = state();
+    return current && current->actuatorControl &&
+           device_->cloudOwns(*current->actuatorControl);
+  }
+#endif
   bool tryOffline(OfflinePolicy value) {
     Device::State* current = state();
     if (!current || static_cast<uint8_t>(value) > static_cast<uint8_t>(OfflinePolicy::Reject))
       return false;
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    if (device_->guardrail(*current) && value != OfflinePolicy::KeepLatest) return false;
+#endif
     current->offline = value;
     return true;
   }
@@ -1742,6 +2418,12 @@ template <typename T> class Datastream {
         static_cast<uint8_t>(value) > static_cast<uint8_t>(PersistencePolicy::Deferred) ||
         (value == PersistencePolicy::Deferred && (!intervalMs || intervalMs > 0x7fffffffUL)))
       return false;
+#if FLOVA_ACTUATOR_CONTROL
+    if (current->actuatorControl && value != PersistencePolicy::None) return false;
+#endif
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    if (device_->guardrail(*current) && value != PersistencePolicy::None) return false;
+#endif
     if (current->persistence != value || current->persistenceIntervalMs != intervalMs) {
       current->persistence = value;
       current->persistenceIntervalMs = intervalMs;

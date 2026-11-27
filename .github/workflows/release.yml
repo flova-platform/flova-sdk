@@ -68,8 +68,10 @@ jobs:
           scripts/check_flova_public_surface.sh
           python3 scripts/check_public_examples.py
           pio test -e test-esp32 -e test-esp8266 -e test-config-rollback-esp8266 --without-uploading --without-testing
-          python3 scripts/check_flova_memory.py universal-esp32 universal-esp8266
-          scripts/check_esp8266_stack_usage.py
+          pio run -e universal-esp32 -e universal-esp32-guardrails -e universal-esp8266 -e universal-esp8266-guardrails
+          python3 scripts/check_flova_memory.py universal-esp32 universal-esp32-guardrails universal-esp8266 universal-esp8266-guardrails
+          python3 scripts/check_flova_memory.py --stock-dram universal-esp8266 universal-esp8266-guardrails
+          scripts/check_esp8266_stack_usage.py universal-esp8266 universal-esp8266-guardrails
           git diff --check
 
       - name: Validate exported SDK package

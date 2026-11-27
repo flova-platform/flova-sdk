@@ -305,11 +305,27 @@ class ArduinoDeviceLink final {
           !setText(result.command_result_error_result_error_message, message.errorCode, sizeof(message.errorCode)) ||
           !fillCorrelation(result.command_result_error_result_error_correlation_id, message.correlationId)) return false;
       result.command_result_error_result_error_compact_id = message.datastreamId;
-      result.command_result_error_result_error_status = 3;
+      result.command_result_error_result_error_status =
+          message.status == FlovaLinkResultStatus::Rejected ? 4 : 3;
       result.command_result_error_result_error_version = message.desiredVersion;
     }
     return sendEncoded(0x12, message.messageId, value, cbor_encode_command_result);
   }
+
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+  void setDurableGuardrails(bool enabled) { durableGuardrails_ = enabled; }
+
+  bool publishGuardrailStatus(DatastreamId id, uint8_t status,
+                              uint64_t latch, uint64_t messageId) {
+    if (!connected() || !configurationGeneration_) return false;
+    struct guardrail_report report = {};
+    report.guardrail_report_guardrail_generation = configurationGeneration_;
+    report.guardrail_report_guardrail_stream = id;
+    report.guardrail_report_guardrail_status = status;
+    report.guardrail_report_guardrail_latch = latch;
+    return sendEncoded(0x1b, messageId, report, cbor_encode_guardrail_report);
+  }
+#endif
 
   bool lifecycleLogsSupported() const { return lifecycleSupported_; }
 
@@ -846,6 +862,10 @@ class ArduinoDeviceLink final {
     caps.capabilities_history_bytes = 0;
     caps.capabilities_pin_references_present = true;
     caps.capabilities_pin_references.capabilities_pin_references = hardwareCapabilities_.automaticMapping;
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    caps.capabilities_offline_guardrail_slots_present = durableGuardrails_;
+    caps.capabilities_offline_guardrail_slots.capabilities_offline_guardrail_slots = FLOVA_OFFLINE_GUARDRAIL_CAPACITY;
+#endif
   }
 
   static bool readPin(uint16_t& pin, char (&reference)[65], const pin_reference_r& input) {
@@ -1049,6 +1069,12 @@ class ArduinoDeviceLink final {
     workspace_->inbound_.body.command.datastreamId = static_cast<DatastreamId>(value.command_compact_id);
     workspace_->inbound_.body.command.desiredVersion = static_cast<uint32_t>(value.command_desired_version);
     workspace_->inbound_.body.command.expiresAtUtcMs = value.command_expires_at_utc_ms;
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+    if (value.command_guardrail_latch_present && !value.command_guardrail_latch) return disconnect();
+    workspace_->inbound_.body.command.guardrailLatch = value.command_guardrail_latch;
+#else
+    if (value.command_guardrail_latch_present) return disconnect();
+#endif
     copyId(workspace_->inbound_.body.command.commandId, value.command_id);
     if (!readCorrelation(workspace_->inbound_.body.command.correlationId, value.command_correlation_id) ||
         !readTypedValue(workspace_->inbound_.body.command.value, value.command_typed_value_fields_m)) return disconnect();
@@ -1340,7 +1366,7 @@ class ArduinoDeviceLink final {
 
       case config_record_body_r::config_record_body_safety_record_m_c: {
         const safety_record& source = input.config_record_body_safety_record_m;
-        if (source.safety_record_safety_compact_id == 0 || source.safety_record_safety_compact_id > UINT16_MAX || source.safety_record_safety_policy > 4) return false;
+        if (source.safety_record_safety_compact_id == 0 || source.safety_record_safety_compact_id > UINT16_MAX || source.safety_record_safety_policy > 8) return false;
         out.kind = flova::config::UnitKind::Safety;
         out.data.safety.datastreamId = static_cast<DatastreamId>(source.safety_record_safety_compact_id);
         out.data.safety.policy = static_cast<flova::config::SafetyPolicy>(source.safety_record_safety_policy);
@@ -1352,8 +1378,28 @@ class ArduinoDeviceLink final {
           if (!readConfigurationValue(out.data.safety.maximum, source.safety_record_safety_maximum.safety_record_safety_maximum)) return false;
           out.data.safety.hasMaximum = true;
         }
+        if (source.safety_record_safety_guard_id_present) {
+          const uint64_t guard = source.safety_record_safety_guard_id.safety_record_safety_guard_id;
+          if (guard == 0 || guard >= UINT16_MAX) return false;
+          out.data.safety.guardId = static_cast<DatastreamId>(guard);
+        } else {
+          out.data.safety.guardId = FLOVA_INVALID_DATASTREAM_ID;
+        }
         out.data.safety.hasTimeoutMs = source.safety_record_safety_timeout_ms_present;
-        out.data.safety.timeoutMs = static_cast<uint32_t>(source.safety_record_safety_timeout_ms.safety_record_safety_timeout_ms);
+        if (out.data.safety.hasTimeoutMs) {
+          const uint64_t timeout = source.safety_record_safety_timeout_ms.safety_record_safety_timeout_ms;
+          if (timeout > UINT32_MAX) return false;
+          out.data.safety.timeoutMs = static_cast<uint32_t>(timeout);
+        }
+        if (source.safety_record_safety_safe_value_present) {
+          if (!readConfigurationValue(out.data.safety.safeValue, source.safety_record_safety_safe_value.safety_record_safety_safe_value)) return false;
+          out.data.safety.hasSafeValue = true;
+        }
+        if (source.safety_record_safety_guard_max_age_ms_present) {
+          const uint64_t age = source.safety_record_safety_guard_max_age_ms.safety_record_safety_guard_max_age_ms;
+          if (!age || age > UINT32_MAX) return false;
+          out.data.safety.guardMaxAgeMs = static_cast<uint32_t>(age);
+        }
         return true;
       }
       case config_record_body_r::config_record_body_parameter_record_m_c: {
@@ -1590,6 +1636,9 @@ class ArduinoDeviceLink final {
   uint64_t bindingRequestId_ = 0;
   DatastreamId bindingIds_[kMaximumDatastreamBindings] = {};
   uint32_t configurationGeneration_ = 0;
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+  bool durableGuardrails_ = false;
+#endif
   bool lifecycleSupported_ = false;
   bool lifecycleProbePending_ = false;
   flova::HardwareCapabilities hardwareCapabilities_;

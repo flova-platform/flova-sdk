@@ -11,6 +11,7 @@ set_property(TARGET flova-linux-transport-test APPEND_STRING PROPERTY LINK_FLAGS
   " -Wl,--wrap=getaddrinfo,--wrap=connect,--wrap=SSL_connect,--wrap=SSL_shutdown,--wrap=SSL_get_error,--wrap=SSL_read")
 add_executable(flova-core-test test_flova_core.cpp)
 target_link_libraries(flova-core-test PRIVATE flova-core)
+target_compile_definitions(flova-core-test PRIVATE FLOVA_ACTUATOR_CONTROL=1 FLOVA_OFFLINE_GUARDRAIL_CAPACITY=4)
 add_executable(flova-timer-test test_flova_timer.cpp)
 target_link_libraries(flova-timer-test PRIVATE flova-core)
 add_test(NAME flova-timer-test COMMAND flova-timer-test)
@@ -37,6 +38,7 @@ add_executable(flova-lifecycle-test test_flova_lifecycle.cpp)
 target_include_directories(flova-lifecycle-test PRIVATE
   arduino-shim ${PROJECT_SOURCE_DIR}/packages/flova-arduino/include)
 target_link_libraries(flova-lifecycle-test PRIVATE flova-core)
+target_compile_definitions(flova-lifecycle-test PRIVATE FLOVA_OFFLINE_GUARDRAIL_CAPACITY=2)
 add_executable(flova-wifi-recovery-test test_flova_wifi_recovery.cpp)
 target_include_directories(flova-wifi-recovery-test PRIVATE ${PROJECT_SOURCE_DIR}/packages/flova-arduino/include)
 target_link_libraries(flova-wifi-recovery-test PRIVATE flova-core)
@@ -66,6 +68,7 @@ target_include_directories(flova-hardware-test PRIVATE
   arduino-shim ${PROJECT_SOURCE_DIR}/packages/flova-arduino/include
   ${PROJECT_SOURCE_DIR}/packages/flova-esp32/include ${PROJECT_SOURCE_DIR}/packages/flova-esp8266/include)
 target_link_libraries(flova-hardware-test PRIVATE flova-core)
+target_compile_definitions(flova-hardware-test PRIVATE FLOVA_OFFLINE_GUARDRAIL_CAPACITY=2)
 add_test(NAME flova-hardware-test COMMAND flova-hardware-test)
 add_test(NAME flova-core-test COMMAND flova-core-test)
 add_test(NAME flova-configuration-installer-test COMMAND flova-configuration-installer-test)

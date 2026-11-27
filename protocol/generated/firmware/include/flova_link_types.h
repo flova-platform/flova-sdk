@@ -125,6 +125,13 @@ struct lifecycle_report {
 	uint64_t lifecycle_report_log_dropped;
 };
 
+struct guardrail_report {
+	uint64_t guardrail_report_guardrail_generation;
+	uint64_t guardrail_report_guardrail_stream;
+	uint64_t guardrail_report_guardrail_status;
+	uint64_t guardrail_report_guardrail_latch;
+};
+
 struct typed_value_fields_r {
 	union {
 		struct {
@@ -171,6 +178,8 @@ struct command {
 	uint64_t command_desired_version;
 	uint64_t command_expires_at_utc_ms;
 	struct correlation_id_r command_correlation_id;
+	uint64_t command_guardrail_latch;
+	bool command_guardrail_latch_present;
 };
 
 struct config_desired {
@@ -189,6 +198,10 @@ struct capabilities_pin_references {
 	bool capabilities_pin_references;
 };
 
+struct capabilities_offline_guardrail_slots {
+	uint64_t capabilities_offline_guardrail_slots;
+};
+
 struct capabilities {
 	uint64_t capabilities_datastream_slots;
 	uint64_t capabilities_input_slots;
@@ -199,6 +212,8 @@ struct capabilities {
 	uint64_t capabilities_history_bytes;
 	struct capabilities_pin_references capabilities_pin_references;
 	bool capabilities_pin_references_present;
+	struct capabilities_offline_guardrail_slots capabilities_offline_guardrail_slots;
+	bool capabilities_offline_guardrail_slots_present;
 };
 
 struct bootstrap_auth {
@@ -517,6 +532,18 @@ struct safety_record_safety_timeout_ms {
 	uint64_t safety_record_safety_timeout_ms;
 };
 
+struct safety_record_safety_guard_id {
+	uint64_t safety_record_safety_guard_id;
+};
+
+struct safety_record_safety_safe_value {
+	struct typed_value_fields_r safety_record_safety_safe_value;
+};
+
+struct safety_record_safety_guard_max_age_ms {
+	uint64_t safety_record_safety_guard_max_age_ms;
+};
+
 struct safety_record {
 	uint64_t safety_record_safety_compact_id;
 	uint64_t safety_record_safety_policy;
@@ -526,6 +553,12 @@ struct safety_record {
 	bool safety_record_safety_maximum_present;
 	struct safety_record_safety_timeout_ms safety_record_safety_timeout_ms;
 	bool safety_record_safety_timeout_ms_present;
+	struct safety_record_safety_guard_id safety_record_safety_guard_id;
+	bool safety_record_safety_guard_id_present;
+	struct safety_record_safety_safe_value safety_record_safety_safe_value;
+	bool safety_record_safety_safe_value_present;
+	struct safety_record_safety_guard_max_age_ms safety_record_safety_guard_max_age_ms;
+	bool safety_record_safety_guard_max_age_ms_present;
 };
 
 struct parameter_record_parameter_value {

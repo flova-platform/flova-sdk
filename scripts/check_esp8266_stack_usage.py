@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fail when critical constrained-target stack frames regress."""
 
+import argparse
 import re
 from pathlib import Path
 
@@ -45,11 +46,23 @@ OPTIONAL_LIMITS = {
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "profiles", nargs="*", default=["universal-esp8266"],
+        choices=["universal-esp8266", "universal-esp8266-guardrails"],
+    )
+    args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     failed = False
-    for target, directory, limits in (
-        ("ESP8266", root / ".pio" / "build" / "universal-esp8266", ESP8266_LIMITS),
-    ):
+    for target in args.profiles:
+        directory = root / ".pio" / "build" / target
+        limits = ESP8266_LIMITS
+        if target == "universal-esp8266-guardrails":
+            limits += (
+                ("stepGuardrailReferences", re.compile(r"stepGuardrailReferences\("), 256),
+                ("validateOfflineGuardrailStream", re.compile(r"validateOfflineGuardrailStream\("), 256),
+                ("applyGuardrailSafe", re.compile(r"applyGuardrailSafe\("), 128),
+            )
         usages = {name: -1 for name, _, _ in limits}
         for path in directory.rglob("*.su"):
             for line in path.read_text(errors="replace").splitlines():

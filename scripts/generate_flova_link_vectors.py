@@ -102,6 +102,10 @@ VECTORS = [
     (0x19, "lifecycle_report_bounds", [0xFFFFFFFFFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 10, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF]),
     (0x1A, "log_event", [123456789, 2, "temperature_high", "Above 80 °C"]),
     (0x1A, "log_event_bounds", [0xFFFFFFFFFFFFFFFF, 0xFFFFFFFF, "a" * 32, "é" * 48]),
+    (0x1B, "guardrail_report", [7, 1, 5, 0xFEDCBA9876543210]),
+    (0x10, "heartbeat_guardrails", [7, 123_456, 1, "1.0.0", "universal_esp32", b"", b"", {0: 1_310_720, 1: 0, 2: "legacy", 3: False}, {**CAPS, 8: True, 9: 2}]),
+    (0x20, "guardrail_rearm", [7, UUID1, 1, 0, False, 0, 1_800_000_030_000, UUID2, 0xFEDCBA9876543210]),
+    (0x29, "guardrail_config_record", {0: 8, 1: 2, 2: {0: 3, 1: 1, 2: 8, 3: [3, F64(20.0)], 4: [3, F64(30.0)], 5: 15000, 6: 2, 7: [3, F64(4.0)], 8: 2000}}),
 ]
 
 

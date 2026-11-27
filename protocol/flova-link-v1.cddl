@@ -61,7 +61,8 @@ capabilities = {
   manifest-bytes: 5 => capability-manifest-bytes,
   history-bytes: 6 => capability-history-bytes,
   frame-bytes: 7 => 512,
-  ? pin-references: 8 => bool
+  ? pin-references: 8 => bool,
+  ? offline-guardrail-slots: 9 => uint16
 }
 
 capability-datastream-slots = uint16
@@ -104,6 +105,7 @@ state-reading = [reading-compact-id: compact-id, typed-value-fields, reading-rev
 
 command-result = command-result-ok / command-result-error
 command-result-ok = [result-ok-generation: generation, result-ok-command-id: uuid, result-ok-compact-id: compact-id, result-ok-status: 0..2, typed-value-fields, result-ok-version: uint32, result-ok-correlation-id: correlation-id]
+; Error result status 3 is an uncertain failure. Status 4 is explicit rejection.
 command-result-error = [result-error-generation: generation, result-error-command-id: uuid, result-error-compact-id: compact-id, result-error-status: 3..255, result-error-code: error-code, result-error-message: long-text, result-error-version: uint32, result-error-correlation-id: correlation-id]
 
 config-reported = [reported-config-generation: generation, reported-config-status: 0..255, reported-config-checksum: sha256]
@@ -125,7 +127,9 @@ log-event = [event-boot-id: uint64, event-sequence: uint32, event-code: tstr .si
 lifecycle-ready = []
 
 ; 0x20..0x27 Engine-to-device hot-path and reliability messages.
-command = [command-generation: generation, command-id: uuid, command-compact-id: compact-id, typed-value-fields, command-desired-version: uint32, command-expires-at-utc-ms: uint64, command-correlation-id: correlation-id]
+guardrail-report = [guardrail-generation: generation, guardrail-stream: compact-id, guardrail-status: 1..6, guardrail-latch: uint64]
+
+command = [command-generation: generation, command-id: uuid, command-compact-id: compact-id, typed-value-fields, command-desired-version: uint32, command-expires-at-utc-ms: uint64, command-correlation-id: correlation-id, ? command-guardrail-latch: uint64]
 ingestion-ack = []
 config-desired = [desired-config-generation: generation, desired-config-checksum: sha256, desired-config-record-count: uint32]
 ota-desired = {
@@ -210,10 +214,13 @@ system-record = {
 safety-record = {
   safety-kind: 0 => 3,
   safety-compact-id: 1 => compact-id,
-  safety-policy: 2 => 0..4,
+  safety-policy: 2 => 0..8,
   ? safety-minimum: 3 => typed-value,
   ? safety-maximum: 4 => typed-value,
-  ? safety-timeout-ms: 5 => uint32
+  ? safety-timeout-ms: 5 => uint32,
+  ? safety-guard-id: 6 => compact-id,
+  ? safety-safe-value: 7 => typed-value,
+  ? safety-guard-max-age-ms: 8 => uint32
 }
 
 ; A parameter is a bounded, typed configuration value declared by firmware.

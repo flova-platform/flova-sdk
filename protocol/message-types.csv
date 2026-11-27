@@ -18,6 +18,7 @@ type,name,direction,payload_type,reliability
 0x18,config_ack,device_to_engine,config-ack,transactional
 0x19,lifecycle_report,device_to_engine,lifecycle-report,durable
 0x1a,log_event,device_to_engine,log-event,durable
+0x1b,guardrail_report,device_to_engine,guardrail-report,session
 0x20,command,engine_to_device,command,durable
 0x21,ingestion_ack,engine_to_device,ingestion-ack,durable
 0x22,config_desired,engine_to_device,config-desired,durable

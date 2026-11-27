@@ -169,6 +169,28 @@ class ArduinoFlovaHardware final : public flova::Hardware {
       }
       return true;
     }
+    if (unit.kind == flova::config::UnitKind::Safety &&
+        (unit.data.safety.policy == flova::config::SafetyPolicy::StopOnDisconnect ||
+         unit.data.safety.policy == flova::config::SafetyPolicy::FinishBoundedRun)) {
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+      return true;  // A restored record is owned by the shared runtime.
+#else
+      const flova::config::Safety& policy = unit.data.safety;
+      Mapping* output = find(policy.datastreamId);
+      if (!output || output->kind != flova::config::MappingKind::DigitalOutput ||
+          !policy.timeoutMs || policy.timeoutMs > 3600000 || output->actuatorRunMs)
+        return reject("actuator_policy_invalid");
+      if (policy.guardId) {
+        const Mapping* guard = find(policy.guardId);
+        if (!guard || guard->kind != flova::config::MappingKind::DigitalInput)
+          return reject("actuator_guard_invalid");
+      }
+      output->actuatorRunMs = policy.timeoutMs;
+      output->actuatorGuard = policy.guardId;
+      output->stopOnDisconnect = policy.policy == flova::config::SafetyPolicy::StopOnDisconnect;
+      return switchActuatorOff(*output, millis());
+#endif
+    }
     if (unit.kind != flova::config::UnitKind::Datastream ||
         !unit.data.datastream.hasMapping) {
       return true;
@@ -222,8 +244,13 @@ class ArduinoFlovaHardware final : public flova::Hardware {
           (mapping->kind == flova::config::MappingKind::PwmOutput &&
            !numeric(mapping->valueType)))
         return reject("hardware_type_mismatch");
+      if (mapping->kind == flova::config::MappingKind::DigitalOutput &&
+          unit.data.datastream.hasDefault && unit.data.datastream.defaultValue.kind == flova::config::ValueKind::Boolean) {
+        const bool initial = unit.data.datastream.defaultValue.data.boolean;
+        digitalWrite(mapping->pin, initial == mapping->activeHigh ? HIGH : LOW);
+      }
       pinMode(mapping->pin, OUTPUT);
-      if (!device_->setWriteHandler(mapping->id, writeMapped, mapping))
+      if (!device_->setWriteHandler(mapping->id, writeMapped, mapping, true))
         return reject("hardware_mapping_missing");
     }
 
@@ -272,6 +299,10 @@ class ArduinoFlovaHardware final : public flova::Hardware {
       Mapping& mapping = mappings_[i];
       if (mapping.kind == flova::config::MappingKind::DigitalInput) {
         const bool current = readDigital(mapping);
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+        if (mapping.reported && current == mapping.lastReported && current == mapping.lastRaw)
+          device_->refreshOfflineGuardrailInput(mapping.id);
+#endif
         if (current != mapping.lastRaw) {
           mapping.lastRaw = current;
           mapping.changedAt = now;
@@ -305,10 +336,24 @@ class ArduinoFlovaHardware final : public flova::Hardware {
     updateStatusLed();
   }
 
-  void failSafe() override {
+  void serviceActuators(bool online) override {
+    const uint32_t now = millis();
     for (size_t i = 0; i < mappingCount_; ++i) {
-      const Mapping& mapping = mappings_[i];
-      if (mapping.kind == flova::config::MappingKind::DigitalOutput)
+      Mapping& output = mappings_[i];
+      if (output.actuatorRunning &&
+          (now - output.actuatorStartedAt >= output.actuatorRunMs ||
+           (output.stopOnDisconnect && !online) || !actuatorGuardReady(output)))
+        switchActuatorOff(output, now);
+    }
+  }
+
+  void failSafe() override {
+    const uint32_t now = millis();
+    for (size_t i = 0; i < mappingCount_; ++i) {
+      Mapping& mapping = mappings_[i];
+      if (mapping.actuatorRunMs)
+        switchActuatorOff(mapping, now);
+      else if (mapping.kind == flova::config::MappingKind::DigitalOutput)
         digitalWrite(mapping.pin, mapping.activeHigh ? LOW : HIGH);
       else if (mapping.kind == flova::config::MappingKind::PwmOutput)
         analogWrite(mapping.pin, 0);
@@ -341,7 +386,25 @@ class ArduinoFlovaHardware final : public flova::Hardware {
     uint32_t lastOutputAt = 0;
     double minimum = 0;
     double maximum = 100;
+    uint32_t actuatorRunMs = 0;
+    uint32_t actuatorStartedAt = 0;
+    DatastreamId actuatorGuard = FLOVA_INVALID_DATASTREAM_ID;
+    bool stopOnDisconnect = false;
+    bool actuatorRunning = false;
   };
+
+  bool actuatorGuardReady(const Mapping& output) {
+    if (!output.actuatorGuard) return true;
+    const Mapping* guard = find(output.actuatorGuard);
+    return guard && guard->reported && guard->lastReported && readDigital(*guard);
+  }
+
+  bool switchActuatorOff(Mapping& output, uint32_t now) {
+    digitalWrite(output.pin, output.activeHigh ? LOW : HIGH);
+    output.actuatorRunning = false;
+    output.lastOutputAt = now;
+    return device_->reportMappedOutputOff(output.id);
+  }
 
   static flova::WriteResult writeMapped(void* context,
                                          const flova::Value& input) {
@@ -350,7 +413,20 @@ class ArduinoFlovaHardware final : public flova::Hardware {
       return flova::WriteResult::failure("hardware_mapping_missing");
     }
     const uint32_t now = millis();
+    if (mapping->actuatorRunMs && input.type == flova::ValueType::Boolean) {
+      if (!input.scalar.boolean) {
+        digitalWrite(mapping->pin, mapping->activeHigh ? LOW : HIGH);
+        mapping->actuatorRunning = false;
+        mapping->lastOutputAt = now;
+        return flova::WriteResult::accept();
+      }
+      if (!mapping->owner->connected_ || !mapping->owner->actuatorGuardReady(*mapping))
+        return flova::WriteResult::reject("actuator_interlock");
+    }
     if (mapping->lastOutputAt &&
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+        !mapping->owner->device_->applyingGuardrailSafeValue(mapping->id) &&
+#endif
         now - mapping->lastOutputAt < mapping->minimumOutputMs) {
       return flova::WriteResult::reject("output_rate_limited");
     }
@@ -359,6 +435,10 @@ class ArduinoFlovaHardware final : public flova::Hardware {
         return flova::WriteResult::reject("hardware_type_mismatch");
       const bool level = mapping->activeHigh ? input.scalar.boolean
                                              : !input.scalar.boolean;
+      if (mapping->actuatorRunMs && !mapping->actuatorRunning) {
+        mapping->actuatorStartedAt = now;
+        mapping->actuatorRunning = true;
+      }
       digitalWrite(mapping->pin, level ? HIGH : LOW);
     } else if (mapping->kind == flova::config::MappingKind::PwmOutput) {
       if (input.type != flova::ValueType::Int64 &&
