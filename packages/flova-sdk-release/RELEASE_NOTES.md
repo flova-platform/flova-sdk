@@ -1,3 +1,7 @@
+FlovaSDK 0.5.4 consolidates offline guardrail admission, durable command
+tracking, managed provisioning recovery, and Device Link buffer management.
+Public interfaces, wire formats, and stored records are unchanged.
+
 FlovaSDK 0.5.3 adds opt-in automatic recovery for offline datastream
 guardrails. The device applies its configured safe value when a guardrail
 trips. Once conditions recover, it requires a fresh start.
