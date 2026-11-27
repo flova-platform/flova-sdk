@@ -26,6 +26,7 @@
 #include <FlovaHardware.h>
 #include "adapters/ArduinoFlovaServices.h"
 #include "FlovaProvisioningAdapter.h"
+#include "FlovaManagedClaim.h"
 #include "FlovaRuntimeServices.h"
 #include "FlovaRetryBackoff.h"
 #include "FlovaConfigurationActivation.h"
@@ -190,10 +191,7 @@ class FlovaClient {
         storage_.read("config", &configurationMemory_->image,
                       sizeof(configurationMemory_->image)) &&
         flova::verifyConfigurationImage(configurationMemory_->image);
-    memset(&pending_, 0, sizeof(pending_));
-    const bool hasPending =
-        storage_.read("prov_pending", &pending_, sizeof(pending_)) &&
-        flova::verifyProvisioningImage(pending_);
+    const bool hasPending = ManagedClaim::read(storage_, pending_);
     memset(&otaPendingRecord_, 0, sizeof(otaPendingRecord_));
     otaPendingRecordValid_ =
         storage_.read("ota_pending", &otaPendingRecord_, sizeof(otaPendingRecord_)) &&
@@ -212,22 +210,7 @@ class FlovaClient {
     if (hasConfiguration) FLOVA_LOG_INFO(logger_, "[flova] stored configuration accepted");
     else FLOVA_LOG_INFO(logger_, "[flova] stored configuration absent_or_invalid");
 
-    if (hasPending && !hasConfiguration) {
-      // A reset can interrupt an otherwise valid bootstrap. The Engine binds
-      // the handoff idempotently, so retry the verified pending generation.
-      pending_.inProgress = 0;
-      if (!markBootstrapAttempt()) {
-        writeError("storage_failed");
-        if (!storage_.remove("prov_pending")) writeError("storage_failed");
-        return provisioningFallback();
-      }
-      lifecycle_ = FlovaLifecycle::WaitingForNetwork;
-      bootstrapStartedAt_ = millis();
-      if (!network_.begin()) {
-        failBootstrap("network_start_failed");
-      }
-      return true;
-    }
+    if (hasPending && !hasConfiguration) return startManagedClaim(ClaimStart::BootResume);
 
     if (hasConfiguration) {
       configurationMemory_->runtime = configurationMemory_->image.configuration;
@@ -301,20 +284,7 @@ class FlovaClient {
     tlsClock_.loop(network_.connected() && !provisioningDuringNetworkStart_ && !networkSetup_);
     if ((setupLifecycle || provisioningDuringNetworkStart_) && handoffAccepted_) {
       handoffAccepted_ = false;
-      if (!markBootstrapAttempt()) {
-        writeError("storage_failed");
-        provisioningFallback();
-        return;
-      }
-      lifecycle_ = FlovaLifecycle::WaitingForNetwork;
-      bootstrapStartedAt_ = millis();
-      provisioningDuringNetworkStart_ =
-          provisioning_.stopAfterNetworkConnected();
-      if (!provisioningDuringNetworkStart_ &&
-          !provisioning_.stopProvisioning())
-        failBootstrap("provisioning_stop_failed");
-      else if (!network_.begin())
-        failBootstrap("network_start_failed");
+      startManagedClaim(ClaimStart::LiveHandoff);
       return;
     }
     if (setupLifecycle) return;
@@ -480,7 +450,7 @@ class FlovaClient {
   bool startProvisioning() {
     if (networkSetup_) return false;
     link_.disconnect();
-    if (!storage_.remove("config") || !storage_.remove("prov_pending") ||
+    if (!storage_.remove("config") || !ManagedClaim::discard(storage_) ||
         !storage_.remove("prov_error") || !storage_.remove("ota_pending")) {
       writeError("storage_failed");
       lifecycle_ = FlovaLifecycle::Failed;
@@ -817,31 +787,22 @@ class FlovaClient {
 
   FlovaProvisioningResponse acceptProvisioning(
       const flova::ProvisioningHandoff& input) {
-    memset(&pending_, 0, sizeof(pending_));
-    if (!flova::copyBounded(input.linkUrl, pending_.handoff.linkUrl, true) ||
-        !flova::copyBounded(input.token, pending_.handoff.token, true) ||
-        !flova::generateSecret(pending_.handoff.linkSecret, entropy_)) {
-      return FlovaProvisioningResponse::Invalid;
+    switch (ManagedClaim::accept(storage_, pending_, input, entropy_)) {
+      case ManagedClaim::PendingWrite::Accepted: return FlovaProvisioningResponse::Accepted;
+      case ManagedClaim::PendingWrite::Invalid: return FlovaProvisioningResponse::Invalid;
+      case ManagedClaim::PendingWrite::WriteFailed:
+        FLOVA_LOG_ERROR(logger_, "[flova] provisioning storage_failed stage=handoff_pending");
+        break;
+      case ManagedClaim::PendingWrite::VerifyFailed:
+        FLOVA_LOG_ERROR(logger_, "[flova] provisioning storage_failed stage=handoff_verify");
+        writeError("storage_verify_failed");
+        return FlovaProvisioningResponse::StorageFailed;
+      case ManagedClaim::PendingWrite::ClearErrorFailed:
+        FLOVA_LOG_ERROR(logger_, "[flova] provisioning storage_failed stage=clear_error");
+        break;
     }
-    flova::makeProvisioningImage(pending_.handoff, pending_);
-    if (!storage_.write("prov_pending", &pending_, sizeof(pending_))) {
-      FLOVA_LOG_ERROR(logger_, "[flova] provisioning storage_failed stage=handoff_pending");
-      writeError("storage_failed");
-      return FlovaProvisioningResponse::StorageFailed;
-    }
-    memset(&pending_, 0, sizeof(pending_));
-    if (!storage_.read("prov_pending", &pending_, sizeof(pending_)) ||
-        !flova::verifyProvisioningImage(pending_)) {
-      FLOVA_LOG_ERROR(logger_, "[flova] provisioning storage_failed stage=handoff_verify");
-      writeError("storage_verify_failed");
-      return FlovaProvisioningResponse::StorageFailed;
-    }
-    if (!storage_.remove("prov_error")) {
-      FLOVA_LOG_ERROR(logger_, "[flova] provisioning storage_failed stage=clear_error");
-      writeError("storage_failed");
-      return FlovaProvisioningResponse::StorageFailed;
-    }
-    return FlovaProvisioningResponse::Accepted;
+    writeError("storage_failed");
+    return FlovaProvisioningResponse::StorageFailed;
   }
 
   bool beginSetup() {
@@ -917,23 +878,30 @@ class FlovaClient {
     lifecycle_ = FlovaLifecycle::Runtime;
   }
 
-  bool markBootstrapAttempt() {
-    flova::markProvisioningAttempt(pending_);
-    return persistPending();
-  }
+  using ManagedClaim = flova::detail::ManagedClaim;
+  enum class ClaimStart { BootResume, LiveHandoff };
 
-  bool persistPending() {
-    const uint8_t expectedAttempts = pending_.attempts;
-    const uint8_t expectedInProgress = pending_.inProgress;
-    char expectedError[flova::kProvisioningErrorBytes] = {};
-    strncpy(expectedError, pending_.lastError, sizeof(expectedError) - 1);
-    if (!storage_.write("prov_pending", &pending_, sizeof(pending_))) return false;
-    memset(&pending_, 0, sizeof(pending_));
-    return storage_.read("prov_pending", &pending_, sizeof(pending_)) &&
-           flova::verifyProvisioningImage(pending_) &&
-           pending_.attempts == expectedAttempts &&
-           pending_.inProgress == expectedInProgress &&
-           strcmp(pending_.lastError, expectedError) == 0;
+  bool startManagedClaim(ClaimStart source) {
+    // The Engine binds a verified pending handoff idempotently after reset.
+    if (source == ClaimStart::BootResume) pending_.inProgress = 0;
+    flova::markProvisioningAttempt(pending_);
+    if (!ManagedClaim::persistProgress(storage_, pending_)) {
+      writeError("storage_failed");
+      if (source == ClaimStart::BootResume && !ManagedClaim::discard(storage_))
+        writeError("storage_failed");
+      return provisioningFallback();
+    }
+    lifecycle_ = FlovaLifecycle::WaitingForNetwork;
+    bootstrapStartedAt_ = millis();
+    if (source == ClaimStart::LiveHandoff) {
+      provisioningDuringNetworkStart_ = provisioning_.stopAfterNetworkConnected();
+      if (!provisioningDuringNetworkStart_ && !provisioning_.stopProvisioning()) {
+        failBootstrap("provisioning_stop_failed");
+        return true;
+      }
+    }
+    if (!network_.begin()) failBootstrap("network_start_failed");
+    return true;
   }
 
   flova::config::Ack applyConfiguration(
@@ -1392,15 +1360,15 @@ class FlovaClient {
     auto& work = configurationWork_;
     if (!work.priorSequence) {
       const size_t textBytes = device_.offlineGuardrailTextBytes(safety);
-      if (work.guardrailCount >= FLOVA_OFFLINE_GUARDRAIL_CAPACITY ||
-          work.guardrailTextBytes + textBytes > device_.offlineGuardrailTextCapacity()) {
+      if (!flova::detail::GuardrailAdmission::fits(work.guardrailCount,
+                                                  work.guardrailTextBytes, textBytes)) {
         failConfigurationWork(true);
         return false;
       }
       for (size_t i = 0; i < work.guardrailCount; ++i) {
         const auto& existing = work.guardrails[i];
-        if (existing.output == safety.datastreamId || existing.output == safety.guardId ||
-            existing.input == safety.datastreamId) {
+        if (flova::detail::GuardrailAdmission::conflicts(
+                safety.datastreamId, safety.guardId, existing.output, existing.input)) {
           failConfigurationWork(true);
           return false;
         }
@@ -1896,29 +1864,29 @@ class FlovaClient {
   void failBootstrap(const char* error) {
     const bool attemptWasInProgress = pending_.inProgress != 0;
     char previousError[flova::kProvisioningErrorBytes] = {};
-    strncpy(previousError, pending_.lastError, sizeof(previousError) - 1);
+    memcpy(previousError, pending_.lastError, sizeof(previousError) - 1);
     flova::markProvisioningFailure(pending_, error);
     if (strcmp(previousError, pending_.lastError) != 0) writeError(error);
     link_.disconnect();
     // Persist the transition once. Backoff retries keep counters in RAM and do
     // not rewrite flash repeatedly for an unchanged outage.
-    if (attemptWasInProgress && !persistPending()) {
+    if (attemptWasInProgress && !ManagedClaim::persistProgress(storage_, pending_)) {
       writeError("storage_failed");
       provisioningFallback();
       return;
     }
     // A local codec/configuration defect cannot be repaired by reconnecting.
-    if ((error && strstr(error, "cbor")) ||
-        (error && strncmp(error, "configuration_", 14) == 0)) {
+    const auto failure = ManagedClaim::classify(error);
+    if (failure == ManagedClaim::Failure::Stop) {
       lifecycle_ = FlovaLifecycle::Failed;
       FLOVA_LOG_ERROR(logger_, "[flova] bootstrap stopped: local configuration or codec failure");
       return;
     }
     // Only server-confirmed terminal credentials require a fresh setup session.
     // Network, clock, TLS, and socket failures retain the verified handoff.
-    if (flova::provisioningFailureNeedsSetup(error)) {
+    if (failure == ManagedClaim::Failure::FreshSetup) {
       resetPendingConfiguration();
-      if (!storage_.remove("prov_pending")) writeError("storage_failed");
+      if (!ManagedClaim::discard(storage_)) writeError("storage_failed");
       provisioningFallback();
       return;
     }
@@ -1968,7 +1936,7 @@ class FlovaClient {
       failBootstrap("configuration_verification_failed");
       return;
     }
-    if (!storage_.remove("prov_pending") || !storage_.remove("prov_error")) {
+    if (!ManagedClaim::discard(storage_) || !storage_.remove("prov_error")) {
       failBootstrap("configuration_cleanup_failed");
       return;
     }

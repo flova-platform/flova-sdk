@@ -7,6 +7,7 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
 #include <FlovaConfiguration.h>
+#include <FlovaManagedClaim.h>
 #include <FlovaProvisioningAdapter.h>
 #include <FlovaProvisioningSecurity.h>
 #include <FlovaSoftApPortal.h>
@@ -160,20 +161,20 @@ class FlovaEsp8266ProvisioningBase : public FlovaProvisioningAdapter {
       setup_->server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_handoff\"}");
       return;
     }
-    if (!storage_.write("wifi", &setup_->wifi, sizeof(setup_->wifi))) {
+    using Claim = flova::detail::ManagedClaim;
+    const auto result = Claim::submit(storage_, setup_->wifi, setup_->input, handler_, context_);
+    if (result == Claim::Submission::WifiWriteFailed) {
       FLOVA_SERIAL_PRINTF_ERROR("[flova] provisioning storage_failed stage=wifi reason=%s\n",
                     storage_.lastError());
       setup_->server.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
       return;
     }
-    const FlovaProvisioningResponse result = handler_(context_, setup_->input);
-    if (result == FlovaProvisioningResponse::Accepted) {
+    if (result == Claim::Submission::Accepted) {
       setup_->server.send(202, "application/json", "{\"ok\":true,\"status\":\"accepted\"}");
-    } else if (result == FlovaProvisioningResponse::StorageFailed) {
+    } else if (result == Claim::Submission::HandoffWriteFailed) {
       FLOVA_SERIAL_PRINTLN_ERROR("[flova] provisioning storage_failed stage=handoff");
       setup_->server.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
     } else {
-      storage_.remove("wifi");
       setup_->server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_handoff\"}");
     }
   }

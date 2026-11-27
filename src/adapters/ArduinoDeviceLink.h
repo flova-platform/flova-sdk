@@ -636,6 +636,18 @@ class ArduinoDeviceLink final {
   }
 
  private:
+  friend class ArduinoFlovaLink;
+  enum class WorkspacePhase { TlsOpening, LinkWork, Idle };
+
+  // Report the phase at the end of the poll, before a subsequent poll can
+  // dispatch application frames. Only this module interprets connection flags.
+  WorkspacePhase pollWorkspacePhase() {
+    loop();
+    if (tlsOpening()) return WorkspacePhase::TlsOpening;
+    if (connectionInProgress() || connected()) return WorkspacePhase::LinkWork;
+    return WorkspacePhase::Idle;
+  }
+
   // The embedded memory budget uses 32-bit pointers; host codec records are larger.
   static_assert(sizeof(uintptr_t) > 4 || sizeof(datastream_bind) <= sizeof(FlovaLinkInboundMessage), "Binding encode must fit the existing inbound slot");
   static_assert(sizeof(uintptr_t) > 4 || sizeof(datastream_bound) <= sizeof(FlovaLinkInboundMessage), "Binding decode must fit the existing inbound slot");
