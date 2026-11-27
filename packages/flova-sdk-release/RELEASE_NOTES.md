@@ -1,3 +1,10 @@
+FlovaSDK 0.5.3 adds opt-in automatic recovery for offline datastream
+guardrails. The device applies its configured safe value when a guardrail
+trips. Once conditions recover, it requires a fresh start.
+
+Automatic recovery and incident reporting require a compatible Engine
+release. Existing manual guardrail configurations keep their behavior.
+
 FlovaSDK 0.5.2 returns to local setup after the MQTT broker rejects
 bootstrap credentials, so an expired setup session can be replaced.
 Temporary connection failures continue to retry with backoff.
