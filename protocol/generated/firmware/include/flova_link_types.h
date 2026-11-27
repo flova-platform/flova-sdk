@@ -125,11 +125,18 @@ struct lifecycle_report {
 	uint64_t lifecycle_report_log_dropped;
 };
 
+struct guardrail_report_guardrail_incident_l {
+	uint64_t guardrail_report_guardrail_incident_l_guardrail_incident;
+	uint64_t guardrail_report_guardrail_incident_l_guardrail_incident_id;
+};
+
 struct guardrail_report {
 	uint64_t guardrail_report_guardrail_generation;
 	uint64_t guardrail_report_guardrail_stream;
 	uint64_t guardrail_report_guardrail_status;
 	uint64_t guardrail_report_guardrail_latch;
+	struct guardrail_report_guardrail_incident_l guardrail_report_guardrail_incident_l;
+	bool guardrail_report_guardrail_incident_l_present;
 };
 
 struct typed_value_fields_r {

@@ -337,8 +337,10 @@ class ArduinoFlovaLink : public FlovaClientLink {
   void setDurableGuardrails(bool enabled) override { transport_.setDurableGuardrails(enabled); }
 
   bool sendGuardrailStatus(DatastreamId id, flova::GuardrailStatus status,
-                           uint64_t latch, uint64_t messageId) override {
-    return connected() && transport_.publishGuardrailStatus(id, static_cast<uint8_t>(status), latch, messageId);
+                           uint64_t latch, uint64_t messageId, flova::GuardrailIncident incident,
+                           uint64_t incidentId) override {
+    return connected() && transport_.publishGuardrailStatus(id, static_cast<uint8_t>(status), latch,
+                                                           messageId, static_cast<uint8_t>(incident), incidentId);
   }
 #endif
   size_t sendStateBatch(flova::StateUpdateReader reader, void* context,
@@ -629,9 +631,11 @@ class ArduinoFlovaLink : public FlovaClientLink {
       message.expiresAtUtcMs = inbound.body.command.expiresAtUtcMs;
 #if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
       if (inbound.body.command.guardrailLatch) {
-        message.kind = flova::MessageKind::GuardrailRearm;
         message.monotonic = inbound.body.command.guardrailLatch;
-        message.timestamp = connectionEpoch_;
+        if (!message.revision) {
+          message.kind = flova::MessageKind::GuardrailRearm;
+          message.timestamp = connectionEpoch_;
+        }
       }
 #endif
       message.origin = origin(inbound.body.command.isUserCommand);

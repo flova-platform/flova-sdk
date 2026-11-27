@@ -316,13 +316,17 @@ class ArduinoDeviceLink final {
   void setDurableGuardrails(bool enabled) { durableGuardrails_ = enabled; }
 
   bool publishGuardrailStatus(DatastreamId id, uint8_t status,
-                              uint64_t latch, uint64_t messageId) {
+                              uint64_t latch, uint64_t messageId, uint8_t incident, uint64_t incidentId) {
     if (!connected() || !configurationGeneration_) return false;
     struct guardrail_report report = {};
     report.guardrail_report_guardrail_generation = configurationGeneration_;
     report.guardrail_report_guardrail_stream = id;
     report.guardrail_report_guardrail_status = status;
     report.guardrail_report_guardrail_latch = latch;
+    report.guardrail_report_guardrail_incident_l_present = incident != 0;
+    auto& detail = report.guardrail_report_guardrail_incident_l;
+    detail.guardrail_report_guardrail_incident_l_guardrail_incident = incident;
+    detail.guardrail_report_guardrail_incident_l_guardrail_incident_id = incidentId;
     return sendEncoded(0x1b, messageId, report, cbor_encode_guardrail_report);
   }
 #endif
@@ -1366,7 +1370,7 @@ class ArduinoDeviceLink final {
 
       case config_record_body_r::config_record_body_safety_record_m_c: {
         const safety_record& source = input.config_record_body_safety_record_m;
-        if (source.safety_record_safety_compact_id == 0 || source.safety_record_safety_compact_id > UINT16_MAX || source.safety_record_safety_policy > 8) return false;
+        if (source.safety_record_safety_compact_id == 0 || source.safety_record_safety_compact_id > UINT16_MAX || source.safety_record_safety_policy > 9) return false;
         out.kind = flova::config::UnitKind::Safety;
         out.data.safety.datastreamId = static_cast<DatastreamId>(source.safety_record_safety_compact_id);
         out.data.safety.policy = static_cast<flova::config::SafetyPolicy>(source.safety_record_safety_policy);

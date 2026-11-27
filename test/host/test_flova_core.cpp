@@ -17,8 +17,13 @@ class TestLink : public flova::Link {
   uint32_t epoch = 1;
   uint32_t connectionEpoch() const override { return epoch; }
   flova::GuardrailStatus reportedGuardrail = flova::GuardrailStatus::Unsupported;
-  bool sendGuardrailStatus(DatastreamId, flova::GuardrailStatus status, uint64_t, uint64_t) override {
+  flova::GuardrailIncident lastIncident = flova::GuardrailIncident::None;
+  uint64_t incidentId = 0;
+  bool sendGuardrailStatus(DatastreamId, flova::GuardrailStatus status, uint64_t, uint64_t,
+                           flova::GuardrailIncident incident, uint64_t id) override {
     reportedGuardrail = status;
+    lastIncident = incident;
+    incidentId = id;
     return online;
   }
   bool send(const flova::Message& message) override { sends++; last = message; if (message.kind == flova::MessageKind::Acknowledgement || message.kind == flova::MessageKind::Error) lastResult = message; if (message.kind == flova::MessageKind::StateUpdate) { if (message.value.type == flova::ValueType::Float) stateValues[stateSends] = message.value.scalar.floating; stateSends++; } if (message.kind == flova::MessageKind::Error) { errorSends++; lastError = message; } return online; }
@@ -966,7 +971,116 @@ static void verifyDatastreamGuardrail(bool finishOnDisconnect) {
   assert(device.offlineGuardrailStatus(1, tripped) == flova::GuardrailStatus::Tripped);
 }
 
+
+static void verifyAutomaticGuardrailRecovery() {
+  using flova::GuardrailIncident;
+  using flova::GuardrailStatus;
+  struct Writer {
+    bool energized = true;
+    bool failSafe = false;
+  } writer;
+  TestStorage storage;
+  TestLink link;
+  TestClock clock;
+  clock.utc = 200000;
+  TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  auto output = device.datastream<bool>("relay");
+  auto input = device.datastream<bool>("interlock");
+  assert(output.tryOnWrite(+[](void* context, bool value) {
+    auto& driver = *static_cast<Writer*>(context);
+    if (!value && driver.failSafe) return flova::WriteResult::failure("driver_error");
+    driver.energized = value;
+    return flova::WriteResult::accept();
+  }, &writer));
+
+  assert(device.begin());
+  flova::OfflineGuardrail policy;
+  policy.safeValue = flova::Value::from(false);
+  policy.maximumRunMs = 1000;
+  policy.automaticRecovery = true;
+  policy.inputId = 2;
+  policy.inputMinimum = flova::Value::from(true);
+  policy.maximumInputAgeMs = 1500;
+  assert(device.installOfflineGuardrail(1, policy));
+  device.run();
+  assert(!writer.energized && link.reportedGuardrail == GuardrailStatus::WaitingForInput);
+
+  const auto start = [&](const char* commandId, uint32_t revision, uint64_t latch) {
+    flova::Message request;
+    request.kind = flova::MessageKind::WriteRequest;
+    request.datastreamId = 1;
+    request.revision = revision;
+    request.monotonic = latch;
+    request.value = flova::Value::from(true);
+    request.expiresAtUtcMs = clock.utcMilliseconds() + 10000;
+    flova::Value::copy(request.commandId, commandId);
+    link.inject(request);
+  };
+
+  assert(input.report(true).accepted());
+  device.run();
+  uint64_t ready = 0;
+  assert(device.offlineGuardrailStatus(1, ready) == GuardrailStatus::Armed);
+  start("unbound-start", 1, 0);
+  assert(!writer.energized);
+  start("initial-start", 2, ready);
+  assert(writer.energized);
+  clock.now += 900;
+  start("initial-start", 2, ready);
+  clock.now += 100;
+  device.run();
+  assert(!writer.energized && link.reportedGuardrail == GuardrailStatus::Armed);
+  assert(link.lastIncident == GuardrailIncident::RunLimit && link.incidentId != 0);
+
+  uint64_t recovered = 0;
+  assert(device.offlineGuardrailStatus(1, recovered) == GuardrailStatus::Armed && recovered != ready);
+  start("queued-before-timeout", 3, ready);
+  assert(!writer.energized);
+  start("fresh-after-timeout", 4, recovered);
+  assert(writer.energized);
+
+  link.online = false;
+  device.run();
+  assert(!writer.energized);
+  ++link.epoch;
+  link.online = true;
+  device.run();
+  assert(!writer.energized && link.lastIncident == GuardrailIncident::LinkLost);
+  start("queued-before-link-loss", 5, recovered);
+  assert(!writer.energized);
+
+  assert(device.offlineGuardrailStatus(1, recovered) == GuardrailStatus::Armed);
+  start("fresh-after-link-loss", 6, recovered);
+  assert(writer.energized);
+  clock.now += 500;
+  device.run();
+  assert(!writer.energized && link.reportedGuardrail == GuardrailStatus::WaitingForInput);
+  assert(link.lastIncident == GuardrailIncident::InputUnhealthy);
+  assert(input.report(true).accepted());
+  device.run();
+  assert(device.offlineGuardrailStatus(1, recovered) == GuardrailStatus::Armed);
+  start("fresh-after-input", 7, recovered);
+  assert(writer.energized);
+
+  writer.failSafe = true;
+  link.online = false;
+  device.run();
+  assert(writer.energized);
+  writer.failSafe = false;
+  clock.now += 250;
+  ++link.epoch;
+  link.online = true;
+  device.run();
+  assert(!writer.energized && link.reportedGuardrail == GuardrailStatus::SafeWriteFailed);
+  assert(link.lastIncident == GuardrailIncident::SafeWriteFailed);
+  assert(device.offlineGuardrailStatus(1, recovered) == GuardrailStatus::SafeWriteFailed);
+  start("start-after-failed-stop", 8, recovered);
+  assert(!writer.energized && !device.clearOfflineGuardrailsForConfiguration());
+}
+
 int main() {
+  verifyAutomaticGuardrailRecovery();
   verifyDatastreamGuardrail(false);
   verifyDatastreamGuardrail(true);
   verifyOfflineActuatorOwnership();

@@ -21,7 +21,7 @@ enum class MappingKind : uint8_t { DigitalInput = 0, DigitalOutput = 1, AnalogIn
 enum class SafetyPolicy : uint8_t {
   None = 0, Minimum = 1, Maximum = 2, Range = 3, CommandExpiry = 4,
   StopOnDisconnect = 5, FinishBoundedRun = 6,
-  GuardrailStop = 7, GuardrailFinish = 8
+  GuardrailStop = 7, GuardrailFinish = 8, GuardrailAutoRecover = 9
 };
 
 struct Value {

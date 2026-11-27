@@ -157,8 +157,10 @@ inline bool operator==(const Value& a, const Value& b) {
 
 #if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
 enum class GuardrailStatus : uint8_t {
-  Unsupported, Disarmed, Armed, Running, Finishing, Tripped, SafeWriteFailed
+  Unsupported, Disarmed, Armed, Running, Finishing, Tripped, SafeWriteFailed, WaitingForInput
 };
+
+enum class GuardrailIncident : uint8_t { None, RunLimit, LinkLost, InputUnhealthy, SafeWriteFailed, OutputWriteFailed };
 
 enum class GuardrailComparison : uint8_t { Equal, InclusiveRange };
 
@@ -166,6 +168,7 @@ struct OfflineGuardrail {
   Value safeValue;
   uint32_t maximumRunMs = 0;
   bool finishOnDisconnect = false;
+  bool automaticRecovery = false;
   DatastreamId inputId = FLOVA_INVALID_DATASTREAM_ID;
   uint32_t maximumInputAgeMs = 0;
   GuardrailComparison comparison = GuardrailComparison::Equal;
@@ -244,6 +247,10 @@ class Link {
 #endif
 #if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
   virtual bool sendGuardrailStatus(DatastreamId, GuardrailStatus, uint64_t, uint64_t) { return false; }
+  virtual bool sendGuardrailStatus(DatastreamId id, GuardrailStatus status, uint64_t latch,
+                                   uint64_t messageId, GuardrailIncident, uint64_t) {
+    return sendGuardrailStatus(id, status, latch, messageId);
+  }
 #endif
   virtual bool applicationPaused() const { return false; }
   virtual bool send(const Message& message) = 0;
@@ -541,7 +548,7 @@ class Device {
 #if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
   static bool isOfflineGuardrailRecord(config::SafetyPolicy policy) {
     return policy >= config::SafetyPolicy::StopOnDisconnect &&
-           policy <= config::SafetyPolicy::GuardrailFinish;
+           policy <= config::SafetyPolicy::GuardrailAutoRecover;
   }
 
   static size_t offlineGuardrailTextBytes(const config::Safety& record) {
@@ -603,7 +610,8 @@ class Device {
         output->offline != OfflinePolicy::KeepLatest || !hasResultWriter(*output) ||
         policy.safeValue.type != output->valueType || !validValue(policy.safeValue) ||
         !safe(*output, policy.safeValue) || policy.maximumRunMs > kGuardrailMaximumMs ||
-        (policy.finishOnDisconnect && !policy.maximumRunMs)) return false;
+        (policy.finishOnDisconnect && !policy.maximumRunMs) ||
+        (policy.automaticRecovery && (policy.finishOnDisconnect || !policy.maximumRunMs))) return false;
 #if FLOVA_ACTUATOR_CONTROL
     if (output->actuatorControl) return false;
 #endif
@@ -618,11 +626,13 @@ class Device {
     if (textNeeded > sizeof(guardrailText_) - guardrailTextUsed_) return false;
     for (auto& entry : guardrails_) {
       if (entry.output) continue;
+      entry = Guardrail{};
       entry.output = output;
       entry.input = input;
       entry.safeValue = storeGuardrailValue(policy.safeValue);
       entry.maximumRunMs = policy.maximumRunMs;
       entry.finishOnDisconnect = policy.finishOnDisconnect;
+      entry.automaticRecovery = policy.automaticRecovery;
       entry.maximumInputAgeMs = policy.maximumInputAgeMs;
       entry.comparison = policy.comparison;
       if (input) {
@@ -648,7 +658,7 @@ class Device {
   }
 
   // Board loops may service this before networking and during maintenance.
-  void serviceOfflineGuardrails() {
+  void serviceOfflineGuardrails(bool allowRecovery = true) {
     const uint32_t now = static_cast<uint32_t>(clock_.milliseconds());
     for (auto& entry : guardrails_) {
       if (!entry.output || entry.writing) continue;
@@ -657,6 +667,17 @@ class Device {
           (entry.status == GuardrailStatus::Disarmed || entry.status == GuardrailStatus::Tripped ||
            entry.status == GuardrailStatus::SafeWriteFailed) &&
           now - entry.lastAttemptAt >= entry.retryMs) applyGuardrailSafe(entry, now);
+      if (allowRecovery && entry.automaticRecovery && entry.safeApplied &&
+          entry.status != GuardrailStatus::SafeWriteFailed &&
+          entry.status != GuardrailStatus::Running && entry.status != GuardrailStatus::Armed &&
+          ready() && !link_.applicationPaused() && link_.connectionEpoch()) {
+        if (guardrailInputReady(entry)) {
+          entry.epoch = link_.connectionEpoch();
+          entry.status = GuardrailStatus::Armed;
+        } else {
+          entry.status = GuardrailStatus::WaitingForInput;
+        }
+      }
     }
   }
 
@@ -674,7 +695,7 @@ class Device {
           entry.status == GuardrailStatus::Finishing)
         latchGuardrail(entry, GuardrailStatus::Tripped);
     }
-    serviceOfflineGuardrails();
+    serviceOfflineGuardrails(false);
     for (const auto& entry : guardrails_)
       if (entry.output && !entry.safeApplied) allSafe = false;
     return allSafe;
@@ -683,6 +704,9 @@ class Device {
   // Reset writers only after all protected outputs have accepted safe values.
   bool clearOfflineGuardrailsForConfiguration() {
     if (!quiesceOfflineGuardrails()) return false;
+    for (const auto& entry : guardrails_)
+      if (entry.output && entry.automaticRecovery && entry.status == GuardrailStatus::SafeWriteFailed)
+        return false;
     for (auto& entry : guardrails_) entry.output = entry.input = nullptr;
     guardrailTextUsed_ = 0;
     return true;
@@ -1112,7 +1136,8 @@ class Device {
 #if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
   static constexpr uint32_t kGuardrailMaximumMs = 3600000;
   static bool isGuardrailPolicy(config::SafetyPolicy policy) {
-    return policy == config::SafetyPolicy::GuardrailStop || policy == config::SafetyPolicy::GuardrailFinish;
+    return policy >= config::SafetyPolicy::GuardrailStop &&
+           policy <= config::SafetyPolicy::GuardrailAutoRecover;
   }
 
   static bool decodeOfflineGuardrail(const config::Safety& record, OfflineGuardrail& policy) {
@@ -1120,7 +1145,9 @@ class Device {
         !configurationValue(record.safeValue, policy.safeValue) || !validValue(policy.safeValue)) return false;
     policy.maximumRunMs = record.hasTimeoutMs ? record.timeoutMs : 0;
     policy.finishOnDisconnect = record.policy == config::SafetyPolicy::GuardrailFinish;
-    if (policy.maximumRunMs > kGuardrailMaximumMs || (policy.finishOnDisconnect && !policy.maximumRunMs)) return false;
+    policy.automaticRecovery = record.policy == config::SafetyPolicy::GuardrailAutoRecover;
+    if (policy.maximumRunMs > kGuardrailMaximumMs ||
+        ((policy.finishOnDisconnect || policy.automaticRecovery) && !policy.maximumRunMs)) return false;
     if (!record.guardId) return !record.hasMinimum && !record.hasMaximum && !record.guardMaxAgeMs;
     if (!flovaValidDatastreamId(record.guardId) || record.guardId == record.datastreamId ||
         !record.guardMaxAgeMs || record.guardMaxAgeMs > kGuardrailMaximumMs || !record.hasMinimum ||
@@ -1215,9 +1242,12 @@ class Device {
     uint32_t maximumInputAgeMs = 0;
     GuardrailComparison comparison = GuardrailComparison::Equal;
     bool finishOnDisconnect = false;
+    bool automaticRecovery = false;
+    GuardrailIncident incident = GuardrailIncident::None;
     GuardrailStatus status = GuardrailStatus::Disarmed;
     GuardrailStatus stoppedStatus = GuardrailStatus::Disarmed;
     uint64_t latch = 0;
+    uint64_t incidentId = 0;
     uint32_t epoch = 0;
     uint32_t startedAt = 0;
     uint32_t lastAttemptAt = 0;
@@ -1243,7 +1273,7 @@ class Device {
       return false;
     serviceOfflineGuardrails();
     Guardrail* entry = guardrail(output);
-    if (!entry || !latch || latch != entry->latch || !entry->safeApplied ||
+    if (!entry || entry->automaticRecovery || !latch || latch != entry->latch || !entry->safeApplied ||
         (entry->status != GuardrailStatus::Disarmed && entry->status != GuardrailStatus::Tripped) ||
         !guardrailInputReady(*entry)) return false;
     entry->epoch = static_cast<uint32_t>(epoch);
@@ -1258,7 +1288,8 @@ class Device {
     for (auto& entry : guardrails_) {
       if (!entry.output || (entry.reportedEpoch == epoch && entry.reportedLatch == entry.latch &&
           entry.reportedStatus == entry.status && now - entry.reportedAt < 5000)) continue;
-      if (!link_.sendGuardrailStatus(entry.output->id, entry.status, entry.latch, originateMessageId())) return;
+      if (!link_.sendGuardrailStatus(entry.output->id, entry.status, entry.latch,
+                                     originateMessageId(), entry.incident, entry.incidentId)) return;
       entry.reportedEpoch = epoch;
       entry.reportedAt = now;
       entry.reportedLatch = entry.latch;
@@ -1312,19 +1343,33 @@ class Device {
     // an idle output. Never trust a cached value on initial installation.
   }
 
+  void tripGuardrail(Guardrail& entry, GuardrailIncident incident) {
+    latchGuardrail(entry, GuardrailStatus::Tripped);
+    if (entry.automaticRecovery) {
+      entry.incident = incident;
+      entry.incidentId = entry.latch;
+    }
+  }
+
   void evaluateGuardrail(Guardrail& entry, uint32_t now) {
     const bool connected = ready() && !link_.applicationPaused() &&
                            entry.epoch && entry.epoch == link_.connectionEpoch();
-    if (entry.status == GuardrailStatus::Armed && !connected) {
-      latchGuardrail(entry, GuardrailStatus::Tripped);
+    if (entry.status == GuardrailStatus::Armed) {
+      if (!connected || (entry.automaticRecovery && !guardrailInputReady(entry))) {
+        latchGuardrail(entry, entry.automaticRecovery ? GuardrailStatus::Disarmed
+                                                      : GuardrailStatus::Tripped);
+      }
       return;
     }
     if (entry.status != GuardrailStatus::Running && entry.status != GuardrailStatus::Finishing)
       return;
-    if ((entry.maximumRunMs && now - entry.startedAt >= entry.maximumRunMs) ||
-        !guardrailInputReady(entry) || link_.applicationPaused() ||
+    const bool timedOut = entry.maximumRunMs && now - entry.startedAt >= entry.maximumRunMs;
+    const bool inputReady = guardrailInputReady(entry);
+    if (timedOut || !inputReady || link_.applicationPaused() ||
         (!connected && !entry.finishOnDisconnect)) {
-      latchGuardrail(entry, GuardrailStatus::Tripped);
+      const auto cause = timedOut ? GuardrailIncident::RunLimit
+                       : !inputReady ? GuardrailIncident::InputUnhealthy : GuardrailIncident::LinkLost;
+      tripGuardrail(entry, cause);
     } else if (!connected) {
       entry.status = GuardrailStatus::Finishing;
     }
@@ -1341,9 +1386,11 @@ class Device {
       entry.retryMs = 0;
       if (entry.status == GuardrailStatus::Running) entry.status = GuardrailStatus::Armed;
       if (entry.status == GuardrailStatus::Finishing) latchGuardrail(entry, GuardrailStatus::Tripped);
-      if (entry.status == GuardrailStatus::SafeWriteFailed) entry.status = entry.stoppedStatus;
+      if (entry.status == GuardrailStatus::SafeWriteFailed && !entry.automaticRecovery)
+        entry.status = entry.stoppedStatus;
     } else {
-      if (entry.status != GuardrailStatus::SafeWriteFailed) latchGuardrail(entry, GuardrailStatus::Tripped);
+      if (entry.status != GuardrailStatus::SafeWriteFailed)
+        tripGuardrail(entry, GuardrailIncident::SafeWriteFailed);
       entry.safeApplied = false;
       entry.status = GuardrailStatus::SafeWriteFailed;
       entry.lastAttemptAt = now;
@@ -1524,11 +1571,15 @@ class Device {
     if (message.expiresAtUtcMs && (!clock_.utcValid() || clock_.utcMilliseconds() >= message.expiresAtUtcMs)) return acknowledge(message, WriteResult::reject(clock_.utcValid() ? "command_expired" : "utc_time_required"), current);
     bool stale = message.revision && message.revision <= current->lastCloudRevision;
 #if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
-    if (const Guardrail* entry = guardrail(*current)) {
+    if (Guardrail* entry = guardrail(*current)) {
+      evaluateGuardrail(*entry, static_cast<uint32_t>(clock_.milliseconds()));
       const bool safeWrite = matchesGuardrailValue(message.value, current->valueType, entry->safeValue);
       if (safeWrite) stale = false;
       if (!safeWrite && !message.expiresAtUtcMs)
         return acknowledge(message, WriteResult::reject("guardrail_deadline_required"), current);
+      if (!safeWrite && entry->automaticRecovery &&
+          (!message.revision || message.monotonic != entry->latch))
+        return acknowledge(message, WriteResult::reject("guardrail_disarmed"), current);
     }
 #endif
     if (current->safetyPolicy >= 5 && message.value.type == ValueType::Boolean &&
@@ -1660,7 +1711,7 @@ class Device {
       entry->safeApplied = false;
       if (!result.accepted()) {
         // The hardware may have moved despite the failed write.
-        latchGuardrail(*entry, GuardrailStatus::Tripped);
+        tripGuardrail(*entry, GuardrailIncident::OutputWriteFailed);
         applyGuardrailSafe(*entry, now);
       } else if (entry->status == GuardrailStatus::Armed) {
         entry->startedAt = now;

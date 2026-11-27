@@ -29,6 +29,7 @@ static bool encode_repeated_ota_desired_ota_target(zcbor_state_t *state, const s
 static bool encode_repeated_ota_desired_ota_release_id(zcbor_state_t *state, const struct ota_desired_ota_release_id *input);
 static bool encode_repeated_datastream_binding_keys_tstr1_48(zcbor_state_t *state, const struct zcbor_string *input);
 static bool encode_datastream_binding_keys(zcbor_state_t *state, const struct datastream_binding_keys *input);
+static bool encode_repeated_guardrail_report_guardrail_incident_l(zcbor_state_t *state, const struct guardrail_report_guardrail_incident_l *input);
 static bool encode_typed_value_fields(zcbor_state_t *state, const struct typed_value_fields_r *input);
 static bool encode_correlation_id(zcbor_state_t *state, const struct correlation_id_r *input);
 static bool encode_repeated_command_guardrail_latch(zcbor_state_t *state, const uint64_t *input);
@@ -166,6 +167,20 @@ static bool encode_datastream_binding_keys(
 	zcbor_log("%s\r\n", __func__);
 
 	bool res = (((zcbor_list_start_encode(state, 64) && ((zcbor_multi_encode_minmax(1, 64, &(*input).datastream_binding_keys_tstr1_48_count, (zcbor_encoder_t *)encode_repeated_datastream_binding_keys_tstr1_48, state, (*&(*input).datastream_binding_keys_tstr1_48), sizeof(struct zcbor_string))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_list_end_encode(state, 64))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_repeated_guardrail_report_guardrail_incident_l(
+		zcbor_state_t *state, const struct guardrail_report_guardrail_incident_l *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((((((*input).guardrail_report_guardrail_incident_l_guardrail_incident >= 1)
+	&& ((*input).guardrail_report_guardrail_incident_l_guardrail_incident <= 5)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_uint64_encode(state, (&(*input).guardrail_report_guardrail_incident_l_guardrail_incident))))
+	&& ((zcbor_uint64_encode(state, (&(*input).guardrail_report_guardrail_incident_l_guardrail_incident_id)))))));
 
 	log_result(state, res, __func__);
 	return res;
@@ -923,7 +938,7 @@ static bool encode_safety_record(
 	&& ((((((((*input).safety_record_safety_compact_id <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
 	&& (zcbor_uint64_encode(state, (&(*input).safety_record_safety_compact_id))))
 	&& (((zcbor_uint64_put(state, (2))))
-	&& ((((*input).safety_record_safety_policy <= 8)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& ((((*input).safety_record_safety_policy <= 9)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
 	&& (zcbor_uint64_encode(state, (&(*input).safety_record_safety_policy))))
 	&& (!(*input).safety_record_safety_minimum_present || encode_repeated_safety_record_safety_minimum(state, (&(*input).safety_record_safety_minimum)))
 	&& (!(*input).safety_record_safety_maximum_present || encode_repeated_safety_record_safety_maximum(state, (&(*input).safety_record_safety_maximum)))
@@ -1202,14 +1217,15 @@ static bool encode_guardrail_report(
 {
 	zcbor_log("%s\r\n", __func__);
 
-	bool res = (((zcbor_list_start_encode(state, 4) && (((((((((((*input).guardrail_report_guardrail_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	bool res = (((zcbor_list_start_encode(state, 6) && (((((((((((*input).guardrail_report_guardrail_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
 	&& (zcbor_uint64_encode(state, (&(*input).guardrail_report_guardrail_generation))))
 	&& (((((((((*input).guardrail_report_guardrail_stream <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
 	&& (zcbor_uint64_encode(state, (&(*input).guardrail_report_guardrail_stream))))
 	&& (((((*input).guardrail_report_guardrail_status >= 1)
-	&& ((*input).guardrail_report_guardrail_status <= 6)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& ((*input).guardrail_report_guardrail_status <= 7)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
 	&& (zcbor_uint64_encode(state, (&(*input).guardrail_report_guardrail_status))))
-	&& ((zcbor_uint64_encode(state, (&(*input).guardrail_report_guardrail_latch))))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_list_end_encode(state, 4))));
+	&& ((zcbor_uint64_encode(state, (&(*input).guardrail_report_guardrail_latch))))
+	&& (!(*input).guardrail_report_guardrail_incident_l_present || encode_repeated_guardrail_report_guardrail_incident_l(state, (&(*input).guardrail_report_guardrail_incident_l)))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_list_end_encode(state, 6))));
 
 	log_result(state, res, __func__);
 	return res;

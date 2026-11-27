@@ -127,8 +127,9 @@ log-event = [event-boot-id: uint64, event-sequence: uint32, event-code: tstr .si
 lifecycle-ready = []
 
 ; 0x20..0x27 Engine-to-device hot-path and reliability messages.
-guardrail-report = [guardrail-generation: generation, guardrail-stream: compact-id, guardrail-status: 1..6, guardrail-latch: uint64]
+guardrail-report = [guardrail-generation: generation, guardrail-stream: compact-id, guardrail-status: 1..7, guardrail-latch: uint64, ? (guardrail-incident: 1..5, guardrail-incident-id: uint64)]
 
+; A latch with version 0 requests legacy manual rearm. A latch with a positive version binds an automatic-policy start.
 command = [command-generation: generation, command-id: uuid, command-compact-id: compact-id, typed-value-fields, command-desired-version: uint32, command-expires-at-utc-ms: uint64, command-correlation-id: correlation-id, ? command-guardrail-latch: uint64]
 ingestion-ack = []
 config-desired = [desired-config-generation: generation, desired-config-checksum: sha256, desired-config-record-count: uint32]
@@ -214,7 +215,7 @@ system-record = {
 safety-record = {
   safety-kind: 0 => 3,
   safety-compact-id: 1 => compact-id,
-  safety-policy: 2 => 0..8,
+  safety-policy: 2 => 0..9,
   ? safety-minimum: 3 => typed-value,
   ? safety-maximum: 4 => typed-value,
   ? safety-timeout-ms: 5 => uint32,
