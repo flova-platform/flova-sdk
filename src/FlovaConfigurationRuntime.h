@@ -18,7 +18,11 @@ static const size_t kConfigurationTextBytes = FLOVA_TEXT_CAPACITY;
 enum class ValueKind : uint8_t { Boolean = 0, Int64 = 1, Float32 = 2, Float64 = 3, Text = 4 };
 enum class UnitKind : uint8_t { Datastream = 0, System = 1, Safety = 3, Parameter = 5 };
 enum class MappingKind : uint8_t { DigitalInput = 0, DigitalOutput = 1, AnalogInput = 2, PwmOutput = 3 };
-enum class SafetyPolicy : uint8_t { None = 0, Minimum = 1, Maximum = 2, Range = 3, CommandExpiry = 4 };
+enum class SafetyPolicy : uint8_t {
+  None = 0, Minimum = 1, Maximum = 2, Range = 3, CommandExpiry = 4,
+  StopOnDisconnect = 5, FinishBoundedRun = 6,
+  GuardrailStop = 7, GuardrailFinish = 8, GuardrailAutoRecover = 9
+};
 
 struct Value {
   ValueKind kind;
@@ -99,9 +103,13 @@ struct Safety {
   bool hasMinimum;
   bool hasMaximum;
   bool hasTimeoutMs;
+  DatastreamId guardId;
   Value minimum;
   Value maximum;
   uint32_t timeoutMs;
+  bool hasSafeValue;
+  Value safeValue;
+  uint32_t guardMaxAgeMs;
 };
 
 struct Parameter {

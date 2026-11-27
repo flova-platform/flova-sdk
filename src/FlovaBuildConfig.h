@@ -33,3 +33,14 @@
 #ifndef FLOVA_STREAM_DESCRIPTORS_IN_STORAGE
 #define FLOVA_STREAM_DESCRIPTORS_IN_STORAGE 0
 #endif
+
+
+// Custom firmware opts in to application-owned actuator control.
+#ifndef FLOVA_ACTUATOR_CONTROL
+#define FLOVA_ACTUATOR_CONTROL 0
+#endif
+
+// Explicit RAM budget for the shared datastream guardrail runtime.
+#ifndef FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+#define FLOVA_OFFLINE_GUARDRAIL_CAPACITY 0
+#endif

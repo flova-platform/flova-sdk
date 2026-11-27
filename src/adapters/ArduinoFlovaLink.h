@@ -279,7 +279,9 @@ class ArduinoFlovaLink : public FlovaClientLink {
                         ? message.resultStatus == 2
                               ? FlovaLinkResultStatus::Duplicate
                               : FlovaLinkResultStatus::Ok
-                        : FlovaLinkResultStatus::Error;
+                        : message.resultStatus == 4
+                              ? FlovaLinkResultStatus::Rejected
+                              : FlovaLinkResultStatus::Error;
     result.duplicate = result.status == FlovaLinkResultStatus::Duplicate;
     if (!toLinkValue(result.value, message.value)) return false;
     strncpy(result.errorCode, message.reason, sizeof(result.errorCode) - 1);
@@ -326,8 +328,21 @@ class ArduinoFlovaLink : public FlovaClientLink {
   }
 
   uint32_t messageNonce() const override { return messageNonce_; }
+#if FLOVA_ACTUATOR_CONTROL || FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+  uint32_t connectionEpoch() const override { return connectionEpoch_; }
+#endif
 
   bool batchesState() const override { return true; }
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+  void setDurableGuardrails(bool enabled) override { transport_.setDurableGuardrails(enabled); }
+
+  bool sendGuardrailStatus(DatastreamId id, flova::GuardrailStatus status,
+                           uint64_t latch, uint64_t messageId, flova::GuardrailIncident incident,
+                           uint64_t incidentId) override {
+    return connected() && transport_.publishGuardrailStatus(id, static_cast<uint8_t>(status), latch,
+                                                           messageId, static_cast<uint8_t>(incident), incidentId);
+  }
+#endif
   size_t sendStateBatch(flova::StateUpdateReader reader, void* context,
                        size_t count, uint64_t messageId) override {
     if (!connected() || !reader || !count || count > FLOVA_LINK_MAX_STATE_READINGS) return 0;
@@ -557,6 +572,11 @@ class ArduinoFlovaLink : public FlovaClientLink {
     if (inbound.type == FlovaLinkMessageType::DatastreamBound) {
       if (inbound.body.datastreamBound.count != bindingCount_) return;
       for (uint8_t i = 0; i < bindingCount_; ++i) boundIds_[i] = inbound.body.datastreamBound.ids[i];
+#if FLOVA_ACTUATOR_CONTROL || FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+      if (!bound_ || configurationGeneration_ != inbound.body.datastreamBound.generation) {
+        if (++connectionEpoch_ == 0) ++connectionEpoch_;
+      }
+#endif
       configurationGeneration_ = inbound.body.datastreamBound.generation;
       transport_.setConfigurationGeneration(configurationGeneration_);
       bound_ = true;
@@ -609,6 +629,15 @@ class ArduinoFlovaLink : public FlovaClientLink {
       message.datastreamId = inbound.body.command.datastreamId;
       message.revision = inbound.body.command.desiredVersion;
       message.expiresAtUtcMs = inbound.body.command.expiresAtUtcMs;
+#if FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+      if (inbound.body.command.guardrailLatch) {
+        message.monotonic = inbound.body.command.guardrailLatch;
+        if (!message.revision) {
+          message.kind = flova::MessageKind::GuardrailRearm;
+          message.timestamp = connectionEpoch_;
+        }
+      }
+#endif
       message.origin = origin(inbound.body.command.isUserCommand);
       idText(message.commandId, sizeof(message.commandId), inbound.body.command.commandId);
       idText(message.correlationId, sizeof(message.correlationId), inbound.body.command.correlationId);
@@ -631,6 +660,9 @@ class ArduinoFlovaLink : public FlovaClientLink {
   DatastreamId boundIds_[ArduinoDeviceLink::kMaximumDatastreamBindings] = {};
   uint8_t bindingCount_ = 0;
   bool bound_ = false;
+#if FLOVA_ACTUATOR_CONTROL || FLOVA_OFFLINE_GUARDRAIL_CAPACITY
+  uint32_t connectionEpoch_ = 0;
+#endif
   bool configured_ = false;
   bool bootstrapCommittedPending_ = false;
   uint8_t configurationPendingHead_ = 0;

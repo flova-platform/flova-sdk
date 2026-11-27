@@ -154,6 +154,12 @@ int cbor_decode_log_event(
 		size_t *payload_len_out);
 
 
+int cbor_decode_guardrail_report(
+		const uint8_t *payload, size_t payload_len,
+		struct guardrail_report *result,
+		size_t *payload_len_out);
+
+
 int cbor_decode_command(
 		const uint8_t *payload, size_t payload_len,
 		struct command *result,
